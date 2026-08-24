@@ -674,22 +674,39 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_with.replace_all(&normalized, "WITH RECURSIVE ${1} AS").into_owned();
     }
 
-    // 11. T-SQL CROSS APPLY (SELECT expr1 AS a1, expr2 AS a2) AS A -> inline expressions and remove CROSS APPLY
-    if let Ok(re_cross_apply_block) = regex::Regex::new(r"(?i)\bCROSS\s+APPLY\s*\(\s*SELECT\s+([\s\S]*?)\s*\)\s*AS\s+([a-zA-Z0-9_#$]+)") {
-        while let Some(caps) = re_cross_apply_block.captures(&normalized.clone()) {
+    // 11. T-SQL CROSS APPLY / OUTER APPLY -> inline expression/correlated subquery and remove APPLY block
+    if let Ok(re_apply_block) = regex::Regex::new(r"(?i)\b(?:CROSS|OUTER)\s+APPLY\s*\(\s*SELECT\s+([\s\S]*?)\s*\)\s*AS\s+([a-zA-Z0-9_#$]+)") {
+        while let Some(caps) = re_apply_block.captures(&normalized.clone()) {
             let select_body = caps.get(1).map(|m| m.as_str()).unwrap_or("");
             let table_alias = caps.get(2).map(|m| m.as_str()).unwrap_or("");
             let full_match = caps.get(0).map(|m| m.as_str()).unwrap_or("");
 
-            // Parse each "expr AS col_alias"
-            let items: Vec<&str> = select_body.split(',').map(|s| s.trim()).collect();
-            for item in items {
-                if let Ok(re_as) = regex::Regex::new(r"(?i)^([\s\S]+?)\s+AS\s+([a-zA-Z0-9_#$]+)$") {
-                    if let Some(c) = re_as.captures(item) {
-                        let expr = c.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-                        let col = c.get(2).map(|m| m.as_str().trim()).unwrap_or("");
-                        let col_ref = format!("{table_alias}.{col}");
-                        normalized = normalized.replace(&col_ref, &format!("({expr})"));
+            if select_body.to_uppercase().contains(" FROM ") {
+                // Correlated subquery: replace table_alias.col with (SELECT inlined)
+                if let Ok(re_alias_ref) = regex::Regex::new(&format!(r"(?i)\b{}\.([a-zA-Z0-9_#$]+)", regex::escape(table_alias))) {
+                    let mut inlined = select_body.to_string();
+                    if let Ok(re_sub_top) = regex::Regex::new(r"(?i)\bTOP\s*\(?\s*(\d+)\s*\)?\s+") {
+                        if let Some(c) = re_sub_top.captures(&inlined) {
+                            let n = c.get(1).map(|m| m.as_str().to_string()).unwrap_or_else(|| "1".to_string());
+                            inlined = re_sub_top.replace(&inlined, "").into_owned();
+                            if !inlined.to_uppercase().contains("LIMIT") {
+                                inlined = format!("{inlined} LIMIT {n}");
+                            }
+                        }
+                    }
+                    normalized = re_alias_ref.replace_all(&normalized, &format!("(SELECT {inlined}) AS ${{1}}")).into_owned();
+                }
+            } else {
+                // Scalar expression list: expr1 AS a1, expr2 AS a2
+                let items: Vec<&str> = select_body.split(',').map(|s| s.trim()).collect();
+                for item in items {
+                    if let Ok(re_as) = regex::Regex::new(r"(?i)^([\s\S]+?)\s+AS\s+([a-zA-Z0-9_#$]+)$") {
+                        if let Some(c) = re_as.captures(item) {
+                            let expr = c.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                            let col = c.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+                            let col_ref = format!("{table_alias}.{col}");
+                            normalized = normalized.replace(&col_ref, &format!("({expr})"));
+                        }
                     }
                 }
             }
@@ -3080,6 +3097,39 @@ SELECT
         assert_eq!(s4_res.rows.len(), 1);
         assert_eq!(s4_res.rows[0].get("DateValue").and_then(|v| v.as_str()), Some("2026-08-24"));
         assert_eq!(s4_res.rows[0].get("TimeValue").and_then(|v| v.as_str()), Some("17:30:00"));
+
+        // Test Section 22 CROSS APPLY
+        let s22_query = r#"
+SELECT
+    P.ProductName,
+    X.PriceWithVAT
+FROM dbo.Products AS P
+CROSS APPLY
+(
+    SELECT P.Price * 1.10 AS PriceWithVAT
+) AS X;
+        "#;
+        let s22_res = db.query(s22_query).unwrap();
+        assert!(!s22_res.rows.is_empty());
+
+        // Test Section 23 OUTER APPLY with correlated subquery
+        let s23_query = r#"
+SELECT
+    C.CustomerID,
+    C.FullName,
+    X.OrderID
+FROM dbo.Customers AS C
+OUTER APPLY
+(
+    SELECT TOP (1)
+        O.OrderID
+    FROM dbo.Orders AS O
+    WHERE O.CustomerID = C.CustomerID
+    ORDER BY O.OrderDate DESC
+) AS X;
+        "#;
+        let s23_res = db.query(s23_query).unwrap();
+        assert_eq!(s23_res.rows.len(), 6);
 
         // Test sys functions
         let sys_query = "SELECT @@VERSION AS ver, DB_NAME() AS db, SERVERPROPERTY('ProductVersion') AS pv, IIF(100 > 50, 'YES', 'NO') AS iif, CHOOSE(2, 'ONE', 'TWO', 'THREE') AS ch, GREATEST(10, 500, 30) AS gt, LEAST(10, 500, 30) AS lt;";
