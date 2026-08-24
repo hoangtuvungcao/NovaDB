@@ -20,9 +20,7 @@ pub fn register(connection: &Connection) -> Result<()> {
         |ctx| {
             let pattern: String = ctx.get(0)?;
             let text: String = ctx.get(1)?;
-            // Simple regex matching without the regex crate:
-            // We implement basic patterns that cover common use cases
-            Ok(simple_match(&pattern, &text))
+            Ok(regex_match(&pattern, &text))
         },
     )?;
 
@@ -295,18 +293,11 @@ fn ilike_match_inner(text: &[char], pattern: &[char], ti: usize, pi: usize) -> b
     }
 }
 
-/// Simple pattern matching for REGEXP. Supports basic patterns without the regex crate.
-/// For a production database, you'd want the `regex` crate, but this avoids adding a dependency.
-fn simple_match(pattern: &str, text: &str) -> bool {
-    // For now, delegate to SQLite's built-in LIKE with pattern conversion
-    // A full regex engine would require the `regex` crate
-    text.contains(pattern)
-        || pattern == text
-        || (pattern.starts_with('^')
-            && pattern.ends_with('$')
-            && text == &pattern[1..pattern.len() - 1])
-        || (pattern.starts_with('^') && text.starts_with(&pattern[1..]))
-        || (pattern.ends_with('$') && text.ends_with(&pattern[..pattern.len() - 1]))
+/// Full PCRE/Unicode regular expression pattern matching.
+fn regex_match(pattern: &str, text: &str) -> bool {
+    regex::Regex::new(pattern)
+        .map(|re| re.is_match(text))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
