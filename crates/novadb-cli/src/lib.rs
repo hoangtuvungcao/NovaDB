@@ -55,6 +55,8 @@ pub enum Command {
     Remote(RemoteCommandArgs),
     /// Start the NovaDB HTTP relay and PostgreSQL wire protocol server.
     Serve(ServeArgs),
+    /// Open an interactive SQL shell (REPL console) for a database.
+    Console(ConsoleArgs),
 }
 
 #[derive(Debug, Args)]
@@ -379,7 +381,222 @@ pub async fn run_with(cli: Cli) -> Result<()> {
         Command::Migrate(args) => migrate(&args),
         Command::Remote(args) => remote_command(&args).await,
         Command::Serve(args) => serve(&args).await,
+        Command::Console(args) => console(&args),
     }
+}
+
+#[derive(Debug, Args)]
+pub struct ConsoleArgs {
+    /// Path to the local `NovaDB` database file to open.
+    #[arg(value_name = "PATH")]
+    pub path: PathBuf,
+}
+
+fn console(args: &ConsoleArgs) -> Result<()> {
+    use std::io::Write;
+
+    let db = if args.path.exists() {
+        NovaDb::open(&args.path)?
+    } else {
+        println!("[INFO] Database file '{}' does not exist. Creating new database...", args.path.display());
+        NovaDb::open(&args.path)?
+    };
+
+    println!("NovaDB Interactive SQL Console");
+    println!("Connected to: {}", args.path.display());
+    println!("Type .help for instructions, .quit or Ctrl+D to exit.");
+    println!();
+
+    let mut timer_enabled = true;
+    let mut current_statement = String::new();
+    let stdin = std::io::stdin();
+
+    loop {
+        if current_statement.is_empty() {
+            print!("novadb> ");
+        } else {
+            print!("   ...> ");
+        }
+        std::io::stdout().flush()?;
+
+        let mut line = String::new();
+        if stdin.read_line(&mut line)? == 0 {
+            // EOF
+            println!("\nGoodbye.");
+            break;
+        }
+
+        let trimmed = line.trim();
+
+        // Check for dot commands
+        if current_statement.is_empty() && trimmed.starts_with('.') {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            match parts[0] {
+                ".quit" | ".exit" | ".q" => {
+                    println!("Goodbye.");
+                    break;
+                }
+                ".help" | ".h" => {
+                    println!("Available Dot Commands:");
+                    println!("  .tables                List all tables in database");
+                    println!("  .schema [table]        Show CREATE statements");
+                    println!("  .timer [on|off]        Toggle query execution timer");
+                    println!("  .help                  Show this help");
+                    println!("  .quit                  Exit the console");
+                    println!();
+                    println!("SQL Tips:");
+                    println!("  - End statements with a semicolon (;) to execute");
+                    println!("  - Supports standard SQL, CTEs, Window functions, JSON, UUIDs");
+                }
+                ".tables" => {
+                    match db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_novadb_%' ORDER BY name") {
+                        Ok(res) => {
+                            if res.rows.is_empty() {
+                                println!("(No user tables found)");
+                            } else {
+                                for r in res.rows {
+                                    if let Some(name) = r.get("name").and_then(|v| v.as_str()) {
+                                        print!("{:<20} ", name);
+                                    }
+                                }
+                                println!();
+                            }
+                        }
+                        Err(e) => eprintln!("Error: {e}"),
+                    }
+                }
+                ".schema" => {
+                    let sql = if parts.len() > 1 {
+                        format!("SELECT sql FROM sqlite_master WHERE type IN ('table','view','index') AND name='{}'", parts[1])
+                    } else {
+                        "SELECT sql FROM sqlite_master WHERE type IN ('table','view','index') AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY type, name".to_string()
+                    };
+                    match db.query(&sql) {
+                        Ok(res) => {
+                            for r in res.rows {
+                                if let Some(s) = r.get("sql").and_then(|v| v.as_str()) {
+                                    println!("{};\n", s);
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("Error: {e}"),
+                    }
+                }
+                ".timer" => {
+                    if parts.len() > 1 {
+                        timer_enabled = parts[1].eq_ignore_ascii_case("on") || parts[1] == "1";
+                    } else {
+                        timer_enabled = !timer_enabled;
+                    }
+                    println!("Timer is now {}", if timer_enabled { "ON" } else { "OFF" });
+                }
+                cmd => {
+                    eprintln!("Unknown command: {cmd}. Type .help for available commands.");
+                }
+            }
+            continue;
+        }
+
+        if trimmed.is_empty() && current_statement.is_empty() {
+            continue;
+        }
+
+        current_statement.push_str(&line);
+
+        if current_statement.trim_end().ends_with(';') {
+            let sql_to_run = current_statement.trim().to_string();
+            current_statement.clear();
+
+            let is_query = sql_to_run.trim_start().to_ascii_uppercase().starts_with("SELECT")
+                || sql_to_run.trim_start().to_ascii_uppercase().starts_with("WITH")
+                || sql_to_run.trim_start().to_ascii_uppercase().starts_with("EXPLAIN")
+                || sql_to_run.trim_start().to_ascii_uppercase().starts_with("PRAGMA");
+
+            let start = std::time::Instant::now();
+
+            if is_query {
+                match db.query(&sql_to_run) {
+                    Ok(res) => {
+                        let elapsed = start.elapsed();
+                        print_ascii_table(&res.columns, &res.rows);
+                        if timer_enabled {
+                            println!("({} row(s), took {:.2?})", res.rows.len(), elapsed);
+                        }
+                    }
+                    Err(e) => eprintln!("Query Error: {e}"),
+                }
+            } else {
+                match db.execute_batch(&sql_to_run) {
+                    Ok(()) => {
+                        let elapsed = start.elapsed();
+                        if timer_enabled {
+                            println!("Statement executed successfully ({:.2?})", elapsed);
+                        } else {
+                            println!("Statement executed successfully.");
+                        }
+                    }
+                    Err(e) => eprintln!("Execution Error: {e}"),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn print_ascii_table(columns: &[String], rows: &[serde_json::Value]) {
+    if columns.is_empty() {
+        println!("(No columns)");
+        return;
+    }
+
+    // Calculate column widths
+    let mut widths: Vec<usize> = columns.iter().map(|c| c.len()).collect();
+
+    for row in rows {
+        for (i, col) in columns.iter().enumerate() {
+            let val_str = match row.get(col) {
+                Some(serde_json::Value::Null) | None => "NULL".to_string(),
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(v) => v.to_string(),
+            };
+            widths[i] = widths[i].max(val_str.len()).min(50);
+        }
+    }
+
+    // Print Header
+    let mut separator = String::from("+");
+    for w in &widths {
+        separator.push_str(&format!("{}+", "-".repeat(w + 2)));
+    }
+    println!("{}", separator);
+
+    let mut header = String::from("|");
+    for (i, col) in columns.iter().enumerate() {
+        header.push_str(&format!(" {:<width$} |", col, width = widths[i]));
+    }
+    println!("{}", header);
+    println!("{}", separator);
+
+    // Print Rows
+    for row in rows {
+        let mut row_line = String::from("|");
+        for (i, col) in columns.iter().enumerate() {
+            let val_str = match row.get(col) {
+                Some(serde_json::Value::Null) | None => "NULL".to_string(),
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(v) => v.to_string(),
+            };
+            let truncated = if val_str.len() > widths[i] {
+                format!("{}...", &val_str[..widths[i].saturating_sub(3)])
+            } else {
+                val_str
+            };
+            row_line.push_str(&format!(" {:<width$} |", truncated, width = widths[i]));
+        }
+        println!("{}", row_line);
+    }
+    println!("{}", separator);
 }
 
 #[derive(Debug, Args)]

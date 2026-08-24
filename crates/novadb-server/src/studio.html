@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>NovaDB Web Admin Console</title>
+  <title>NovaDB Studio</title>
   <style>
     :root {
       --bg: #0b1114;
@@ -506,7 +506,7 @@
           <div class="stat-card">
             <div class="stat-label">Online Backup</div>
             <p style="font-size: 12px; color: var(--muted); margin: 6px 0 12px;">Create consistent point-in-time snapshot.</p>
-            <button class="btn btn-primary btn-sm" onclick="triggerBackup()">Create Snapshot Backup</button>
+            <button id="maintenance-backup" class="btn btn-primary btn-sm" onclick="triggerBackup()">Create Snapshot Backup</button>
           </div>
           <div class="stat-card">
             <div class="stat-label">Integrity Check</div>
@@ -565,9 +565,9 @@
     let activeSelectedTable = "";
     let lastQueryRows = [];
     let lastQueryColumns = [];
+    let authToken = "";
 
     document.addEventListener("DOMContentLoaded", () => {
-      loadAuthToken();
       checkServerHealth();
       loadDatabases();
 
@@ -581,24 +581,18 @@
     });
 
     function getAuthHeaders() {
-      const token = localStorage.getItem("novadb_token") || "";
       const headers = { "Content-Type": "application/json" };
-      if (token) {
-        headers["Authorization"] = "Bearer " + token;
+      if (authToken) {
+        headers["Authorization"] = "Bearer " + authToken;
       }
       return headers;
     }
 
     function saveAuthToken() {
       const input = document.getElementById("auth-token-input");
-      localStorage.setItem("novadb_token", input.value.trim());
-      alert("Token saved. Refreshing databases...");
+      authToken = input.value.trim();
+      alert("Token updated. Refreshing databases...");
       loadDatabases();
-    }
-
-    function loadAuthToken() {
-      const token = localStorage.getItem("novadb_token") || "";
-      document.getElementById("auth-token-input").value = token;
     }
 
     async function checkServerHealth() {
@@ -619,7 +613,7 @@
 
     async function loadDatabases() {
       try {
-        const res = await fetch("/v1/databases", { headers: getAuthHeaders() });
+        const res = await fetch("/v1/admin/databases", { headers: getAuthHeaders() });
         if (!res.ok) throw new Error("HTTP " + res.status);
         const data = await res.json();
         
@@ -676,7 +670,7 @@
       if (!name) return alert("Please provide a database name");
 
       try {
-        const res = await fetch("/v1/databases/" + encodeURIComponent(name), {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(name), {
           method: "POST",
           headers: getAuthHeaders(),
         });
@@ -695,7 +689,7 @@
     async function loadSidebarTables() {
       if (!activeDatabase) return;
       try {
-        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + "/schema", {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/schema", {
           headers: getAuthHeaders(),
         });
         if (!res.ok) throw new Error("HTTP " + res.status);
@@ -736,10 +730,10 @@
       const startTime = performance.now();
 
       const isQuery = /^\s*(SELECT|EXPLAIN|PRAGMA|WITH|VALUES)/i.test(sql);
-      const endpoint = isQuery ? "/query" : "/exec";
+      const endpoint = isQuery ? "/query" : "/execute";
 
       try {
-        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + endpoint, {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + endpoint, {
           method: "POST",
           headers: getAuthHeaders(),
           body: JSON.stringify({ sql }),
@@ -850,7 +844,7 @@
       if (!activeDatabase) return alert("Select a database first");
       appendMaintenanceLog(`Initiating online backup for database '${activeDatabase}'...`);
       try {
-        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + "/backup", {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/backup", {
           method: "POST",
           headers: getAuthHeaders(),
         });
@@ -869,7 +863,7 @@
       if (!activeDatabase) return alert("Select a database first");
       appendMaintenanceLog(`Running integrity check for '${activeDatabase}'...`);
       try {
-        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + "/integrity", {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/integrity", {
           method: "POST",
           headers: getAuthHeaders(),
         });
@@ -888,7 +882,7 @@
       if (!activeDatabase) return alert("Select a database first");
       appendMaintenanceLog(`Running WAL checkpoint truncate on '${activeDatabase}'...`);
       try {
-        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + "/checkpoint", {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/checkpoint", {
           method: "POST",
           headers: getAuthHeaders(),
         });

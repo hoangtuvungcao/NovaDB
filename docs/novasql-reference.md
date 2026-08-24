@@ -268,9 +268,44 @@ SELECT DISTINCT user_id FROM posts;
 | `BOOL_OR(bool_col)` | `BOOLEAN` | `BOOLEAN` | Logical OR across all rows (returns TRUE if at least one true) |
 | `EVERY(bool_col)` | `BOOLEAN` | `BOOLEAN` | SQL-standard alias for `BOOL_AND` |
 
+### 6.6 Vector Search and AI Embedding Functions
+
+| Function | Arguments | Returns | Description |
+|---|---|---|---|
+| `VECTOR_COSINE_DISTANCE(v1, v2)` | `JSON/BLOB, JSON/BLOB` | `REAL` | Cosine distance (1.0 - cosine similarity) in range `[0.0, 2.0]` |
+| `VECTOR_COSINE_SIMILARITY(v1, v2)` | `JSON/BLOB, JSON/BLOB` | `REAL` | Cosine similarity in range `[-1.0, 1.0]` |
+| `VECTOR_L2_DISTANCE(v1, v2)` | `JSON/BLOB, JSON/BLOB` | `REAL` | Euclidean L2 distance `sqrt(sum((a - b)^2))` |
+| `VECTOR_DOT_PRODUCT(v1, v2)` | `JSON/BLOB, JSON/BLOB` | `REAL` | Dot product `sum(a * b)` |
+| `VECTOR_NORM(v)` | `JSON/BLOB` | `REAL` | Vector magnitude / L2 norm `sqrt(sum(a^2))` |
+| `VECTOR_DIM(v)` | `JSON/BLOB` | `INTEGER` | Dimensionality of vector |
+| `VECTOR_NORMALIZE(v)` | `JSON/BLOB` | `TEXT` | Returns unit vector as normalized JSON array |
+| `VECTOR_TO_BLOB(json_vector)` | `TEXT` | `BLOB` | Compact 32-bit float binary blob serialization |
+| `VECTOR_FROM_BLOB(blob)` | `BLOB` | `TEXT` | Deserializes 32-bit float binary blob to JSON array |
+
 ---
 
-## 7. Security and Role-Based Access Control (RBAC)
+## 7. Interactive SQL Shell (REPL Console)
+
+NovaDB includes a built-in interactive console for development and ad-hoc queries:
+
+```bash
+# Launch interactive REPL console
+novadb console myapp.novadb
+```
+
+### REPL Dot Commands
+
+| Command | Description |
+|---|---|
+| `.help` | Show available commands and tips |
+| `.tables` | List all user tables in database |
+| `.schema [table]` | Display `CREATE TABLE` and index definitions |
+| `.timer [on\|off]` | Toggle query execution timer |
+| `.quit` / `.exit` | Exit the REPL |
+
+---
+
+## 8. Security and Role-Based Access Control (RBAC)
 
 NovaDB includes schema-enforced authentication and privileges:
 
@@ -289,7 +324,7 @@ LEFT JOIN _novadb_roles r ON ur.role_name = r.role_name;
 
 ---
 
-## 8. Server Operation and Multi-Language Client Connection
+## 9. Server Operation and Multi-Language Client Connection
 
 ### 8.1 Starting the Server
 ```bash

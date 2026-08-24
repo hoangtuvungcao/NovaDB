@@ -9,6 +9,7 @@ pub mod datetime_functions;
 pub mod json_functions;
 pub mod string_functions;
 pub mod uuid_functions;
+pub mod vector_functions;
 
 use rusqlite::Connection;
 
@@ -21,5 +22,6 @@ pub fn register_all(connection: &Connection) -> Result<()> {
     string_functions::register(connection)?;
     json_functions::register(connection)?;
     aggregate_functions::register(connection)?;
+    vector_functions::register(connection)?;
     Ok(())
 }
