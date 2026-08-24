@@ -250,6 +250,139 @@ pub fn register(connection: &Connection) -> Result<()> {
         },
     )?;
 
+    // YEAR(date_val) — T-SQL Year extract
+    connection.create_scalar_function(
+        "year",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let text: String = ctx.get(0)?;
+            if let Some(ms) = parse_iso8601_to_epoch_ms(&text) {
+                let days = (ms / 1_000) / 86_400;
+                let (year, _, _) = days_to_ymd(days);
+                Ok(Some(year as i64))
+            } else {
+                Ok(None)
+            }
+        },
+    )?;
+
+    // MONTH(date_val) — T-SQL Month extract
+    connection.create_scalar_function(
+        "month",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let text: String = ctx.get(0)?;
+            if let Some(ms) = parse_iso8601_to_epoch_ms(&text) {
+                let days = (ms / 1_000) / 86_400;
+                let (_, month, _) = days_to_ymd(days);
+                Ok(Some(month as i64))
+            } else {
+                Ok(None)
+            }
+        },
+    )?;
+
+    // DAY(date_val) — T-SQL Day extract
+    connection.create_scalar_function(
+        "day",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let text: String = ctx.get(0)?;
+            if let Some(ms) = parse_iso8601_to_epoch_ms(&text) {
+                let days = (ms / 1_000) / 86_400;
+                let (_, _, day) = days_to_ymd(days);
+                Ok(Some(day as i64))
+            } else {
+                Ok(None)
+            }
+        },
+    )?;
+
+    // DATEADD(part, num, date_str) — T-SQL Date Addition
+    connection.create_scalar_function(
+        "dateadd",
+        3,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let part: String = ctx.get(0)?;
+            let num: i64 = ctx.get(1)?;
+            let text: String = ctx.get(2)?;
+            let ms = match parse_iso8601_to_epoch_ms(&text) {
+                Some(ms) => ms,
+                None => return Ok(None),
+            };
+            let secs = ms / 1_000;
+            let days = secs / 86_400;
+            let time_secs = secs % 86_400;
+            let (y, m, d) = days_to_ymd(days);
+
+            let new_ms = match part.to_lowercase().as_str() {
+                "day" | "d" | "dd" => ms + num * 86_400_000,
+                "hour" | "hh" | "h" => ms + num * 3_600_000,
+                "minute" | "mi" | "n" => ms + num * 60_000,
+                "second" | "ss" | "s" => ms + num * 1_000,
+                "millisecond" | "ms" => ms + num,
+                "month" | "mm" | "m" => {
+                    let total_months = (y as i64 * 12 + (m as i64 - 1)) + num;
+                    let new_y = total_months.div_euclid(12) as i32;
+                    let new_m = (total_months.rem_euclid(12) + 1) as u32;
+                    let new_days = ymd_to_days(new_y, new_m, d as u32);
+                    new_days * 86_400_000 + time_secs * 1_000 + (ms % 1_000)
+                }
+                "year" | "yy" | "yyyy" => {
+                    let new_y = y as i32 + num as i32;
+                    let new_days = ymd_to_days(new_y, m as u32, d as u32);
+                    new_days * 86_400_000 + time_secs * 1_000 + (ms % 1_000)
+                }
+                _ => return Ok(None),
+            };
+            Ok(Some(epoch_ms_to_iso(new_ms)))
+        },
+    )?;
+
+    // DATEDIFF(part, start_str, end_str) — T-SQL Date Difference
+    connection.create_scalar_function(
+        "datediff",
+        3,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let part: String = ctx.get(0)?;
+            let text1: String = ctx.get(1)?;
+            let text2: String = ctx.get(2)?;
+            let ms1 = match parse_iso8601_to_epoch_ms(&text1) {
+                Some(ms) => ms,
+                None => return Ok(None),
+            };
+            let ms2 = match parse_iso8601_to_epoch_ms(&text2) {
+                Some(ms) => ms,
+                None => return Ok(None),
+            };
+            let diff_ms = ms2 - ms1;
+            let result = match part.to_lowercase().as_str() {
+                "day" | "d" | "dd" => diff_ms / 86_400_000,
+                "hour" | "hh" | "h" => diff_ms / 3_600_000,
+                "minute" | "mi" | "n" => diff_ms / 60_000,
+                "second" | "ss" | "s" => diff_ms / 1_000,
+                "millisecond" | "ms" => diff_ms,
+                "month" | "mm" | "m" => {
+                    let (y1, m1, _) = days_to_ymd((ms1 / 1_000) / 86_400);
+                    let (y2, m2, _) = days_to_ymd((ms2 / 1_000) / 86_400);
+                    (y2 as i64 * 12 + m2 as i64) - (y1 as i64 * 12 + m1 as i64)
+                }
+                "year" | "yy" | "yyyy" => {
+                    let (y1, _, _) = days_to_ymd((ms1 / 1_000) / 86_400);
+                    let (y2, _, _) = days_to_ymd((ms2 / 1_000) / 86_400);
+                    y2 as i64 - y1 as i64
+                }
+                _ => return Ok(None),
+            };
+            Ok(Some(result))
+        },
+    )?;
+
     Ok(())
 }
 

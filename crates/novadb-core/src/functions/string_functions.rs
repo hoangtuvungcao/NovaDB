@@ -47,6 +47,54 @@ pub fn register(connection: &Connection) -> Result<()> {
         },
     )?;
 
+    // LEN(text) — Length of string in characters (T-SQL LEN)
+    connection.create_scalar_function(
+        "len",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let val: rusqlite::types::Value = ctx.get(0)?;
+            match val {
+                rusqlite::types::Value::Null => Ok(None),
+                rusqlite::types::Value::Text(s) => Ok(Some(s.chars().count() as i64)),
+                rusqlite::types::Value::Blob(b) => Ok(Some(b.len() as i64)),
+                rusqlite::types::Value::Integer(i) => Ok(Some(i.to_string().len() as i64)),
+                rusqlite::types::Value::Real(f) => Ok(Some(f.to_string().len() as i64)),
+            }
+        },
+    )?;
+
+    // ISNULL(check_expression, replacement_value) — T-SQL alias for COALESCE(a, b)
+    connection.create_scalar_function(
+        "isnull",
+        2,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let v1: rusqlite::types::Value = ctx.get(0)?;
+            if !matches!(v1, rusqlite::types::Value::Null) {
+                Ok(v1)
+            } else {
+                let v2: rusqlite::types::Value = ctx.get(1)?;
+                Ok(v2)
+            }
+        },
+    )?;
+
+    // REPLICATE(text, n) — T-SQL alias for REPEAT
+    connection.create_scalar_function(
+        "replicate",
+        2,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let text: String = ctx.get(0)?;
+            let n: i64 = ctx.get(1)?;
+            if n < 0 {
+                return Ok(String::new());
+            }
+            Ok(text.repeat(n.min(10_000) as usize))
+        },
+    )?;
+
     // LEFT(text, n) — Return first n characters
     connection.create_scalar_function(
         "left",

@@ -449,16 +449,73 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_plus_str.replace_all(&normalized, " || ${1}").into_owned();
     }
 
-    // 8. T-SQL CAST(... AS NVARCHAR/VARCHAR/DECIMAL) -> CAST(... AS TEXT/REAL)
-    if let Ok(re_cast_str) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+N?VARCHAR(?:\(\s*\d+\s*\))?\s*\)") {
+    // 8. T-SQL CAST(... AS NVARCHAR/VARCHAR/DECIMAL/DATE/BIGINT) -> CAST(... AS TEXT/REAL/INTEGER)
+    if let Ok(re_cast_str) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+N?(?:VAR)?CHAR(?:\(\s*(?:\d+|MAX)\s*\))?\s*\)") {
         normalized = re_cast_str.replace_all(&normalized, "CAST(${1} AS TEXT)").into_owned();
     }
-    if let Ok(re_cast_dec) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+DECIMAL(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\s*\)") {
+    if let Ok(re_cast_date) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+(?:DATE|DATETIME2?|DATETIMEOFFSET|TIME)\s*\)") {
+        normalized = re_cast_date.replace_all(&normalized, "CAST(${1} AS TEXT)").into_owned();
+    }
+    if let Ok(re_cast_dec) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+(?:DECIMAL|NUMERIC|MONEY|SMALLMONEY|FLOAT|REAL)(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\s*\)") {
         normalized = re_cast_dec.replace_all(&normalized, "CAST(${1} AS REAL)").into_owned();
     }
+    if let Ok(re_cast_int) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+(?:BIGINT|INT|INTEGER|SMALLINT|TINYINT|BIT)\s*\)") {
+        normalized = re_cast_int.replace_all(&normalized, "CAST(${1} AS INTEGER)").into_owned();
+    }
 
-    // 9. T-SQL TOP (N) / TOP N -> append LIMIT N
-    if let Ok(re_top) = regex::Regex::new(r"(?i)\bSELECT\s+TOP\s*\(?\s*(\d+)\s*\)?\s+") {
+    // 9. T-SQL derived table VALUES alias: CTE AS (SELECT * FROM (VALUES (...)) AS V(c1, c2, ...)) -> CTE(c1, c2, ...) AS (VALUES (...))
+    if let Ok(re_values_cte) = regex::Regex::new(r"(?i)\b([a-zA-Z0-9_#$]+)\s+AS\s*\(\s*SELECT\s+\*\s+FROM\s*\(\s*VALUES\s+([\s\S]*?)\s*\)\s*AS\s+[a-zA-Z0-9_#$]+\s*\(([^)]+)\)\s*\)") {
+        normalized = re_values_cte.replace_all(&normalized, "${1}(${3}) AS (VALUES ${2})").into_owned();
+    }
+
+    // 10. T-SQL WITH CTE without RECURSIVE -> WITH RECURSIVE
+    if let Ok(re_with) = regex::Regex::new(r"(?i)\bWITH\s+(?!RECURSIVE\b)([a-zA-Z0-9_#$]+)\s*(?:\([^)]*\))?\s+AS\b") {
+        normalized = re_with.replace_all(&normalized, "WITH RECURSIVE ${1} AS").into_owned();
+    }
+
+    // 11. T-SQL CROSS APPLY (SELECT expr1 AS a1, expr2 AS a2) AS A -> inline expressions and remove CROSS APPLY
+    if let Ok(re_cross_apply_block) = regex::Regex::new(r"(?i)\bCROSS\s+APPLY\s*\(\s*SELECT\s+([\s\S]*?)\s*\)\s*AS\s+([a-zA-Z0-9_#$]+)") {
+        while let Some(caps) = re_cross_apply_block.captures(&normalized.clone()) {
+            let select_body = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let table_alias = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let full_match = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+
+            // Parse each "expr AS col_alias"
+            let items: Vec<&str> = select_body.split(',').map(|s| s.trim()).collect();
+            for item in items {
+                if let Ok(re_as) = regex::Regex::new(r"(?i)^([\s\S]+?)\s+AS\s+([a-zA-Z0-9_#$]+)$") {
+                    if let Some(c) = re_as.captures(item) {
+                        let expr = c.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                        let col = c.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+                        let col_ref = format!("{table_alias}.{col}");
+                        normalized = normalized.replace(&col_ref, &format!("({expr})"));
+                    }
+                }
+            }
+            normalized = normalized.replace(full_match, "");
+        }
+    }
+
+    // 12. Fallback T-SQL CROSS APPLY / OUTER APPLY -> CROSS JOIN / LEFT JOIN
+    if let Ok(re_cross_apply) = regex::Regex::new(r"(?i)\bCROSS\s+APPLY\b") {
+        normalized = re_cross_apply.replace_all(&normalized, "CROSS JOIN").into_owned();
+    }
+    if let Ok(re_outer_apply) = regex::Regex::new(r"(?i)\bOUTER\s+APPLY\b") {
+        normalized = re_outer_apply.replace_all(&normalized, "LEFT JOIN").into_owned();
+    }
+
+    // 13. T-SQL unquoted dateparts in DATEADD / DATEDIFF / DATETRUNC
+    if let Ok(re_dateparts) = regex::Regex::new(r"(?i)\b(DATEADD|DATEDIFF|DATETRUNC|DATE_TRUNC|DATE_PART)\s*\(\s*([a-zA-Z_]+)\s*,") {
+        normalized = re_dateparts.replace_all(&normalized, "${1}('${2}',").into_owned();
+    }
+
+    // 14. Strip SQL Server Query Hints: OPTION (MAXRECURSION 100, RECOMPILE, ...)
+    if let Ok(re_option) = regex::Regex::new(r"(?i)\bOPTION\s*\([^)]*\)") {
+        normalized = re_option.replace_all(&normalized, "").into_owned();
+    }
+
+    // 15. T-SQL TOP (N) [WITH TIES] / TOP N -> append LIMIT N
+    if let Ok(re_top) = regex::Regex::new(r"(?i)\bSELECT\s+TOP\s*\(?\s*(\d+)\s*\)?(?:\s+WITH\s+TIES)?\s+") {
         if let Some(caps) = re_top.captures(&normalized) {
             let limit_num = caps.get(1).map(|m| m.as_str()).unwrap_or("1000").to_string();
             normalized = re_top.replace(&normalized, "SELECT ").into_owned();
@@ -2179,5 +2236,238 @@ mod tests {
         db.execute_batch(generator_sql).expect("Should execute SQL Server generator query seamlessly");
         let result = db.query("SELECT count(*) as total FROM Customers;").expect("Should count customers");
         assert_eq!(result.rows[0].get("total").and_then(|v| v.as_i64()), Some(50));
+    }
+
+    #[test]
+    fn test_user_tsql_torture_single_statement() {
+        let db = NovaDb::open_in_memory().unwrap();
+        let query = r#"
+WITH RecursiveNumbers AS
+(
+    SELECT 1 AS n
+
+    UNION ALL
+
+    SELECT n + 1
+    FROM RecursiveNumbers
+    WHERE n < 10
+),
+FakeUsers AS
+(
+    SELECT *
+    FROM
+    (
+        VALUES
+            (1, N'Nguyễn Văn An',   N'Hà Nội',   CAST(1500000.50 AS DECIMAL(18,2)), CAST('2026-01-10' AS DATE)),
+            (2, N'Trần Minh Tuấn',  N'TP.HCM',   CAST(2750000.00 AS DECIMAL(18,2)), CAST('2026-02-15' AS DATE)),
+            (3, N'Lê Hoàng Nam',    N'Đà Nẵng',  CAST(820000.25  AS DECIMAL(18,2)), CAST('2026-03-20' AS DATE)),
+            (4, N'Phạm Thùy Linh',  N'Hà Nội',   CAST(5200000.75 AS DECIMAL(18,2)), CAST('2026-04-01' AS DATE)),
+            (5, N'Võ Quốc Bảo',     N'TP.HCM',   CAST(350000.00  AS DECIMAL(18,2)), CAST('2026-05-12' AS DATE)),
+            (6, N'Đặng Ngọc Anh',   NULL,         CAST(4100000.10 AS DECIMAL(18,2)), CAST('2026-06-22' AS DATE))
+    ) AS V(Id, FullName, City, Balance, CreatedAt)
+),
+Calculated AS
+(
+    SELECT
+        U.Id,
+        U.FullName,
+        COALESCE(U.City, N'Không xác định') AS City,
+        U.Balance,
+        U.CreatedAt,
+
+        U.Balance * 1.10 AS BalancePlus10Percent,
+
+        CASE
+            WHEN U.Balance >= 5000000 THEN N'VIP'
+            WHEN U.Balance >= 2000000 THEN N'PREMIUM'
+            WHEN U.Balance >= 1000000 THEN N'NORMAL'
+            ELSE N'LOW'
+        END AS CustomerLevel,
+
+        LEN(U.FullName) AS NameLength,
+        UPPER(U.FullName) AS UpperName,
+        LOWER(U.FullName) AS LowerName,
+        LEFT(U.FullName, 3) AS First3Chars,
+        RIGHT(U.FullName, 3) AS Last3Chars,
+        SUBSTRING(U.FullName, 2, 4) AS SubName,
+        REPLACE(U.FullName, N' ', N'-') AS SlugLikeName,
+
+        YEAR(U.CreatedAt) AS CreatedYear,
+        MONTH(U.CreatedAt) AS CreatedMonth,
+        DAY(U.CreatedAt) AS CreatedDay,
+
+        DATEADD(DAY, 30, U.CreatedAt) AS Plus30Days,
+        DATEDIFF(DAY, U.CreatedAt, CAST('2026-08-24' AS DATE)) AS DaysOld,
+
+        ROW_NUMBER() OVER (
+            ORDER BY U.Balance DESC
+        ) AS RowNumberByBalance,
+
+        RANK() OVER (
+            ORDER BY U.Balance DESC
+        ) AS RankByBalance,
+
+        DENSE_RANK() OVER (
+            ORDER BY U.Balance DESC
+        ) AS DenseRankByBalance,
+
+        LAG(U.Balance) OVER (
+            ORDER BY U.Id
+        ) AS PreviousBalance,
+
+        LEAD(U.Balance) OVER (
+            ORDER BY U.Id
+        ) AS NextBalance,
+
+        SUM(U.Balance) OVER () AS TotalBalance,
+
+        AVG(U.Balance) OVER () AS AverageBalance,
+
+        SUM(U.Balance) OVER (
+            PARTITION BY COALESCE(U.City, N'Không xác định')
+        ) AS CityTotalBalance,
+
+        COUNT(*) OVER (
+            PARTITION BY COALESCE(U.City, N'Không xác định')
+        ) AS CustomersInCity,
+
+        SUM(U.Balance) OVER (
+            ORDER BY U.Id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS RunningBalance
+
+    FROM FakeUsers AS U
+),
+CityStats AS
+(
+    SELECT
+        COALESCE(City, N'Không xác định') AS City,
+        COUNT(*) AS CustomerCount,
+        SUM(Balance) AS TotalCityBalance,
+        AVG(Balance) AS AverageCityBalance,
+        MIN(Balance) AS MinCityBalance,
+        MAX(Balance) AS MaxCityBalance
+    FROM FakeUsers
+    GROUP BY COALESCE(City, N'Không xác định')
+    HAVING COUNT(*) >= 1
+)
+SELECT TOP (100)
+    C.Id,
+    C.FullName,
+    C.City,
+    C.Balance,
+    CAST(C.Balance AS BIGINT) AS BalanceAsBigInt,
+    CAST(C.Balance AS VARCHAR(50)) AS BalanceAsText,
+
+    C.CreatedAt,
+    C.CustomerLevel,
+
+    C.NameLength,
+    C.UpperName,
+    C.LowerName,
+    C.First3Chars,
+    C.Last3Chars,
+    C.SubName,
+    C.SlugLikeName,
+
+    C.CreatedYear,
+    C.CreatedMonth,
+    C.CreatedDay,
+    C.Plus30Days,
+    C.DaysOld,
+
+    C.RowNumberByBalance,
+    C.RankByBalance,
+    C.DenseRankByBalance,
+    C.PreviousBalance,
+    C.NextBalance,
+
+    C.TotalBalance,
+    C.AverageBalance,
+    C.CityTotalBalance,
+    C.CustomersInCity,
+    C.RunningBalance,
+
+    S.CustomerCount,
+    S.TotalCityBalance,
+    S.AverageCityBalance,
+    S.MinCityBalance,
+    S.MaxCityBalance,
+
+    A.DoubleBalance,
+    A.BalanceCategory,
+
+    CASE
+        WHEN EXISTS
+        (
+            SELECT 1
+            FROM FakeUsers X
+            WHERE X.City = C.City
+              AND X.Id <> C.Id
+        )
+        THEN 1
+        ELSE 0
+    END AS HasOtherUserSameCity,
+
+    (
+        SELECT COUNT(*)
+        FROM RecursiveNumbers
+    ) AS RecursiveCTERows,
+
+    (
+        SELECT SUM(n)
+        FROM RecursiveNumbers
+    ) AS RecursiveCTESum,
+
+    NEWID() AS GeneratedUniqueIdentifier,
+
+    CONCAT(
+        C.FullName,
+        N' | ',
+        C.City,
+        N' | ',
+        CAST(C.Balance AS VARCHAR(50))
+    ) AS CombinedText
+
+FROM Calculated AS C
+
+INNER JOIN CityStats AS S
+    ON S.City = C.City
+
+CROSS APPLY
+(
+    SELECT
+        C.Balance * 2 AS DoubleBalance,
+
+        CASE
+            WHEN C.Balance > C.AverageBalance
+                THEN N'ABOVE_AVERAGE'
+            WHEN C.Balance = C.AverageBalance
+                THEN N'AVERAGE'
+            ELSE N'BELOW_AVERAGE'
+        END AS BalanceCategory
+) AS A
+
+WHERE
+    C.Balance > 0
+
+    AND C.Id IN
+    (
+        SELECT Id
+        FROM FakeUsers
+        WHERE Balance IS NOT NULL
+    )
+
+ORDER BY
+    C.Balance DESC,
+    C.Id ASC
+
+OPTION (MAXRECURSION 100);
+        "#;
+
+        let result = db.query(query).expect("Should successfully execute user torture test query");
+        assert_eq!(result.rows.len(), 6);
+        assert!(result.columns.contains(&"FullName".to_string()));
+        assert!(result.columns.contains(&"RowNumberByBalance".to_string()));
     }
 }
