@@ -157,6 +157,27 @@ pub fn register(connection: &Connection) -> Result<()> {
         Ok(s)
     })?;
 
+    // CHECKSUM(val) -> 32-bit signed integer (SQL Server compatible)
+    connection.create_scalar_function("checksum", 1, deterministic, |ctx| {
+        let val = ctx.get_raw(0);
+        let bytes = match val {
+            ValueRef::Blob(b) => b,
+            ValueRef::Text(t) => t,
+            ValueRef::Null => return Ok(0i64),
+            _ => {
+                let s = ctx.get::<String>(0)?;
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                use std::hash::Hasher;
+                hasher.write(s.as_bytes());
+                return Ok((hasher.finish() as i32) as i64);
+            }
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        use std::hash::Hasher;
+        hasher.write(bytes);
+        Ok((hasher.finish() as i32) as i64)
+    })?;
+
     Ok(())
 }
 

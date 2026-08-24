@@ -643,11 +643,31 @@ In SQL Server (T-SQL), row-by-row procedural loops (`WHILE` loops and `CURSOR`s)
 
 NovaDB includes an embedded real-time SQL dialect transpiler that accepts raw SQL Server and MySQL scripts without manual modification:
 
+* **T-SQL `SELECT TOP (N)` / `SELECT TOP N`**: Automatically transpiled to standard `LIMIT N`.
+* **T-SQL String Concatenation with `+`**: Automatically converts `'...' + ...` and `... + '...'` to standard ANSI string concatenation `||`.
+* **T-SQL `sys.all_objects` & `sys.objects`**: Built-in mock row generator supporting `CROSS JOIN` data generator loops up to millions of records.
+* **T-SQL `CHECKSUM(val)`**: Returns a 32-bit signed integer hash code, matching SQL Server `CHECKSUM(NEWID())` distributions.
+* **T-SQL `NEWID()` & `GEN_RANDOM_UUID()`**: Native scalar function aliases returning random UUID v4 strings.
 * **T-SQL `IDENTITY(1,1)`**: Automatically transpiled to `INTEGER PRIMARY KEY AUTOINCREMENT`.
 * **T-SQL Unicode Literals `N'...'`**: Automatically recognized as full UTF-8 Unicode strings (`N'Nguyễn Văn An'` -> `'Nguyễn Văn An'`).
 * **T-SQL Function Defaults**: `DEFAULT GETDATE()` and `DEFAULT SYSDATETIME()` are automatically converted to standard `DEFAULT (datetime('now'))`.
 * **MySQL `AUTO_INCREMENT`**: Automatically normalized to `AUTOINCREMENT`.
 * **Multi-Statement Script Execution**: Blocks containing `CREATE TABLE ...; INSERT INTO ...; SELECT ...;` automatically execute the schema/data batch and display the final query dataset directly in the grid.
+
+### 9.6 Full Data Type Mapping Matrix
+
+NovaDB accepts all standard SQL Server, MySQL, and PostgreSQL data types:
+
+| Data Type Category | Supported Syntax / SQL Server Type | Storage & Engine Affinity | Maximum Range / Notes |
+|:---|:---|:---|:---|
+| **Integers** | `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `IDENTITY(1,1)` | 64-bit Signed Integer | -9,223,372,036,854,775,808 to +9,223,372,036,854,775,807 |
+| **Exact Decimals** | `DECIMAL(p,s)`, `NUMERIC(p,s)`, `MONEY`, `SMALLMONEY` | 64-bit IEEE Floating Point / Scaled Decimal | High-precision financial amounts |
+| **Approximate Numerics**| `REAL`, `FLOAT`, `DOUBLE PRECISION` | 64-bit Floating Point | Standard scientific numbers |
+| **Unicode Strings** | `NVARCHAR(n)`, `NCHAR(n)`, `NTEXT`, `N'...'` | UTF-8 Text | Variable length UTF-8 encoded text |
+| **Standard Strings** | `VARCHAR(n)`, `CHAR(n)`, `TEXT`, `LONGTEXT` | UTF-8 Text | Variable length ASCII / UTF-8 |
+| **Date & Time** | `DATETIME`, `DATETIME2`, `SMALLDATETIME`, `TIMESTAMP`, `DATE`, `TIME` | ISO-8601 String / Epoch Milliseconds | Full timezone-aware calendar timestamps |
+| **Binary Objects** | `BLOB`, `VARBINARY`, `IMAGE`, `BINARY` | Binary Blob | Raw binary payloads up to storage limit |
+| **Modern Semantics** | `UUID`, `BOOLEAN`, `JSON` | Native Tagged Value | Native indexing and JSON path functions |
 
 ---
 

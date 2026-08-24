@@ -435,6 +435,45 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_def_now.replace_all(&normalized, "DEFAULT (datetime('now'))").into_owned();
     }
 
+    // 6. T-SQL sys.all_objects, sys.objects, sys.tables dummy row generators for cross joins
+    let sys_gen = "(SELECT n AS object_id, 'obj_' || n AS name FROM (WITH RECURSIVE gen(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM gen WHERE n < 2048) SELECT n FROM gen))";
+    if let Ok(re_sys) = regex::Regex::new(r"(?i)\bsys\.(?:all_objects|objects|tables)\b") {
+        normalized = re_sys.replace_all(&normalized, sys_gen).into_owned();
+    }
+
+    // 7. T-SQL String concatenation with + ('str' + or + 'str') -> ('str' || or || 'str')
+    if let Ok(re_str_plus) = regex::Regex::new(r"('(?:[^']|'')*')\s*\+\s*") {
+        normalized = re_str_plus.replace_all(&normalized, "${1} || ").into_owned();
+    }
+    if let Ok(re_plus_str) = regex::Regex::new(r"\s*\+\s*('(?:[^']|'')*')") {
+        normalized = re_plus_str.replace_all(&normalized, " || ${1}").into_owned();
+    }
+
+    // 8. T-SQL CAST(... AS NVARCHAR/VARCHAR/DECIMAL) -> CAST(... AS TEXT/REAL)
+    if let Ok(re_cast_str) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+N?VARCHAR(?:\(\s*\d+\s*\))?\s*\)") {
+        normalized = re_cast_str.replace_all(&normalized, "CAST(${1} AS TEXT)").into_owned();
+    }
+    if let Ok(re_cast_dec) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+DECIMAL(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\s*\)") {
+        normalized = re_cast_dec.replace_all(&normalized, "CAST(${1} AS REAL)").into_owned();
+    }
+
+    // 9. T-SQL TOP (N) / TOP N -> append LIMIT N
+    if let Ok(re_top) = regex::Regex::new(r"(?i)\bSELECT\s+TOP\s*\(?\s*(\d+)\s*\)?\s+") {
+        if let Some(caps) = re_top.captures(&normalized) {
+            let limit_num = caps.get(1).map(|m| m.as_str()).unwrap_or("1000").to_string();
+            normalized = re_top.replace(&normalized, "SELECT ").into_owned();
+            if !normalized.to_uppercase().contains("LIMIT") {
+                let trimmed = normalized.trim_end();
+                if trimmed.ends_with(';') {
+                    let without_semi = &trimmed[..trimmed.len() - 1];
+                    normalized = format!("{without_semi} LIMIT {limit_num};");
+                } else {
+                    normalized = format!("{trimmed} LIMIT {limit_num}");
+                }
+            }
+        }
+    }
+
     normalized
 }
 
@@ -2102,5 +2141,43 @@ mod tests {
         db.execute_batch(script).expect("Should execute SQL Server script seamlessly");
         let result = db.query("SELECT * FROM Customers;").expect("Should query Customers");
         assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn test_sql_server_mock_data_generator() {
+        let db = NovaDb::open_in_memory().unwrap();
+        let ddl = r#"
+            CREATE TABLE Customers (
+                Id INT IDENTITY(1,1) PRIMARY KEY,
+                FullName NVARCHAR(100),
+                Email VARCHAR(150),
+                Phone VARCHAR(20),
+                City NVARCHAR(100),
+                Balance DECIMAL(18,2),
+                CreatedAt DATETIME DEFAULT GETDATE()
+            );
+        "#;
+        db.execute_batch(ddl).unwrap();
+
+        let generator_sql = r#"
+            INSERT INTO Customers (FullName, Email, Phone, City, Balance)
+            SELECT TOP (50)
+                N'Khách hàng ' + CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS NVARCHAR(20)),
+                'user' + CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS VARCHAR(20)) + '@example.com',
+                '09' + RIGHT('00000000' + CAST(ABS(CHECKSUM(NEWID())) % 100000000 AS VARCHAR(8)), 8),
+                CASE ABS(CHECKSUM(NEWID())) % 5
+                    WHEN 0 THEN N'Hà Nội'
+                    WHEN 1 THEN N'TP.HCM'
+                    WHEN 2 THEN N'Đà Nẵng'
+                    WHEN 3 THEN N'Cần Thơ'
+                    ELSE N'Hải Phòng'
+                END,
+                CAST(ABS(CHECKSUM(NEWID())) % 1000 AS DECIMAL(18,2))
+            FROM sys.all_objects a
+            CROSS JOIN sys.all_objects b;
+        "#;
+        db.execute_batch(generator_sql).expect("Should execute SQL Server generator query seamlessly");
+        let result = db.query("SELECT count(*) as total FROM Customers;").expect("Should count customers");
+        assert_eq!(result.rows[0].get("total").and_then(|v| v.as_i64()), Some(50));
     }
 }

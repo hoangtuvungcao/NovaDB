@@ -17,6 +17,18 @@ pub fn register(connection: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8,
         |_ctx| Ok(Uuid::new_v4().to_string()),
     )?;
+    connection.create_scalar_function(
+        "newid",
+        0,
+        FunctionFlags::SQLITE_UTF8,
+        |_ctx| Ok(Uuid::new_v4().to_string()),
+    )?;
+    connection.create_scalar_function(
+        "gen_random_uuid",
+        0,
+        FunctionFlags::SQLITE_UTF8,
+        |_ctx| Ok(Uuid::new_v4().to_string()),
+    )?;
 
     // UUID_V7() — Generate a time-ordered UUID v7
     static SEQ: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
