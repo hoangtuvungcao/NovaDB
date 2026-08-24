@@ -1107,7 +1107,8 @@
     function switchMainTab(tabId, el) {
       document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
       document.querySelectorAll(".menu-item").forEach(m => m.classList.remove("active"));
-      document.getElementById(tabId).classList.add("active");
+      const target = document.getElementById(tabId);
+      if (target) target.classList.add("active");
       if (el) el.classList.add("active");
     }
 
@@ -1187,8 +1188,8 @@
       });
 
       if (shouldSwitchTab) {
-        const dataMenuBtn = document.querySelector('.menu-item[onclick*="tab-data"]');
-        switchMainTab("tab-data", dataMenuBtn);
+        const dataMenuBtn = document.querySelector('.menu-item[onclick*="table-panel"]');
+        switchMainTab("table-panel", dataMenuBtn);
       }
 
       refreshActiveTable();
