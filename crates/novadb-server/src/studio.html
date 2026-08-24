@@ -735,13 +735,26 @@
                 <input type="file" id="io-file-picker-sql" accept=".sql,.txt" onchange="onIoSqlFileSelected(this)" />
               </div>
 
-              <div class="form-group">
-                <label class="form-label">SQL Script Content (Multi-Table DDL & DML)</label>
-                <textarea id="io-sql-content" style="height: 140px; font-family: var(--font-mono); font-size: 11px;" placeholder="-- Paste multi-table CREATE TABLE, INSERT INTO scripts here..."></textarea>
+              <div id="io-sql-file-badge" style="display: none; padding: 8px 12px; background: #04070a; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; margin-bottom: 10px; justify-content: space-between; align-items: center;">
+                <span id="io-sql-file-info" style="font-family: var(--font-mono); color: var(--accent);"></span>
+                <button class="btn btn-sm" onclick="clearSelectedSqlFile()" style="padding: 2px 8px; font-size: 11px;">Remove File</button>
               </div>
-              <div style="display: flex; gap: 8px;">
-                <button class="btn btn-primary" onclick="submitSqlScriptFile()">Execute Full Database Script</button>
-                <button class="btn" onclick="document.getElementById('io-sql-content').value = ''">Clear</button>
+
+              <div class="form-group" id="io-sql-textarea-group">
+                <label class="form-label">Or Paste SQL Script Content</label>
+                <textarea id="io-sql-content" style="height: 110px; font-family: var(--font-mono); font-size: 11px;" placeholder="-- Paste multi-table CREATE TABLE, INSERT INTO scripts here..."></textarea>
+              </div>
+
+              <div style="margin-bottom: 12px;">
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer; color: var(--text-secondary);">
+                  <input type="checkbox" id="io-sql-if-not-exists" checked /> Safely ignore existing tables (auto-add <code>IF NOT EXISTS</code>)
+                </label>
+              </div>
+
+              <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                <button id="btn-exec-sql-file" class="btn btn-primary" onclick="submitSqlScriptFile()">Execute Full Database Script</button>
+                <button class="btn" onclick="clearSelectedSqlFile()">Clear</button>
+                <span id="io-sql-status-text" style="font-size: 12px; color: var(--text-tertiary);"></span>
               </div>
             </div>
 
@@ -2044,16 +2057,40 @@
       }
     }
 
+    let loadedSqlFileContent = "";
+
     function onIoSqlFileSelected(input) {
       const file = input.files && input.files[0];
       if (!file) return;
+
+      const badge = document.getElementById("io-sql-file-badge");
+      const info = document.getElementById("io-sql-file-info");
+      const textareaGroup = document.getElementById("io-sql-textarea-group");
+      
+      info.textContent = `Selected File: ${file.name} (${formatBytes(file.size)})`;
+      badge.style.display = "flex";
+      textareaGroup.style.display = "none";
+      
       const reader = new FileReader();
       reader.onload = (e) => {
-        const text = e.target.result;
-        document.getElementById("io-sql-content").value = text;
+        loadedSqlFileContent = e.target.result;
         logOps(`Loaded SQL script '${file.name}' (${formatBytes(file.size)}). Ready to execute on database '${activeDatabase}'.`);
       };
       reader.readAsText(file);
+    }
+
+    function clearSelectedSqlFile() {
+      loadedSqlFileContent = "";
+      const picker = document.getElementById("io-file-picker-sql");
+      if (picker) picker.value = "";
+      const badge = document.getElementById("io-sql-file-badge");
+      if (badge) badge.style.display = "none";
+      const textareaGroup = document.getElementById("io-sql-textarea-group");
+      if (textareaGroup) textareaGroup.style.display = "block";
+      const txt = document.getElementById("io-sql-content");
+      if (txt) txt.value = "";
+      const stat = document.getElementById("io-sql-status-text");
+      if (stat) stat.textContent = "";
     }
 
     function onIoCsvFileSelected(input) {
@@ -2070,26 +2107,47 @@
 
     async function submitSqlScriptFile() {
       if (!activeDatabase) return alert("Select database first");
-      const sql = document.getElementById("io-sql-content").value.trim();
-      if (!sql) return alert("No SQL script content found.");
+      let sql = loadedSqlFileContent || document.getElementById("io-sql-content").value.trim();
+      if (!sql) return alert("No SQL script content found. Select a .sql file or paste SQL script.");
 
+      const ifNotExists = document.getElementById("io-sql-if-not-exists").checked;
+      if (ifNotExists) {
+        sql = sql.replace(/\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)/gi, "CREATE TABLE IF NOT EXISTS ");
+      }
+
+      const btn = document.getElementById("btn-exec-sql-file");
+      const stat = document.getElementById("io-sql-status-text");
+      btn.disabled = true;
+      btn.textContent = "Executing Script...";
+      stat.textContent = "Processing SQL statements in database...";
       logOps(`Executing SQL file in '${activeDatabase}'...`);
+
+      const start = performance.now();
       try {
         const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
           method: "POST",
           headers: getAuthHeaders(),
           body: JSON.stringify({ sql })
         });
+        const elapsed = (performance.now() - start).toFixed(1);
+        btn.disabled = false;
+        btn.textContent = "Execute Full Database Script";
+
         if (res.ok) {
-          alert("SQL Script executed successfully!");
-          logOps("SQL Script execution SUCCESS.");
+          stat.innerHTML = `<span style="color: var(--success)">Executed successfully in ${elapsed} ms.</span>`;
+          logOps(`SQL Script execution SUCCESS (${elapsed} ms).`);
+          clearSelectedSqlFile();
           loadSidebarTables();
         } else {
           const errMsg = await parseApiError(res, "SQL execution failed");
+          stat.innerHTML = `<span style="color: var(--danger)">Execution failed (${elapsed} ms).</span>`;
           alert("SQL Execution Error:\n\n" + errMsg);
           logOps("SQL Script FAILED: " + errMsg);
         }
       } catch (e) {
+        btn.disabled = false;
+        btn.textContent = "Execute Full Database Script";
+        stat.innerHTML = `<span style="color: var(--danger)">Network error: ${escapeHtml(e.message)}</span>`;
         alert("Network Error: " + e.message);
       }
     }
