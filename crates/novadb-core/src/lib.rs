@@ -861,6 +861,19 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_openjson.replace_all(&normalized, "FROM (SELECT 1 AS ID, 'An' AS Name, 1000 AS Balance UNION ALL SELECT 2, 'Binh', 2000)").into_owned();
     }
 
+    // 29. T-SQL TRY_CAST / TRY_CONVERT / CONVERT
+    if let Ok(re_try_cast) = regex::Regex::new(r"(?i)\bTRY_CAST\s*\(\s*([\s\S]*?)\s+AS\s+([a-zA-Z0-9_()]+)\s*\)") {
+        normalized = re_try_cast.replace_all(&normalized, "CAST(${1} AS ${2})").into_owned();
+    }
+    if let Ok(re_conv) = regex::Regex::new(r"(?i)\bCONVERT\s*\(\s*([a-zA-Z0-9_()]+)\s*,\s*([^,]+?)(?:,\s*\d+)?\s*\)") {
+        normalized = re_conv.replace_all(&normalized, "CAST(${2} AS ${1})").into_owned();
+    }
+
+    // 30. T-SQL ISNULL(a, b) -> ifnull(a, b)
+    if let Ok(re_isnull) = regex::Regex::new(r"(?i)\bISNULL\s*\(") {
+        normalized = re_isnull.replace_all(&normalized, "ifnull(").into_owned();
+    }
+
     normalized
 }
 
@@ -3153,6 +3166,31 @@ OUTER APPLY
         "#;
         let s23_res = db.query(s23_query).unwrap();
         assert_eq!(s23_res.rows.len(), 6);
+
+        // Test Section 40, 41, 42, 71, 75, 80 T-SQL expressions
+        let s40_query = r#"
+SELECT
+    FullName,
+    COALESCE(City, 'Không xác định') AS City,
+    ISNULL(Phone, 'No Phone') AS Phone,
+    NULLIF(Balance, 0) AS NonZeroBalance,
+    TRY_CAST('123' AS INTEGER) AS ValidNumber,
+    TRY_CAST('ABC' AS INTEGER) AS InvalidNumber,
+    ISNUMERIC('12345') AS IsNum,
+    ISNUMERIC('ABC') AS NotNum,
+    OBJECT_ID('Customers') AS ObjId,
+    CHECKSUM(1, 'Nova', 'Hà Nội') AS Chk,
+    ISJSON('{"a":1}') AS IsJsonValid,
+    JSON_VALUE('{"a":"hello"}', '$.a') AS JsonVal
+FROM dbo.Customers
+LIMIT 1;
+        "#;
+        let s40_res = db.query(s40_query).unwrap();
+        assert_eq!(s40_res.rows.len(), 1);
+        assert_eq!(s40_res.rows[0].get("IsNum").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(s40_res.rows[0].get("NotNum").and_then(|v| v.as_i64()), Some(0));
+        assert_eq!(s40_res.rows[0].get("IsJsonValid").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(s40_res.rows[0].get("JsonVal").and_then(|v| v.as_str()), Some("hello"));
 
         // Test sys functions
         let sys_query = "SELECT @@VERSION AS ver, DB_NAME() AS db, SERVERPROPERTY('ProductVersion') AS pv, IIF(100 > 50, 'YES', 'NO') AS iif, CHOOSE(2, 'ONE', 'TWO', 'THREE') AS ch, GREATEST(10, 500, 30) AS gt, LEAST(10, 500, 30) AS lt;";

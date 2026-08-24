@@ -42,6 +42,90 @@ pub fn register(connection: &Connection) -> Result<()> {
         },
     )?;
 
+    // ISJSON(text) — T-SQL return 1 if valid, 0 if not
+    connection.create_scalar_function(
+        "isjson",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            if let Ok(text) = ctx.get::<String>(0) {
+                Ok(if serde_json::from_str::<Value>(&text).is_ok() { 1i64 } else { 0i64 })
+            } else {
+                Ok(0i64)
+            }
+        },
+    )?;
+
+    // JSON_VALUE(json, path) — T-SQL extract scalar
+    connection.create_scalar_function(
+        "json_value",
+        2,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let text: String = ctx.get(0)?;
+            let path: String = ctx.get(1)?;
+            let norm_path = if path.starts_with("$.") { &path[2..] } else if path.starts_with('$') { &path[1..] } else { &path };
+            match serde_json::from_str::<Value>(&text) {
+                Ok(v) => {
+                    let mut cur = &v;
+                    for part in norm_path.split('.') {
+                        if !part.is_empty() {
+                            if let Some(next) = cur.get(part) {
+                                cur = next;
+                            } else {
+                                return Ok(rusqlite::types::Value::Null);
+                            }
+                        }
+                    }
+                    match cur {
+                        Value::String(s) => Ok(rusqlite::types::Value::Text(s.clone())),
+                        Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                Ok(rusqlite::types::Value::Integer(i))
+                            } else if let Some(f) = n.as_f64() {
+                                Ok(rusqlite::types::Value::Real(f))
+                            } else {
+                                Ok(rusqlite::types::Value::Text(n.to_string()))
+                            }
+                        }
+                        Value::Bool(b) => Ok(rusqlite::types::Value::Integer(if *b { 1 } else { 0 })),
+                        Value::Null => Ok(rusqlite::types::Value::Null),
+                        other => Ok(rusqlite::types::Value::Text(other.to_string())),
+                    }
+                }
+                Err(_) => Ok(rusqlite::types::Value::Null),
+            }
+        },
+    )?;
+
+    // JSON_QUERY(json, path) — T-SQL extract object/array
+    connection.create_scalar_function(
+        "json_query",
+        2,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let text: String = ctx.get(0)?;
+            let path: String = ctx.get(1)?;
+            let norm_path = if path.starts_with("$.") { &path[2..] } else if path.starts_with('$') { &path[1..] } else { &path };
+            match serde_json::from_str::<Value>(&text) {
+                Ok(v) => {
+                    let mut cur = &v;
+                    for part in norm_path.split('.') {
+                        if !part.is_empty() {
+                            if let Some(next) = cur.get(part) {
+                                cur = next;
+                            } else {
+                                return Ok(rusqlite::types::Value::Null);
+                            }
+                        }
+                    }
+                    Ok(rusqlite::types::Value::Text(cur.to_string()))
+                }
+                Err(_) => Ok(rusqlite::types::Value::Null),
+            }
+        },
+    )?;
+
     // JSON_DEPTH(json) — Return maximum nesting depth
     connection.create_scalar_function(
         "json_depth",

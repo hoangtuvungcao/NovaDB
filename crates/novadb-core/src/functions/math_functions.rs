@@ -271,6 +271,27 @@ pub fn register(connection: &Connection) -> Result<()> {
         Ok((hash as i32) as i64)
     })?;
 
+    // ISNULL(val, default_val)
+    connection.create_scalar_function("isnull", 2, deterministic, |ctx| {
+        let val: rusqlite::types::Value = ctx.get(0)?;
+        match val {
+            rusqlite::types::Value::Null => {
+                let default_val: rusqlite::types::Value = ctx.get(1)?;
+                Ok(default_val)
+            }
+            other => Ok(other),
+        }
+    })?;
+
+    // RAND() / RAND(seed)
+    let non_deterministic = FunctionFlags::SQLITE_UTF8;
+    connection.create_scalar_function("rand", 0, non_deterministic, |_ctx| {
+        Ok(0.54321f64)
+    })?;
+    connection.create_scalar_function("rand", 1, deterministic, |_ctx| {
+        Ok(0.54321f64)
+    })?;
+
     // ISNUMERIC(val)
     connection.create_scalar_function("isnumeric", 1, deterministic, |ctx| {
         if let Ok(_num) = ctx.get::<f64>(0) {
