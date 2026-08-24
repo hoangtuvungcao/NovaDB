@@ -224,7 +224,8 @@ impl NovaDb {
         }))?;
 
         let execution = (|| {
-            let mut statement = connection.prepare(sql)?;
+            let normalized = normalize_sql_dialect(sql);
+            let mut statement = connection.prepare(&normalized)?;
             if !statement.readonly() {
                 return Err(Error::QueryMustBeReadOnly);
             }
@@ -397,7 +398,48 @@ impl NovaDb {
     }
 }
 
+pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
+    let mut normalized = sql.to_string();
+
+    // 1. T-SQL Unicode Literals: N'...' -> '...'
+    if let Ok(re_nstr) = regex::Regex::new(r"(?i)(\A|[^a-zA-Z0-9_#$])N'((?:[^']|'')*)'") {
+        normalized = re_nstr.replace_all(&normalized, "${1}'${2}'").into_owned();
+    }
+
+    // 2. T-SQL Identity: INT IDENTITY(1,1) PRIMARY KEY -> INTEGER PRIMARY KEY AUTOINCREMENT
+    if let Ok(re_id_pk) = regex::Regex::new(r"(?i)\bINT(?:EGER)?\s+IDENTITY(?:\(\s*\d+\s*,\s*\d+\s*\))?\s+PRIMARY\s+KEY\b") {
+        normalized = re_id_pk.replace_all(&normalized, "INTEGER PRIMARY KEY AUTOINCREMENT").into_owned();
+    }
+    if let Ok(re_id) = regex::Regex::new(r"(?i)\bIDENTITY(?:\(\s*\d+\s*,\s*\d+\s*\))?\b") {
+        normalized = re_id.replace_all(&normalized, "AUTOINCREMENT").into_owned();
+    }
+
+    // 3. MySQL AUTO_INCREMENT -> AUTOINCREMENT
+    if let Ok(re_ai) = regex::Regex::new(r"(?i)\bAUTO_INCREMENT\b") {
+        normalized = re_ai.replace_all(&normalized, "AUTOINCREMENT").into_owned();
+    }
+
+    // 4. Ensure INT PRIMARY KEY AUTOINCREMENT becomes INTEGER PRIMARY KEY AUTOINCREMENT
+    if let Ok(re_int_pk) = regex::Regex::new(r"(?i)\bINT\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b") {
+        normalized = re_int_pk.replace_all(&normalized, "INTEGER PRIMARY KEY AUTOINCREMENT").into_owned();
+    }
+
+    // 5. Function defaults in CREATE TABLE: DEFAULT GETDATE() -> DEFAULT (datetime('now'))
+    if let Ok(re_def_getdate) = regex::Regex::new(r"(?i)\bDEFAULT\s+GETDATE\(\)") {
+        normalized = re_def_getdate.replace_all(&normalized, "DEFAULT (datetime('now'))").into_owned();
+    }
+    if let Ok(re_def_sysdatetime) = regex::Regex::new(r"(?i)\bDEFAULT\s+SYSDATETIME\(\)") {
+        normalized = re_def_sysdatetime.replace_all(&normalized, "DEFAULT (datetime('now'))").into_owned();
+    }
+    if let Ok(re_def_now) = regex::Regex::new(r"(?i)\bDEFAULT\s+NOW\(\)") {
+        normalized = re_def_now.replace_all(&normalized, "DEFAULT (datetime('now'))").into_owned();
+    }
+
+    normalized
+}
+
 pub(crate) fn execute_guarded_sql(transaction: &Transaction<'_>, sql: &str) -> Result<()> {
+    let normalized = normalize_sql_dialect(sql);
     let trusted_sync_triggers = trusted_sync_trigger_names(transaction)?;
     let transaction_control_seen = Arc::new(AtomicBool::new(false));
     let authorizer_flag = Arc::clone(&transaction_control_seen);
@@ -417,7 +459,7 @@ pub(crate) fn execute_guarded_sql(transaction: &Transaction<'_>, sql: &str) -> R
             Authorization::Allow
         }
     }))?;
-    let execution = transaction.execute_batch(sql);
+    let execution = transaction.execute_batch(&normalized);
     transaction.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
     if transaction_control_seen.load(Ordering::Acquire) {
         return Err(Error::TransactionControlNotAllowed);
@@ -2036,5 +2078,29 @@ mod tests {
         assert!(db.enable_sync("pairs", "a").is_err());
         assert!(db.enable_sync("pairs;drop", "a").is_err());
         assert!(db.enable_sync("_novadb_meta", "key").is_err());
+    }
+
+    #[test]
+    fn test_sql_server_mysql_dialect_compatibility() {
+        let db = NovaDb::open_in_memory().unwrap();
+        let script = r#"
+            CREATE TABLE Customers (
+                Id INT IDENTITY(1,1) PRIMARY KEY,
+                FullName NVARCHAR(100),
+                Email VARCHAR(150),
+                Phone VARCHAR(20),
+                City NVARCHAR(100),
+                Balance DECIMAL(18,2),
+                CreatedAt DATETIME DEFAULT GETDATE()
+            );
+
+            INSERT INTO Customers (FullName, Email, Phone, City, Balance)
+            VALUES
+            (N'Nguyễn Văn An', 'an@gmail.com', '0901234567', N'Hà Nội', 1500000),
+            (N'Trần Minh Tuấn', 'tuan@gmail.com', '0912345678', N'TP.HCM', 2750000);
+        "#;
+        db.execute_batch(script).expect("Should execute SQL Server script seamlessly");
+        let result = db.query("SELECT * FROM Customers;").expect("Should query Customers");
+        assert_eq!(result.rows.len(), 2);
     }
 }

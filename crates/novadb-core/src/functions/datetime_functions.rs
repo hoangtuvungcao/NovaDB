@@ -66,6 +66,71 @@ pub fn register(connection: &Connection) -> Result<()> {
         },
     )?;
 
+    // GETDATE(), SYSDATETIME(), NOW() — SQL Server / MySQL aliases
+    connection.create_scalar_function(
+        "getdate",
+        0,
+        FunctionFlags::SQLITE_UTF8,
+        |_ctx| {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            let secs = now.as_secs();
+            let millis = now.subsec_millis();
+            let days = secs / 86_400;
+            let time_secs = secs % 86_400;
+            let hours = time_secs / 3_600;
+            let minutes = (time_secs % 3_600) / 60;
+            let seconds = time_secs % 60;
+            let (year, month, day) = days_to_ymd(days as i64);
+            Ok(format!(
+                "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
+            ))
+        },
+    )?;
+    connection.create_scalar_function(
+        "sysdatetime",
+        0,
+        FunctionFlags::SQLITE_UTF8,
+        |_ctx| {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            let secs = now.as_secs();
+            let millis = now.subsec_millis();
+            let days = secs / 86_400;
+            let time_secs = secs % 86_400;
+            let hours = time_secs / 3_600;
+            let minutes = (time_secs % 3_600) / 60;
+            let seconds = time_secs % 60;
+            let (year, month, day) = days_to_ymd(days as i64);
+            Ok(format!(
+                "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
+            ))
+        },
+    )?;
+    connection.create_scalar_function(
+        "now",
+        0,
+        FunctionFlags::SQLITE_UTF8,
+        |_ctx| {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            let secs = now.as_secs();
+            let millis = now.subsec_millis();
+            let days = secs / 86_400;
+            let time_secs = secs % 86_400;
+            let hours = time_secs / 3_600;
+            let minutes = (time_secs % 3_600) / 60;
+            let seconds = time_secs % 60;
+            let (year, month, day) = days_to_ymd(days as i64);
+            Ok(format!(
+                "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
+            ))
+        },
+    )?;
+
     // EPOCH_MS(iso_text) — Convert ISO 8601 string to Unix ms
     connection.create_scalar_function(
         "epoch_ms",

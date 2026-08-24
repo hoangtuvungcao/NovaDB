@@ -1212,6 +1212,46 @@
       statText.textContent = "Executing statement...";
       const start = performance.now();
 
+      const statements = sql.split(/;\s*(?=(?:[^']*'[^']*')*[^']*$)/).map(s => s.trim()).filter(s => s.length > 0);
+      const lastStmt = statements[statements.length - 1] || "";
+      const hasFinalSelect = statements.length > 1 && /^\s*(SELECT|WITH|EXPLAIN|PRAGMA|VALUES)/i.test(lastStmt);
+
+      if (hasFinalSelect) {
+        try {
+          const batchSql = statements.slice(0, -1).join(";\n") + ";";
+          const resBatch = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ sql: batchSql })
+          });
+          if (!resBatch.ok) {
+            const err = await resBatch.json().catch(() => ({ message: resBatch.statusText }));
+            const elapsed = (performance.now() - start).toFixed(1);
+            statText.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(err.message || resBatch.statusText)}</span> (${elapsed} ms)`;
+            document.getElementById("sql-results-table-box").innerHTML = `<div style="padding: 16px; color: var(--danger); font-family: var(--font-mono);">${escapeHtml(err.message || "Batch error")}</div>`;
+            return;
+          }
+
+          const resQuery = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/query", {
+            method: "POST",
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ sql: lastStmt })
+          });
+          const elapsed = (performance.now() - start).toFixed(1);
+          if (resQuery.ok) {
+            const data = await resQuery.json();
+            lastQueryData = data;
+            renderGrid("sql-results-table-box", data.columns, data.rows, false);
+            statText.textContent = `Batch executed & Query returned: ${data.rows.length} row(s) in ${elapsed} ms`;
+            loadSidebarTables();
+            return;
+          }
+        } catch (err) {
+          statText.innerHTML = `<span style="color: var(--danger)">Network Error: ${escapeHtml(err.message)}</span>`;
+          return;
+        }
+      }
+
       const isQuery = /^\s*(SELECT|WITH|EXPLAIN|PRAGMA|VALUES)/i.test(sql);
       const endpoint = isQuery ? "/query" : "/execute";
 
