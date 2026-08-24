@@ -406,6 +406,24 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_set.replace_all(&normalized, "").into_owned();
     }
 
+    // 0a. Strip / Comment SQL Server CREATE DATABASE and USE commands
+    if let Ok(re_create_db) = regex::Regex::new(r"(?i)\bCREATE\s+DATABASE\s+([a-zA-Z0-9_#$]+);?") {
+        normalized = re_create_db.replace_all(&normalized, "-- CREATE DATABASE ${1}\n").into_owned();
+    }
+    if let Ok(re_use_db) = regex::Regex::new(r"(?i)\bUSE\s+([a-zA-Z0-9_#$]+);?") {
+        normalized = re_use_db.replace_all(&normalized, "-- USE ${1}\n").into_owned();
+    }
+
+    // 0a2. Strip SQL Server GO batch separators
+    if let Ok(re_go) = regex::Regex::new(r"(?im)^\s*GO\s*;?\s*$") {
+        normalized = re_go.replace_all(&normalized, "\n").into_owned();
+    }
+
+    // 0a3. T-SQL inline column FOREIGN KEY REFERENCES -> REFERENCES
+    if let Ok(re_fk_ref) = regex::Regex::new(r"(?i)\bFOREIGN\s+KEY\s+REFERENCES\b") {
+        normalized = re_fk_ref.replace_all(&normalized, "REFERENCES").into_owned();
+    }
+
     // 0b. T-SQL IF OBJECT_ID(...) IS NOT NULL DROP TABLE #table -> DROP TABLE IF EXISTS temp_table
     if let Ok(re_drop_obj) = regex::Regex::new(r"(?i)\bIF\s+(?:OBJECT_ID\s*\([^)]*\)\s+IS\s+NOT\s+NULL|EXISTS\s*\([^)]*\))\s+DROP\s+TABLE\s+([a-zA-Z0-9_#$]+);?") {
         normalized = re_drop_obj.replace_all(&normalized, "DROP TABLE IF EXISTS ${1};").into_owned();
@@ -2556,5 +2574,92 @@ SELECT * FROM #nova_numeric;
 DROP TABLE #nova_numeric;
         "#;
         db.execute_batch(script).expect("Should execute full SQL Server temp table script");
+    }
+
+    #[test]
+    fn test_quan_ly_ban_hang_full_tsql_script() {
+        let db = NovaDb::open_in_memory().unwrap();
+        let script = r#"
+CREATE DATABASE QuanLyBanHang;
+GO
+
+USE QuanLyBanHang;
+GO
+
+CREATE TABLE BoPhan (
+    MaBP VARCHAR(10) PRIMARY KEY,
+    TenBP NVARCHAR(100) NOT NULL
+);
+
+CREATE TABLE NhomHang (
+    MaNhom VARCHAR(10) PRIMARY KEY,
+    TenNhom NVARCHAR(100) NOT NULL
+);
+
+CREATE TABLE KhachHang (
+    MaKH VARCHAR(10) PRIMARY KEY,
+    HoTen NVARCHAR(100) NOT NULL,
+    DiaChi NVARCHAR(200),
+    DienThoai VARCHAR(15),
+    Email VARCHAR(100)
+);
+
+CREATE TABLE NhanVien (
+    MaNV VARCHAR(10) PRIMARY KEY,
+    HoTen NVARCHAR(100) NOT NULL,
+    NgaySinh DATE,
+    Phai NVARCHAR(10) CHECK (Phai IN (N'Nam', N'Nữ', N'Khác')),
+    MaBP VARCHAR(10) FOREIGN KEY REFERENCES BoPhan(MaBP)
+);
+
+CREATE TABLE SanPham (
+    MaHang VARCHAR(10) PRIMARY KEY,
+    TenHang NVARCHAR(100) NOT NULL,
+    MaNhom VARCHAR(10) FOREIGN KEY REFERENCES NhomHang(MaNhom),
+    DonViTinh NVARCHAR(50),
+    SoLuongTon INT NOT NULL DEFAULT 0 CHECK (SoLuongTon >= 0),
+    DonGiaNhap DECIMAL(18, 2) NOT NULL DEFAULT 0 CHECK (DonGiaNhap >= 0),
+    DonGiaBan DECIMAL(18, 2) NOT NULL DEFAULT 0 CHECK (DonGiaBan >= 0)
+);
+
+CREATE TABLE DonHang (
+    IDDonHang VARCHAR(20) PRIMARY KEY,
+    NgayMua DATETIME NOT NULL DEFAULT GETDATE(),
+    MaKH VARCHAR(10) FOREIGN KEY REFERENCES KhachHang(MaKH),
+    MaNV VARCHAR(10) FOREIGN KEY REFERENCES NhanVien(MaNV),
+    TongTien DECIMAL(18, 2) NOT NULL DEFAULT 0 CHECK (TongTien >= 0),
+    TrangThai NVARCHAR(50) DEFAULT N'Chờ xử lý'
+);
+
+CREATE TABLE DonHangChiTiet (
+    IDDonHang VARCHAR(20) FOREIGN KEY REFERENCES DonHang(IDDonHang),
+    MaHang VARCHAR(10) FOREIGN KEY REFERENCES SanPham(MaHang),
+    SoLuong INT NOT NULL CHECK (SoLuong > 0),
+    DonGiaBan DECIMAL(18, 2) NOT NULL CHECK (DonGiaBan >= 0),
+    TienGiam DECIMAL(18, 2) NOT NULL DEFAULT 0 CHECK (TienGiam >= 0),
+    ThanhTien DECIMAL(18, 2) NOT NULL DEFAULT 0 CHECK (ThanhTien >= 0),
+    PRIMARY KEY (IDDonHang, MaHang)
+);
+
+CREATE TABLE Log_GiaBan (
+    IDLog INT IDENTITY(1,1) PRIMARY KEY,
+    MaHang VARCHAR(10) FOREIGN KEY REFERENCES SanPham(MaHang),
+    NgayThayDoi DATETIME NOT NULL DEFAULT GETDATE(),
+    GiaCu DECIMAL(18, 2) CHECK (GiaCu >= 0),
+    GiaMoi DECIMAL(18, 2) CHECK (GiaMoi >= 0),
+    NguoiThayDoi NVARCHAR(100)
+);
+GO
+        "#;
+
+        db.execute_batch(script).expect("Should execute full QuanLyBanHang script seamlessly");
+        let tables = db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;").unwrap();
+        let table_names: Vec<String> = tables.rows.iter().filter_map(|r| r.get("name").and_then(|v| v.as_str()).map(|s| s.to_string())).collect();
+        assert!(table_names.contains(&"BoPhan".to_string()));
+        assert!(table_names.contains(&"KhachHang".to_string()));
+        assert!(table_names.contains(&"SanPham".to_string()));
+        assert!(table_names.contains(&"DonHang".to_string()));
+        assert!(table_names.contains(&"DonHangChiTiet".to_string()));
+        assert!(table_names.contains(&"Log_GiaBan".to_string()));
     }
 }
