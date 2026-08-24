@@ -18,19 +18,19 @@ RED="$(tput setaf 1 2>/dev/null || echo '')"
 RESET="$(tput sgr0 2>/dev/null || echo '')"
 
 info() {
-    echo "${CYAN}${BOLD}==>${RESET} ${BOLD}$*${RESET}"
+    echo "[INFO] $*"
 }
 
 success() {
-    echo "${GREEN}${BOLD}✓${RESET} $*"
+    echo "[OK] $*"
 }
 
 warn() {
-    echo "${YELLOW}${BOLD}!${RESET} $*"
+    echo "[WARN] $*"
 }
 
 error() {
-    echo "${RED}${BOLD}✗${RESET} $*" >&2
+    echo "[ERROR] $*" >&2
     exit 1
 }
 
@@ -140,9 +140,9 @@ EOF
 fi
 
 echo ""
-echo "${GREEN}${BOLD}================================================================${RESET}"
-echo "${GREEN}${BOLD} 🎉 NovaDB is installed and ready!${RESET}"
-echo "${GREEN}${BOLD}================================================================${RESET}"
+echo "================================================================"
+echo " NovaDB is installed and ready."
+echo "================================================================"
 echo ""
 echo "  ${BOLD}Quick Start:${RESET}"
 echo "    novadb init myapp.novadb                    # Create a database"

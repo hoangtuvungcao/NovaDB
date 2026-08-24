@@ -4,517 +4,979 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>NovaDB Studio</title>
+  <title>NovaDB Web Admin Console</title>
   <style>
     :root {
-      --bg: #08100e;
-      --panel: #0e1815;
-      --panel-2: #14211d;
-      --line: #263a33;
-      --text: #edf7f2;
-      --muted: #8ba59a;
-      --mint: #58e6aa;
-      --mint-2: #20b87d;
-      --amber: #ffc66d;
-      --red: #ff7d83;
-      --shadow: 0 24px 70px rgba(0, 0, 0, .34);
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --bg: #0b1114;
+      --panel: #111a1f;
+      --panel-2: #17242b;
+      --panel-3: #1f303a;
+      --line: #263842;
+      --line-bright: #3b5361;
+      --text: #eef4f8;
+      --muted: #8ca3b0;
+      --accent: #38bdf8;
+      --accent-hover: #7dd3fc;
+      --accent-dark: #0369a1;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --danger: #f87171;
+      --code-bg: #080d10;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       min-height: 100vh;
       color: var(--text);
-      background:
-        radial-gradient(circle at 85% -10%, rgba(32, 184, 125, .15), transparent 34rem),
-        radial-gradient(circle at -10% 85%, rgba(88, 230, 170, .08), transparent 30rem),
-        var(--bg);
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
     }
-    button, input, select, textarea { font: inherit; }
-    button { cursor: pointer; }
-    .shell { display: grid; grid-template-columns: 278px minmax(0, 1fr); min-height: 100vh; }
-    .sidebar {
-      padding: 28px 22px;
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 24px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 800;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+    .brand-badge {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: var(--panel-3);
+      color: var(--accent);
+      border: 1px solid var(--line);
+      text-transform: uppercase;
+    }
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 5px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+    }
+    .status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+    }
+    .status-indicator.error { background: var(--danger); }
+    .status-indicator.warning { background: var(--warning); }
+    
+    .layout {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      flex: 1;
+      min-height: calc(100vh - 61px);
+    }
+    aside {
+      background: var(--panel);
       border-right: 1px solid var(--line);
-      background: rgba(8, 16, 14, .88);
-      backdrop-filter: blur(16px);
+      padding: 18px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
     }
-    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; }
-    .mark {
-      display: grid; place-items: center; width: 38px; height: 38px;
-      border: 1px solid rgba(88, 230, 170, .5); border-radius: 12px;
-      color: var(--mint); background: rgba(88, 230, 170, .08);
-      font: 800 19px/1 ui-monospace, monospace;
-      box-shadow: inset 0 0 25px rgba(88, 230, 170, .08);
+    .section-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
     }
-    .brand strong { display: block; letter-spacing: -.02em; }
-    .brand span { color: var(--muted); font-size: 12px; }
-    .label {
-      display: block; margin: 20px 0 8px; color: var(--muted);
-      font-size: 11px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase;
+    .db-select-box {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
-    .field, select, .database-input {
-      width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 10px;
-      color: var(--text); background: var(--panel); padding: 0 12px; outline: none;
+    select, input, textarea {
+      width: 100%;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
     }
-    .field:focus, select:focus, .database-input:focus, textarea:focus {
-      border-color: var(--mint-2); box-shadow: 0 0 0 3px rgba(32, 184, 125, .12);
+    select:focus, input:focus, textarea:focus {
+      border-color: var(--accent);
     }
-    .hint { margin: 7px 2px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
-    .row { display: flex; gap: 8px; }
-    .row > :first-child { min-width: 0; flex: 1; }
     .btn {
-      min-height: 40px; border: 1px solid var(--line); border-radius: 10px;
-      padding: 0 14px; color: var(--text); background: var(--panel-2); font-weight: 700;
-      transition: transform .15s ease, border-color .15s ease, background .15s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
     }
-    .btn:hover { transform: translateY(-1px); border-color: #3a554b; }
-    .btn:disabled { cursor: not-allowed; opacity: .45; transform: none; }
-    .btn-primary { border-color: var(--mint-2); color: #032d1e; background: var(--mint); }
-    .btn-primary:hover { background: #75f1be; border-color: #75f1be; }
-    .btn-compact { padding: 0 12px; }
-    .sidebar-footer { margin-top: 32px; padding-top: 18px; border-top: 1px solid var(--line); }
-    .maintenance-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-    .maintenance-grid .btn { min-height: 36px; padding: 0 7px; font-size: 10px; }
-    .maintenance-status { min-height: 32px; margin: 8px 2px 0; color: var(--muted); font-size: 10px; line-height: 1.5; word-break: break-word; }
-    .security-note { display: flex; gap: 9px; color: var(--muted); font-size: 11px; line-height: 1.55; }
-    .security-note b { color: var(--mint); }
-    main { min-width: 0; padding: 26px 30px 34px; }
-    .topbar { display: flex; justify-content: space-between; gap: 18px; align-items: center; margin-bottom: 22px; }
-    h1 { margin: 0; font-size: clamp(23px, 3vw, 34px); letter-spacing: -.04em; }
-    .subtitle { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
-    .statuses { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-    .status {
-      display: flex; align-items: center; gap: 7px; border: 1px solid var(--line);
-      border-radius: 999px; padding: 7px 11px; color: var(--muted); background: rgba(14, 24, 21, .72);
-      font-size: 12px; font-weight: 700;
+    .btn:hover {
+      background: var(--panel-3);
+      border-color: var(--line-bright);
     }
-    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 3px rgba(255, 198, 109, .1); }
-    .status.online .dot { background: var(--mint); box-shadow: 0 0 0 3px rgba(88, 230, 170, .12); }
-    .status.error .dot { background: var(--red); box-shadow: 0 0 0 3px rgba(255, 125, 131, .12); }
-    .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 18px; align-items: start; }
-    .stack { display: grid; gap: 18px; min-width: 0; }
-    .card { border: 1px solid var(--line); border-radius: 15px; background: rgba(14, 24, 21, .86); box-shadow: var(--shadow); overflow: hidden; }
-    .card-head {
-      min-height: 53px; padding: 12px 16px; display: flex; align-items: center;
-      justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line);
+    .btn-primary {
+      background: var(--accent);
+      color: #04121a;
+      border-color: var(--accent);
     }
-    .card-title { font-size: 13px; font-weight: 800; }
-    .card-meta { color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
-    textarea {
-      display: block; width: 100%; height: 235px; resize: vertical; border: 0; outline: 0;
-      padding: 19px; color: #d8f9e9; background: #09120f;
-      font: 14px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      tab-size: 2;
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
     }
-    .actions { display: flex; gap: 9px; padding: 12px 14px; border-top: 1px solid var(--line); background: var(--panel); }
-    .shortcut { margin-left: auto; align-self: center; color: var(--muted); font-size: 11px; }
-    kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 2px 5px; background: var(--panel-2); }
-    .results { min-height: 240px; max-height: 480px; overflow: auto; }
-    .empty { min-height: 220px; display: grid; place-items: center; padding: 30px; color: var(--muted); text-align: center; }
-    .empty strong { display: block; color: #b8cec5; margin-bottom: 6px; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th, td { padding: 11px 13px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; white-space: pre-wrap; word-break: break-word; }
-    th { position: sticky; top: 0; z-index: 1; color: var(--mint); background: #101d19; font: 700 11px ui-monospace, monospace; }
-    td { color: #cde0d8; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-    tr:hover td { background: rgba(88, 230, 170, .025); }
-    .schema { max-height: calc(100vh - 135px); overflow: auto; }
-    .schema-body { padding: 8px 13px 17px; }
-    .schema-group { margin-top: 15px; }
-    .schema-group-title { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; margin: 0 4px 7px; }
-    details { border: 1px solid transparent; border-radius: 9px; }
-    details[open] { border-color: var(--line); background: #0a1411; margin-bottom: 7px; }
-    summary { cursor: pointer; list-style: none; padding: 9px 10px; color: #d6e8e0; font: 12px ui-monospace, monospace; }
-    summary::-webkit-details-marker { display: none; }
-    summary::before { content: "›"; display: inline-block; color: var(--mint); margin-right: 8px; transition: transform .15s; }
-    details[open] summary::before { transform: rotate(90deg); }
-    .schema-sql { margin: 0; padding: 0 11px 11px 27px; color: var(--muted); white-space: pre-wrap; word-break: break-word; font: 10px/1.55 ui-monospace, monospace; }
-    .toast {
-      position: fixed; right: 24px; bottom: 24px; z-index: 20; max-width: 430px;
-      border: 1px solid var(--line); border-radius: 11px; padding: 12px 15px;
-      background: #16231f; color: var(--text); box-shadow: var(--shadow); font-size: 12px;
-      opacity: 0; transform: translateY(12px); pointer-events: none; transition: .2s ease;
+    .btn-danger {
+      background: rgba(248, 113, 113, 0.12);
+      color: var(--danger);
+      border-color: rgba(248, 113, 113, 0.3);
     }
-    .toast.show { opacity: 1; transform: translateY(0); }
-    .toast.error { border-color: rgba(255, 125, 131, .45); color: #ffd4d6; }
-    @media (max-width: 980px) {
-      .shell { grid-template-columns: 230px minmax(0, 1fr); }
-      .workspace { grid-template-columns: 1fr; }
-      .schema { max-height: 420px; }
+    .btn-danger:hover {
+      background: rgba(248, 113, 113, 0.2);
     }
-    @media (max-width: 700px) {
-      .shell { display: block; }
-      .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
-      .brand { margin-bottom: 18px; }
-      .sidebar-footer { display: none; }
-      main { padding: 22px 14px; }
-      .topbar { align-items: flex-start; flex-direction: column; }
-      .statuses { justify-content: flex-start; }
-      .shortcut { display: none; }
+    .btn-sm {
+      padding: 4px 8px;
+      font-size: 11px;
+    }
+    .nav-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-radius: 6px;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .nav-item:hover {
+      background: var(--panel-2);
+      color: var(--text);
+    }
+    .nav-item.active {
+      background: var(--panel-3);
+      color: var(--accent);
+      border-left: 3px solid var(--accent);
+    }
+    .table-list {
+      max-height: 220px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .table-item {
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--muted);
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .table-item:hover {
+      background: var(--panel-2);
+      color: var(--text);
+    }
+    .table-item.active {
+      color: var(--accent);
+      background: var(--panel-3);
+    }
+    
+    main {
+      padding: 20px 24px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: flex; flex-direction: column; gap: 20px; }
+    
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 18px;
+      background: var(--panel-2);
+      border-bottom: 1px solid var(--line);
+    }
+    .card-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .card-body {
+      padding: 16px 18px;
+    }
+    
+    textarea.sql-editor {
+      min-height: 140px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      background: var(--code-bg);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      resize: vertical;
+      padding: 12px;
+    }
+    .editor-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 10px;
+    }
+    .query-meta {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    
+    .table-wrapper {
+      overflow-x: auto;
+      max-height: 480px;
+    }
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      text-align: left;
+    }
+    table.data-table th {
+      background: var(--panel-3);
+      padding: 8px 12px;
+      font-weight: 700;
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      white-space: nowrap;
+    }
+    table.data-table td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      max-width: 320px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    table.data-table tr:hover td {
+      background: rgba(56, 189, 248, 0.04);
+    }
+    
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .stat-card {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 14px 16px;
+    }
+    .stat-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    .stat-value {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--text);
+      margin-top: 4px;
+      font-family: ui-monospace, SFMono-Regular, monospace;
     }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="mark">N</div>
-        <div><strong>NovaDB Studio</strong><span>Local-first control room</span></div>
+
+  <header>
+    <div class="brand">
+      <span>NovaDB</span>
+      <span class="brand-badge">Studio</span>
+    </div>
+    <div class="header-controls">
+      <div class="status-pill" id="server-status-pill">
+        <div class="status-indicator" id="status-indicator"></div>
+        <span id="server-status-text">Connecting...</span>
+      </div>
+      <input type="password" id="auth-token-input" placeholder="Bearer Token (Optional)" style="width: 200px; padding: 5px 10px; font-size: 12px;" />
+      <button class="btn btn-sm" onclick="saveAuthToken()">Set Token</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside>
+      <div>
+        <div class="section-title">Active Database</div>
+        <div class="db-select-box">
+          <select id="db-select" onchange="onDatabaseChange()">
+            <option value="">(Select Database)</option>
+          </select>
+          <div style="display: flex; gap: 6px;">
+            <input type="text" id="new-db-name" placeholder="new_db_name" style="padding: 6px 8px; font-size: 12px;" />
+            <button class="btn btn-primary btn-sm" onclick="createDatabase()">Create</button>
+          </div>
+        </div>
       </div>
 
-      <label class="label" for="token">Access token</label>
-      <div class="row">
-        <input class="field" id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Bearer token">
-        <button class="btn btn-compact" id="connect" type="button">Connect</button>
+      <div>
+        <div class="section-title">Navigation</div>
+        <div class="nav-list">
+          <div class="nav-item active" onclick="switchTab('sql-tab', this)">SQL Console</div>
+          <div class="nav-item" onclick="switchTab('table-tab', this)">Table Explorer</div>
+          <div class="nav-item" onclick="switchTab('schema-tab', this)">Schema Structure</div>
+          <div class="nav-item" onclick="switchTab('users-tab', this)">Users & RBAC</div>
+          <div class="nav-item" onclick="switchTab('backup-tab', this)">Backups & Maintenance</div>
+          <div class="nav-item" onclick="switchTab('metrics-tab', this)">Server Metrics</div>
+        </div>
       </div>
-      <p class="hint">Held only in this page's memory. It is never saved by Studio.</p>
 
-      <label class="label" for="database">Database</label>
-      <select id="database" aria-label="Selected database">
-        <option value="">Connect to load databases</option>
-      </select>
-
-      <label class="label" for="new-database">Create database</label>
-      <div class="row">
-        <input class="database-input" id="new-database" autocomplete="off" maxlength="128" placeholder="project_alpha">
-        <button class="btn btn-primary btn-compact" id="create" type="button">Create</button>
-      </div>
-      <p class="hint">IDs begin with a letter or number and may contain <code>_</code> or <code>-</code>.</p>
-
-      <span class="label">Maintenance</span>
-      <div class="maintenance-grid">
-        <button class="btn" id="maintenance-integrity" type="button">Integrity</button>
-        <button class="btn" id="maintenance-checkpoint" type="button">Checkpoint</button>
-        <button class="btn" id="maintenance-backup" type="button">Backup</button>
-      </div>
-      <p class="maintenance-status" id="maintenance-status">Select a database to run maintenance.</p>
-
-      <div class="sidebar-footer">
-        <div class="security-note"><b>◆</b><span>SQL and admin APIs use the same optional bearer authentication as relay sync.</span></div>
+      <div style="flex: 1;">
+        <div class="section-title">Tables in Database</div>
+        <div class="table-list" id="sidebar-table-list">
+          <div style="padding: 6px; font-size: 12px; color: var(--muted);">No tables loaded.</div>
+        </div>
       </div>
     </aside>
 
     <main>
-      <header class="topbar">
-        <div>
-          <h1>Database workspace</h1>
-          <p class="subtitle">Inspect schemas, explore data, and execute controlled migrations.</p>
-        </div>
-        <div class="statuses">
-          <div class="status" id="health-status"><span class="dot"></span><span>Server checking</span></div>
-          <div class="status" id="relay-status"><span class="dot"></span><span>Relay checking</span></div>
-        </div>
-      </header>
-
-      <div class="workspace">
-        <div class="stack">
-          <section class="card">
-            <div class="card-head"><span class="card-title">SQL editor</span><span class="card-meta" id="editor-context">No database selected</span></div>
-            <textarea id="sql" spellcheck="false" aria-label="SQL editor">SELECT name, type
-FROM sqlite_schema
-WHERE name NOT GLOB '_novadb_*'
-ORDER BY type, name;</textarea>
-            <div class="actions">
-              <button class="btn btn-primary" id="run-query" type="button">Run query</button>
-              <button class="btn" id="run-execute" type="button">Execute</button>
-              <span class="shortcut"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> query</span>
+      <!-- TAB 1: SQL Console -->
+      <div id="sql-tab" class="tab-content active">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">SQL Query Editor</span>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-sm" onclick="insertSqlTemplate('select')">Template: SELECT</button>
+              <button class="btn btn-sm" onclick="insertSqlTemplate('create')">Template: CREATE</button>
+              <button class="btn btn-sm" onclick="insertSqlTemplate('uuid')">Template: UUID v7</button>
             </div>
-          </section>
-
-          <section class="card">
-            <div class="card-head"><span class="card-title">Results</span><span class="card-meta" id="result-meta">Waiting</span></div>
-            <div class="results" id="results">
-              <div class="empty"><div><strong>Your results appear here</strong>Select a database and run a read-only query.</div></div>
+          </div>
+          <div class="card-body">
+            <textarea id="sql-input" class="sql-editor" placeholder="Write SQL statement here... (Press Ctrl+Enter or Cmd+Enter to execute)">SELECT 1 as id, uuid_v7() as sample_uuid, now_iso() as current_time;</textarea>
+            <div class="editor-actions">
+              <span class="query-meta" id="query-execution-meta">Ready</span>
+              <div style="display: flex; gap: 8px;">
+                <button class="btn" onclick="clearQuery()">Clear</button>
+                <button class="btn btn-primary" onclick="executeSql()">Execute (Ctrl+Enter)</button>
+              </div>
             </div>
-          </section>
+          </div>
         </div>
 
-        <aside class="card schema">
-          <div class="card-head"><span class="card-title">Schema</span><button class="btn btn-compact" id="refresh-schema" type="button">Refresh</button></div>
-          <div class="schema-body" id="schema"><div class="empty"><div><strong>No schema loaded</strong>Select a database to inspect it.</div></div></div>
-        </aside>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Query Results</span>
+            <div style="display: flex; gap: 6px;" id="result-export-actions">
+              <button class="btn btn-sm" onclick="exportResultsJson()">Export JSON</button>
+              <button class="btn btn-sm" onclick="exportResultsCsv()">Export CSV</button>
+            </div>
+          </div>
+          <div class="table-wrapper" id="query-results-wrapper">
+            <div class="empty-state">No query executed yet.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 2: Table Explorer -->
+      <div id="table-tab" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title" id="table-explorer-title">Browse Table</span>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <span style="font-size: 12px; color: var(--muted);">Limit:</span>
+              <select id="table-browse-limit" style="width: 80px; padding: 4px;" onchange="browseSelectedTable()">
+                <option value="50">50</option>
+                <option value="100" selected>100</option>
+                <option value="500">500</option>
+              </select>
+              <button class="btn btn-sm" onclick="browseSelectedTable()">Refresh</button>
+            </div>
+          </div>
+          <div class="table-wrapper" id="table-explorer-wrapper">
+            <div class="empty-state">Select a table from the sidebar to browse its rows.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 3: Schema Structure -->
+      <div id="schema-tab" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Database Schema & Table Definitions</span>
+            <button class="btn btn-sm" onclick="loadSchema()">Refresh Schema</button>
+          </div>
+          <div class="card-body" id="schema-content-wrapper">
+            <div class="empty-state">Loading schema...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 4: Users & RBAC -->
+      <div id="users-tab" class="tab-content">
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Create Database User</span>
+            </div>
+            <div class="card-body" style="display: flex; flex-direction: column; gap: 12px;">
+              <div>
+                <label class="section-title">Username</label>
+                <input type="text" id="new-username" placeholder="alice" />
+              </div>
+              <div>
+                <label class="section-title">Password</label>
+                <input type="password" id="new-user-pass" placeholder="password" />
+              </div>
+              <div>
+                <label class="section-title">Role / Privilege</label>
+                <select id="new-user-role">
+                  <option value="novadb_admin">novadb_admin (Superuser)</option>
+                  <option value="novadb_readwrite" selected>novadb_readwrite (Read & Write)</option>
+                  <option value="novadb_readonly">novadb_readonly (Read Only)</option>
+                </select>
+              </div>
+              <button class="btn btn-primary" onclick="createUserFromUi()">Create User</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Existing Users & Roles</span>
+              <button class="btn btn-sm" onclick="loadUsersAndRoles()">Refresh</button>
+            </div>
+            <div class="table-wrapper" id="users-table-wrapper">
+              <div class="empty-state">Loading users...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 5: Backups & Maintenance -->
+      <div id="backup-tab" class="tab-content">
+        <div class="grid-3">
+          <div class="stat-card">
+            <div class="stat-label">Online Backup</div>
+            <p style="font-size: 12px; color: var(--muted); margin: 6px 0 12px;">Create consistent point-in-time snapshot.</p>
+            <button class="btn btn-primary btn-sm" onclick="triggerBackup()">Create Snapshot Backup</button>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Integrity Check</div>
+            <p style="font-size: 12px; color: var(--muted); margin: 6px 0 12px;">Full page and index validation.</p>
+            <button class="btn btn-sm" onclick="triggerIntegrityCheck()">Run Integrity Check</button>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">WAL Checkpoint</div>
+            <p style="font-size: 12px; color: var(--muted); margin: 6px 0 12px;">Flush and truncate write-ahead log.</p>
+            <button class="btn btn-sm" onclick="triggerWalCheckpoint()">Run WAL Checkpoint</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Maintenance Activity Log</span>
+          </div>
+          <div class="card-body" id="maintenance-log-wrapper">
+            <div style="font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted);" id="maintenance-log-text">No maintenance tasks performed in this session.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 6: Server Metrics -->
+      <div id="metrics-tab" class="tab-content">
+        <div class="grid-3" id="metrics-stat-grid">
+          <div class="stat-card">
+            <div class="stat-label">Server Status</div>
+            <div class="stat-value" id="stat-server-status">ONLINE</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Managed Databases</div>
+            <div class="stat-value" id="stat-db-count">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Protocol Gateways</div>
+            <div class="stat-value" style="font-size: 14px; margin-top: 8px;">HTTP (8787) / PG (5432)</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Managed Databases Overview</span>
+            <button class="btn btn-sm" onclick="loadDatabases()">Refresh List</button>
+          </div>
+          <div class="table-wrapper" id="databases-table-wrapper">
+            <div class="empty-state">Loading databases...</div>
+          </div>
+        </div>
       </div>
     </main>
   </div>
-  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script>
-    (() => {
-      "use strict";
-      const state = { token: "", database: "" };
-      const $ = (id) => document.getElementById(id);
-      const token = $("token");
-      const database = $("database");
-      const sql = $("sql");
-      let toastTimer;
+    let activeDatabase = "";
+    let activeSelectedTable = "";
+    let lastQueryRows = [];
+    let lastQueryColumns = [];
 
-      token.addEventListener("input", () => { state.token = token.value; });
+    document.addEventListener("DOMContentLoaded", () => {
+      loadAuthToken();
+      checkServerHealth();
+      loadDatabases();
 
-      function notify(message, error = false) {
-        const element = $("toast");
-        element.textContent = message;
-        element.className = `toast show${error ? " error" : ""}`;
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => { element.className = "toast"; }, 3600);
-      }
-
-      async function api(path, options = {}) {
-        const headers = new Headers(options.headers || {});
-        if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
-        if (options.body) headers.set("Content-Type", "application/json");
-        const response = await fetch(path, { ...options, headers });
-        const text = await response.text();
-        let body = null;
-        if (text) {
-          try { body = JSON.parse(text); } catch (_) { body = { error: { message: text } }; }
+      // Keyboard shortcut for SQL execution (Ctrl+Enter or Cmd+Enter)
+      document.getElementById("sql-input").addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+          e.preventDefault();
+          executeSql();
         }
-        if (!response.ok) {
-          throw new Error(body?.error?.message || `Request failed (${response.status})`);
-        }
-        return body;
-      }
-
-      function setStatus(id, label, kind) {
-        const element = $(id);
-        element.className = `status ${kind || ""}`;
-        element.querySelector("span:last-child").textContent = label;
-      }
-
-      async function checkHealth() {
-        try {
-          const health = await api("/health");
-          setStatus("health-status", `Server ${health.version}`, "online");
-          setStatus("relay-status", "Relay ready", "online");
-        } catch (error) {
-          setStatus("health-status", "Server offline", "error");
-          setStatus("relay-status", "Relay unavailable", "error");
-        }
-      }
-
-      async function loadDatabases(selectId = state.database) {
-        try {
-          const result = await api("/v1/admin/databases");
-          database.replaceChildren();
-          const placeholder = document.createElement("option");
-          placeholder.value = "";
-          placeholder.textContent = result.databases.length ? "Select a database" : "No databases yet";
-          database.append(placeholder);
-          result.databases.forEach((item) => {
-            const option = document.createElement("option");
-            option.value = item.id;
-            option.textContent = `${item.id} · ${formatBytes(item.size_bytes)}`;
-            database.append(option);
-          });
-          if (selectId && result.databases.some((item) => item.id === selectId)) {
-            database.value = selectId;
-          }
-          state.database = database.value;
-          updateContext();
-          if (state.database) await loadSchema();
-          notify(`Connected · ${result.databases.length} database${result.databases.length === 1 ? "" : "s"}`);
-        } catch (error) {
-          notify(error.message, true);
-        }
-      }
-
-      async function createDatabase() {
-        const input = $("new-database");
-        const id = input.value.trim();
-        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) {
-          notify("Use a valid database ID: letters, numbers, _ or -", true);
-          return;
-        }
-        try {
-          await api(`/v1/admin/databases/${encodeURIComponent(id)}`, { method: "POST" });
-          input.value = "";
-          state.database = id;
-          await loadDatabases(id);
-          notify(`Database ${id} is ready`);
-        } catch (error) {
-          notify(error.message, true);
-        }
-      }
-
-      function updateContext() {
-        $("editor-context").textContent = state.database || "No database selected";
-      }
-
-      async function run(mode) {
-        if (!state.database) { notify("Select a database first", true); return; }
-        const statement = sql.value.trim();
-        if (!statement) { notify("Enter a SQL statement", true); return; }
-        const started = performance.now();
-        setBusy(true);
-        try {
-          const result = await api(
-            `/v1/databases/${encodeURIComponent(state.database)}/sql/${mode}`,
-            { method: "POST", body: JSON.stringify({ sql: statement }) }
-          );
-          const elapsed = Math.round(performance.now() - started);
-          if (mode === "query") {
-            renderResults(result);
-            $("result-meta").textContent = `${result.rows.length} row${result.rows.length === 1 ? "" : "s"} · ${elapsed} ms`;
-          } else {
-            renderMessage("Execution committed", "The SQL batch completed atomically.");
-            $("result-meta").textContent = `Success · ${elapsed} ms`;
-            await loadSchema();
-          }
-        } catch (error) {
-          renderMessage("Request failed", error.message);
-          $("result-meta").textContent = "Error";
-          notify(error.message, true);
-        } finally {
-          setBusy(false);
-        }
-      }
-
-      function setBusy(busy) {
-        $("run-query").disabled = busy;
-        $("run-execute").disabled = busy;
-      }
-
-      function renderResults(result) {
-        const root = $("results");
-        root.replaceChildren();
-        if (!result.rows.length) {
-          renderMessage("Query complete", "No rows returned.");
-          return;
-        }
-        const table = document.createElement("table");
-        const head = document.createElement("thead");
-        const headerRow = document.createElement("tr");
-        result.columns.forEach((column) => {
-          const cell = document.createElement("th");
-          cell.textContent = column;
-          headerRow.append(cell);
-        });
-        head.append(headerRow);
-        const body = document.createElement("tbody");
-        result.rows.forEach((row) => {
-          const tableRow = document.createElement("tr");
-          result.columns.forEach((column) => {
-            const cell = document.createElement("td");
-            const value = row[column];
-            cell.textContent = value === null ? "NULL" : typeof value === "object" ? JSON.stringify(value) : String(value);
-            tableRow.append(cell);
-          });
-          body.append(tableRow);
-        });
-        table.append(head, body);
-        root.append(table);
-      }
-
-      function renderMessage(title, message) {
-        const wrapper = document.createElement("div");
-        wrapper.className = "empty";
-        const content = document.createElement("div");
-        const heading = document.createElement("strong");
-        heading.textContent = title;
-        content.append(heading, document.createTextNode(message));
-        wrapper.append(content);
-        $("results").replaceChildren(wrapper);
-      }
-
-      async function loadSchema() {
-        if (!state.database) return;
-        try {
-          const result = await api(`/v1/databases/${encodeURIComponent(state.database)}/schema`);
-          renderSchema(result);
-        } catch (error) {
-          notify(error.message, true);
-        }
-      }
-
-      async function runMaintenance(action) {
-        if (!state.database) { notify("Select a database first", true); return; }
-        const button = $(`maintenance-${action}`);
-        button.disabled = true;
-        $("maintenance-status").textContent = `Running ${action}…`;
-        try {
-          const result = await api(
-            `/v1/databases/${encodeURIComponent(state.database)}/maintenance/${action}`,
-            { method: "POST" }
-          );
-          let status;
-          if (action === "integrity") {
-            status = result.ok ? "Integrity check: OK" : `Integrity issues: ${result.messages.join(" · ")}`;
-          } else if (action === "checkpoint") {
-            status = result.busy
-              ? "Checkpoint is busy; retry later"
-              : `Checkpoint complete · ${result.checkpointed_frames}/${result.log_frames} frames`;
-          } else {
-            status = `Backup ready · ${result.backup_id} · ${formatBytes(result.size_bytes)}`;
-          }
-          $("maintenance-status").textContent = status;
-          notify(status, action === "integrity" && !result.ok);
-        } catch (error) {
-          $("maintenance-status").textContent = error.message;
-          notify(error.message, true);
-        } finally {
-          button.disabled = false;
-        }
-      }
-
-      function renderSchema(schema) {
-        const root = $("schema");
-        root.replaceChildren();
-        const groups = [["Tables", schema.tables], ["Indexes", schema.indexes], ["Triggers", schema.triggers]];
-        groups.forEach(([title, items]) => {
-          const group = document.createElement("section");
-          group.className = "schema-group";
-          const heading = document.createElement("div");
-          heading.className = "schema-group-title";
-          const name = document.createElement("span");
-          name.textContent = title;
-          const count = document.createElement("span");
-          count.textContent = String(items.length);
-          heading.append(name, count);
-          group.append(heading);
-          items.forEach((item) => {
-            const details = document.createElement("details");
-            const summary = document.createElement("summary");
-            summary.textContent = item.name;
-            const definition = document.createElement("pre");
-            definition.className = "schema-sql";
-            definition.textContent = item.sql || `${title.slice(0, -1)} attached to ${item.table}`;
-            details.append(summary, definition);
-            group.append(details);
-          });
-          root.append(group);
-        });
-      }
-
-      function formatBytes(bytes) {
-        if (bytes < 1024) return `${bytes} B`;
-        if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
-        return `${(bytes / 1048576).toFixed(1)} MB`;
-      }
-
-      $("connect").addEventListener("click", () => loadDatabases());
-      $("create").addEventListener("click", createDatabase);
-      $("new-database").addEventListener("keydown", (event) => {
-        if (event.key === "Enter") createDatabase();
       });
-      database.addEventListener("change", () => {
-        state.database = database.value;
-        updateContext();
+    });
+
+    function getAuthHeaders() {
+      const token = localStorage.getItem("novadb_token") || "";
+      const headers = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = "Bearer " + token;
+      }
+      return headers;
+    }
+
+    function saveAuthToken() {
+      const input = document.getElementById("auth-token-input");
+      localStorage.setItem("novadb_token", input.value.trim());
+      alert("Token saved. Refreshing databases...");
+      loadDatabases();
+    }
+
+    function loadAuthToken() {
+      const token = localStorage.getItem("novadb_token") || "";
+      document.getElementById("auth-token-input").value = token;
+    }
+
+    async function checkServerHealth() {
+      try {
+        const res = await fetch("/health");
+        if (res.ok) {
+          document.getElementById("status-indicator").className = "status-indicator";
+          document.getElementById("server-status-text").textContent = "Connected (Healthy)";
+        } else {
+          document.getElementById("status-indicator").className = "status-indicator warning";
+          document.getElementById("server-status-text").textContent = "Status: " + res.status;
+        }
+      } catch (err) {
+        document.getElementById("status-indicator").className = "status-indicator error";
+        document.getElementById("server-status-text").textContent = "Disconnected";
+      }
+    }
+
+    async function loadDatabases() {
+      try {
+        const res = await fetch("/v1/databases", { headers: getAuthHeaders() });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        
+        const select = document.getElementById("db-select");
+        select.innerHTML = '<option value="">(Select Database)</option>';
+        
+        let dbRowsHtml = `<table class="data-table"><thead><tr><th>Database ID</th><th>Size</th><th>Status</th><th>Device UUID</th></tr></thead><tbody>`;
+
+        if (Array.isArray(data)) {
+          document.getElementById("stat-db-count").textContent = data.length;
+          data.forEach(db => {
+            const opt = document.createElement("option");
+            opt.value = db.id;
+            opt.textContent = db.id + " (" + formatBytes(db.size_bytes) + ")";
+            select.appendChild(opt);
+
+            dbRowsHtml += `<tr>
+              <td><b>${escapeHtml(db.id)}</b></td>
+              <td>${formatBytes(db.size_bytes)}</td>
+              <td>${db.open ? '<span style="color: var(--success)">OPEN</span>' : 'IDLE'}</td>
+              <td>${escapeHtml(db.device_id || 'N/A')}</td>
+            </tr>`;
+          });
+        }
+        dbRowsHtml += `</tbody></table>`;
+        document.getElementById("databases-table-wrapper").innerHTML = dbRowsHtml;
+
+        // Auto-select if first database or saved database
+        if (select.options.length > 1) {
+          if (!activeDatabase) {
+            select.selectedIndex = 1;
+            onDatabaseChange();
+          } else {
+            select.value = activeDatabase;
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load databases:", err);
+      }
+    }
+
+    function onDatabaseChange() {
+      const select = document.getElementById("db-select");
+      activeDatabase = select.value;
+      if (activeDatabase) {
+        loadSidebarTables();
         loadSchema();
-      });
-      $("run-query").addEventListener("click", () => run("query"));
-      $("run-execute").addEventListener("click", () => run("execute"));
-      $("refresh-schema").addEventListener("click", loadSchema);
-      $("maintenance-integrity").addEventListener("click", () => runMaintenance("integrity"));
-      $("maintenance-checkpoint").addEventListener("click", () => runMaintenance("checkpoint"));
-      $("maintenance-backup").addEventListener("click", () => runMaintenance("backup"));
-      sql.addEventListener("keydown", (event) => {
-        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-          event.preventDefault();
-          run("query");
+      }
+    }
+
+    async function createDatabase() {
+      const input = document.getElementById("new-db-name");
+      const name = input.value.trim();
+      if (!name) return alert("Please provide a database name");
+
+      try {
+        const res = await fetch("/v1/databases/" + encodeURIComponent(name), {
+          method: "POST",
+          headers: getAuthHeaders(),
+        });
+        if (!res.ok) throw new Error("Failed to create database: " + res.statusText);
+        input.value = "";
+        alert("Database `" + name + "` created!");
+        activeDatabase = name;
+        await loadDatabases();
+        document.getElementById("db-select").value = name;
+        onDatabaseChange();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function loadSidebarTables() {
+      if (!activeDatabase) return;
+      try {
+        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + "/schema", {
+          headers: getAuthHeaders(),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        const list = document.getElementById("sidebar-table-list");
+        list.innerHTML = "";
+
+        if (Array.isArray(data.tables) && data.tables.length > 0) {
+          data.tables.forEach(tbl => {
+            const div = document.createElement("div");
+            div.className = "table-item" + (activeSelectedTable === tbl.name ? " active" : "");
+            div.textContent = tbl.name;
+            div.onclick = () => {
+              activeSelectedTable = tbl.name;
+              document.querySelectorAll(".table-item").forEach(el => el.classList.remove("active"));
+              div.classList.add("active");
+              switchTab("table-tab", document.querySelectorAll(".nav-item")[1]);
+              browseSelectedTable();
+            };
+            list.appendChild(div);
+          });
+        } else {
+          list.innerHTML = '<div style="padding: 6px; font-size: 12px; color: var(--muted);">(No user tables)</div>';
         }
+      } catch (err) {
+        console.error("Failed to load tables:", err);
+      }
+    }
+
+    async function executeSql() {
+      if (!activeDatabase) return alert("Please select or create a database first.");
+      const sqlInput = document.getElementById("sql-input");
+      const sql = sqlInput.value.trim();
+      if (!sql) return;
+
+      const meta = document.getElementById("query-execution-meta");
+      meta.textContent = "Executing...";
+      const startTime = performance.now();
+
+      const isQuery = /^\s*(SELECT|EXPLAIN|PRAGMA|WITH|VALUES)/i.test(sql);
+      const endpoint = isQuery ? "/query" : "/exec";
+
+      try {
+        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + endpoint, {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ sql }),
+        });
+        const elapsed = (performance.now() - startTime).toFixed(1);
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({ message: res.statusText }));
+          meta.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(errData.message || res.statusText)}</span> (${elapsed} ms)`;
+          document.getElementById("query-results-wrapper").innerHTML = `<div class="empty-state" style="color: var(--danger)">${escapeHtml(errData.message || "Query execution failed")}</div>`;
+          return;
+        }
+
+        const data = await res.json();
+        if (isQuery && data.columns && data.rows) {
+          lastQueryColumns = data.columns;
+          lastQueryRows = data.rows;
+          renderQueryResultTable("query-results-wrapper", data.columns, data.rows);
+          meta.textContent = `${data.rows.length} row(s) returned in ${elapsed} ms`;
+        } else {
+          meta.textContent = `Statement executed successfully in ${elapsed} ms`;
+          document.getElementById("query-results-wrapper").innerHTML = `<div class="empty-state" style="color: var(--success)">Executed successfully.</div>`;
+          loadSidebarTables();
+        }
+      } catch (err) {
+        meta.innerHTML = `<span style="color: var(--danger)">Network Error: ${escapeHtml(err.message)}</span>`;
+      }
+    }
+
+    function renderQueryResultTable(containerId, columns, rows) {
+      const container = document.getElementById(containerId);
+      if (rows.length === 0) {
+        container.innerHTML = '<div class="empty-state">0 rows returned.</div>';
+        return;
+      }
+
+      let html = '<table class="data-table"><thead><tr>';
+      columns.forEach(col => {
+        html += `<th>${escapeHtml(col)}</th>`;
+      });
+      html += '</tr></thead><tbody>';
+
+      rows.forEach(row => {
+        html += '<tr>';
+        columns.forEach(col => {
+          const val = row[col];
+          const displayVal = val === null || val === undefined ? '<span style="color: var(--muted)">NULL</span>' : (typeof val === 'object' ? JSON.stringify(val) : escapeHtml(String(val)));
+          html += `<td>${displayVal}</td>`;
+        });
+        html += '</tr>';
       });
 
-      checkHealth();
-    })();
+      html += '</tbody></table>';
+      container.innerHTML = html;
+    }
+
+    async function browseSelectedTable() {
+      if (!activeDatabase || !activeSelectedTable) return;
+      document.getElementById("table-explorer-title").textContent = "Table: " + activeSelectedTable;
+      const limit = document.getElementById("table-browse-limit").value || "100";
+      const sql = `SELECT * FROM "${activeSelectedTable}" LIMIT ${limit};`;
+
+      try {
+        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + "/query", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ sql }),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        renderQueryResultTable("table-explorer-wrapper", data.columns, data.rows);
+      } catch (err) {
+        document.getElementById("table-explorer-wrapper").innerHTML = `<div class="empty-state" style="color: var(--danger)">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function loadSchema() {
+      if (!activeDatabase) return;
+      const wrapper = document.getElementById("schema-content-wrapper");
+      wrapper.innerHTML = "Loading schema...";
+
+      try {
+        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + "/schema", {
+          headers: getAuthHeaders(),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+
+        if (!data.tables || data.tables.length === 0) {
+          wrapper.innerHTML = '<div class="empty-state">No tables in database yet. Use SQL Console to CREATE TABLE.</div>';
+          return;
+        }
+
+        let html = "";
+        data.tables.forEach(tbl => {
+          html += `<div style="margin-bottom: 24px;">
+            <div style="font-size: 14px; font-weight: 700; margin-bottom: 8px; font-family: monospace;">TABLE: ${escapeHtml(tbl.name)}</div>
+            <pre style="background: var(--code-bg); padding: 12px; border-radius: 6px; border: 1px solid var(--line); font-size: 12px; overflow-x: auto;">${escapeHtml(tbl.sql || "N/A")}</pre>
+          </div>`;
+        });
+        wrapper.innerHTML = html;
+      } catch (err) {
+        wrapper.innerHTML = `<div class="empty-state" style="color: var(--danger)">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    async function triggerBackup() {
+      if (!activeDatabase) return alert("Select a database first");
+      appendMaintenanceLog(`Initiating online backup for database '${activeDatabase}'...`);
+      try {
+        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + "/backup", {
+          method: "POST",
+          headers: getAuthHeaders(),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          appendMaintenanceLog(`Backup SUCCESS: File created '${data.backup_id}' (${formatBytes(data.size_bytes)})`);
+        } else {
+          appendMaintenanceLog(`Backup FAILED: ${data.message || res.statusText}`);
+        }
+      } catch (err) {
+        appendMaintenanceLog(`Backup ERROR: ${err.message}`);
+      }
+    }
+
+    async function triggerIntegrityCheck() {
+      if (!activeDatabase) return alert("Select a database first");
+      appendMaintenanceLog(`Running integrity check for '${activeDatabase}'...`);
+      try {
+        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + "/integrity", {
+          method: "POST",
+          headers: getAuthHeaders(),
+        });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          appendMaintenanceLog(`Integrity Check PASSED: Database pages and indexes are consistent.`);
+        } else {
+          appendMaintenanceLog(`Integrity Check REPORT: ${JSON.stringify(data)}`);
+        }
+      } catch (err) {
+        appendMaintenanceLog(`Integrity ERROR: ${err.message}`);
+      }
+    }
+
+    async function triggerWalCheckpoint() {
+      if (!activeDatabase) return alert("Select a database first");
+      appendMaintenanceLog(`Running WAL checkpoint truncate on '${activeDatabase}'...`);
+      try {
+        const res = await fetch("/v1/databases/" + encodeURIComponent(activeDatabase) + "/checkpoint", {
+          method: "POST",
+          headers: getAuthHeaders(),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          appendMaintenanceLog(`WAL Checkpoint SUCCESS: Log flushed and truncated.`);
+        } else {
+          appendMaintenanceLog(`WAL Checkpoint FAILED: ${data.message || res.statusText}`);
+        }
+      } catch (err) {
+        appendMaintenanceLog(`Checkpoint ERROR: ${err.message}`);
+      }
+    }
+
+    function appendMaintenanceLog(msg) {
+      const log = document.getElementById("maintenance-log-text");
+      const timestamp = new Date().toISOString();
+      log.textContent = `[${timestamp}] ${msg}\n` + log.textContent;
+    }
+
+    function switchTab(tabId, el) {
+      document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+      document.getElementById(tabId).classList.add("active");
+      if (el) el.classList.add("active");
+    }
+
+    function insertSqlTemplate(type) {
+      const input = document.getElementById("sql-input");
+      if (type === 'select') {
+        input.value = `SELECT * FROM (SELECT 1 as id, 'Alice' as name) LIMIT 10;`;
+      } else if (type === 'create') {
+        input.value = `CREATE TABLE items (\n  id TEXT PRIMARY KEY,\n  title TEXT NOT NULL,\n  data JSON,\n  created_at TEXT NOT NULL\n);`;
+      } else if (type === 'uuid') {
+        input.value = `SELECT uuid_v7() as new_id, now_iso() as timestamp, sha256('test') as hash;`;
+      }
+    }
+
+    function clearQuery() {
+      document.getElementById("sql-input").value = "";
+      document.getElementById("sql-input").focus();
+    }
+
+    function exportResultsJson() {
+      if (lastQueryRows.length === 0) return alert("No data to export");
+      const blob = new Blob([JSON.stringify(lastQueryRows, null, 2)], { type: "application/json" });
+      downloadBlob(blob, "novadb_export.json");
+    }
+
+    function exportResultsCsv() {
+      if (lastQueryRows.length === 0 || lastQueryColumns.length === 0) return alert("No data to export");
+      let csv = lastQueryColumns.join(",") + "\n";
+      lastQueryRows.forEach(row => {
+        const line = lastQueryColumns.map(col => {
+          let val = row[col] === null || row[col] === undefined ? "" : String(row[col]);
+          return `"${val.replace(/"/g, '""')}"`;
+        }).join(",");
+        csv += line + "\n";
+      });
+      const blob = new Blob([csv], { type: "text/csv" });
+      downloadBlob(blob, "novadb_export.csv");
+    }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes || bytes === 0) return "0 B";
+      const k = 1024;
+      const sizes = ["B", "KB", "MB", "GB"];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+    }
   </script>
 </body>
 </html>

@@ -120,9 +120,9 @@ LAPTOP_DATA=$("$NOVADB" query "$LAPTOP" "SELECT id, title, body FROM notes ORDER
 PHONE_DATA=$("$NOVADB" query "$PHONE" "SELECT id, title, body FROM notes ORDER BY id")
 
 if [ "$LAPTOP_DATA" = "$PHONE_DATA" ]; then
-    echo "   ✓ Replicas converged!"
+    echo "   [PASS] Replicas converged!"
 else
-    echo "   ✗ Replicas diverged!"
+    echo "   [FAIL] Replicas diverged!"
     echo "   Laptop: $LAPTOP_DATA"
     echo "   Phone:  $PHONE_DATA"
     exit 1

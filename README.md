@@ -12,40 +12,60 @@ rich extended SQL functions (JSON, UUID v7, DateTime, Unicode, String Aggregates
 
 ## Key Features
 
-### 🔌 PostgreSQL Wire Protocol & Universal Tooling
+### PostgreSQL Wire Protocol and Universal Tooling
 - Direct compatibility with `psql`, DBeaver, DataGrip, TablePlus, and pgAdmin.
-- Works out-of-the-box with any standard driver: Node.js (`pg`, `postgres.js`), Python (`psycopg2`, `asyncpg`), Go (`database/sql`, `pgx`), Java (JDBC), and ORMs (Prisma, Drizzle, SQLAlchemy).
+- Works out-of-the-box with any standard driver: Node.js (`pg`, `postgres.js`), Python (`psycopg2`, `asyncpg`), Go (`database/sql`, `pgx`), PHP (`pdo_pgsql`), Java (JDBC), C# (.NET Npgsql), Ruby (`pg`), C/C++ (`libpq`), and ORMs (Prisma, Drizzle, SQLAlchemy, Entity Framework).
 - Supports SSL negotiation, Simple Query Protocol, Extended Query Protocol, and transaction state tracking.
 
-### ⚡ Connection Pooling & Concurrency
+### Connection Pooling and Concurrency
 - `NovaDbPool`: Multi-reader, single-writer concurrency backed by SQLite WAL mode.
 - Parallel lock-free reads across multiple connections.
 - Thread-safe, RAII connection acquisition with automatic recycling.
 
-### 🛠️ Rich SQL Function Library
+### Rich SQL Function Library
 - **UUIDs**: `UUID_V4()`, `UUID_V7()` (time-ordered monotonic UUIDs), `UUID_IS_VALID()`, `UUID_TO_BLOB()`.
-- **Date & Time**: `NOW_MS()`, `NOW_ISO()`, `DATE_PART()`, `DATE_TRUNC()`, `EPOCH_MS()`, `FROM_EPOCH_MS()`, `AGE_MS()`.
+- **Date and Time**: `NOW_MS()`, `NOW_ISO()`, `DATE_PART()`, `DATE_TRUNC()`, `EPOCH_MS()`, `FROM_EPOCH_MS()`, `AGE_MS()`.
 - **JSON (RFC 7396)**: `JSON_PRETTY()`, `JSON_VALID_STRICT()`, `JSON_DEPTH()`, `JSON_KEYS()`, `JSON_MERGE_PATCH()`, `JSON_CONTAINS()`, `JSON_STRIP_NULLS()`.
-- **Strings & Unicode**: `REGEXP`, `ILIKE`, `REVERSE()`, `LEFT()`, `RIGHT()`, `SPLIT_PART()`, `LPAD()`, `RPAD()`, `SHA256()`, `INITCAP()`, `ENCODE_HEX()`.
+- **Strings and Unicode**: `REGEXP`, `ILIKE`, `REVERSE()`, `LEFT()`, `RIGHT()`, `SPLIT_PART()`, `LPAD()`, `RPAD()`, `SHA256()`, `INITCAP()`, `ENCODE_HEX()`.
 - **Extended Aggregates**: `STRING_AGG()`, `JSON_AGG()`, `JSON_OBJECT_AGG()`, `ARRAY_AGG()`, `BIT_AND()`, `BIT_OR()`, `BIT_XOR()`, `BOOL_AND()`, `BOOL_OR()`, `EVERY()`.
 
-### 🔐 Security & RBAC
+### Security and RBAC
 - Built-in user authentication with salted password hashing.
 - Role-based access control (RBAC): `_novadb_users`, `_novadb_roles`, `_novadb_user_roles`, `_novadb_grants`.
 - Built-in administrative, read-only, and read-write roles.
 
-### 🔄 Local-First Synchronization & Replication
+### Local-First Synchronization and Replication
 - Outbound deterministic change capture with Hybrid Logical Clocks (HLC).
 - Conflict-free Last-Writer-Wins (LWW) resolution across distributed replicas.
 - Durable HTTP synchronization relay with cursor-based pagination.
 - In-process reactive change subscriptions.
 
-### 🛡️ Operational Reliability
+### Operational Reliability and Web Console
+- Integrated Web Admin Studio (phpMyAdmin / pgAdmin alternative) with query editor, table explorer, schema inspector, user manager, and backups.
 - Online zero-downtime backups, database integrity checks, and WAL checkpoints.
 - Immutable, SHA-256 checksum-verified migration engine.
 - Single-command universal installer (`scripts/install.sh`) with systemd service generation.
 
-Rust 1.85 or newer is required.
+---
+
+## Multi-Language Client Examples
+
+NovaDB includes tested, complete client connection examples in `examples/clients/`:
+
+- **PHP (PDO)**: `examples/clients/php/client.php`
+- **Rust (tokio-postgres)**: `examples/clients/rust/`
+- **Node.js / TypeScript (pg)**: `examples/clients/nodejs/`
+- **Python (psycopg2)**: `examples/clients/python/`
+- **Go (database/sql + lib/pq)**: `examples/clients/go/`
+- **Java / Kotlin (JDBC)**: `examples/clients/java/NovaDbDemo.java`
+- **C# / .NET (Npgsql)**: `examples/clients/dotnet/`
+- **Ruby (pg)**: `examples/clients/ruby/client.rb`
+- **C / C++ (libpq)**: `examples/clients/c/client.c`
+- **cURL (HTTP REST API)**: `examples/clients/curl/api_demo.sh`
+
+---
+
+## Build
 
 ```bash
 cargo build --release
