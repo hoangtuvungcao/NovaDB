@@ -739,7 +739,8 @@
       try {
         const res = await fetch("/v1/admin/databases", { headers: getAuthHeaders() });
         if (!res.ok) throw new Error("HTTP " + res.status);
-        const list = await res.json();
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data.databases || []);
         
         const select = document.getElementById("db-select");
         select.innerHTML = "";

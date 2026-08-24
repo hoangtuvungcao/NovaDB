@@ -150,11 +150,18 @@ pub fn router_with_catalog(
     });
 
     Ok(Router::new()
+        .route("/", get(studio))
         .route("/health", get(health))
         .route("/studio", get(studio))
         .route("/studio/", get(studio))
         .route("/v1/admin/databases", get(list_databases))
         .route("/v1/admin/databases/{database}", post(create_database))
+        .route("/v1/admin/databases/{database}/query", post(sql_query))
+        .route("/v1/admin/databases/{database}/execute", post(sql_execute))
+        .route("/v1/admin/databases/{database}/schema", get(schema))
+        .route("/v1/admin/databases/{database}/backup", post(backup))
+        .route("/v1/admin/databases/{database}/integrity", post(integrity_check))
+        .route("/v1/admin/databases/{database}/checkpoint", post(wal_checkpoint))
         .route("/v1/databases/{database}/push", post(push))
         .route("/v1/databases/{database}/pull", get(pull))
         .route("/v1/databases/{database}/sql/query", post(sql_query))
