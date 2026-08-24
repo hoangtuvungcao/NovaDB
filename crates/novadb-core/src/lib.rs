@@ -401,13 +401,53 @@ impl NovaDb {
 pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
     let mut normalized = sql.to_string();
 
+    // 0. Strip SQL Server SET session commands (SET NOCOUNT ON, SET ANSI_NULLS ON, etc.)
+    if let Ok(re_set) = regex::Regex::new(r"(?i)\bSET\s+(?:NOCOUNT|ANSI_NULLS|QUOTED_IDENTIFIER|XACT_ABORT|ARITHABORT|ANSI_WARNINGS|ANSI_PADDING|NUMERIC_ROUNDABORT)\s+[a-zA-Z0-9_ -]+;?") {
+        normalized = re_set.replace_all(&normalized, "").into_owned();
+    }
+
+    // 0b. T-SQL IF OBJECT_ID(...) IS NOT NULL DROP TABLE #table -> DROP TABLE IF EXISTS temp_table
+    if let Ok(re_drop_obj) = regex::Regex::new(r"(?i)\bIF\s+(?:OBJECT_ID\s*\([^)]*\)\s+IS\s+NOT\s+NULL|EXISTS\s*\([^)]*\))\s+DROP\s+TABLE\s+([a-zA-Z0-9_#$]+);?") {
+        normalized = re_drop_obj.replace_all(&normalized, "DROP TABLE IF EXISTS ${1};").into_owned();
+    }
+
+    // 0c. T-SQL #temp tables -> temp_tablename
+    if let Ok(re_temptbl) = regex::Regex::new(r"#([a-zA-Z0-9_]+)") {
+        normalized = re_temptbl.replace_all(&normalized, "temp_${1}").into_owned();
+    }
+
+    // 0d. T-SQL Hex literals 0x01020304 -> X'01020304'
+    if let Ok(re_hex) = regex::Regex::new(r"\b0x([0-9a-fA-F]{2,})\b") {
+        normalized = re_hex.replace_all(&normalized, "X'${1}'").into_owned();
+    }
+
+    // 0e. T-SQL Data types in DDL
+    if let Ok(re_vbin) = regex::Regex::new(r"(?i)\bVARBINARY(?:\(\s*(?:MAX|\d+)\s*\))?\b") {
+        normalized = re_vbin.replace_all(&normalized, "BLOB").into_owned();
+    }
+    if let Ok(re_vmax) = regex::Regex::new(r"(?i)\bN?(?:VAR)?CHAR\s*\(\s*MAX\s*\)") {
+        normalized = re_vmax.replace_all(&normalized, "TEXT").into_owned();
+    }
+    if let Ok(re_uid) = regex::Regex::new(r"(?i)\b(?:UNIQUEIDENTIFIER|SQL_VARIANT|XML)\b") {
+        normalized = re_uid.replace_all(&normalized, "TEXT").into_owned();
+    }
+    if let Ok(re_money) = regex::Regex::new(r"(?i)\b(?:SMALL)?MONEY\b") {
+        normalized = re_money.replace_all(&normalized, "REAL").into_owned();
+    }
+    if let Ok(re_bit) = regex::Regex::new(r"(?i)\b(?:BIT|TINYINT|SMALLINT|BIGINT)\b") {
+        normalized = re_bit.replace_all(&normalized, "INTEGER").into_owned();
+    }
+    if let Ok(re_dt) = regex::Regex::new(r"(?i)\b(?:DATETIME2?|DATETIMEOFFSET|DATE|TIME)\b") {
+        normalized = re_dt.replace_all(&normalized, "TEXT").into_owned();
+    }
+
     // 1. T-SQL Unicode Literals: N'...' -> '...'
     if let Ok(re_nstr) = regex::Regex::new(r"(?i)(\A|[^a-zA-Z0-9_#$])N'((?:[^']|'')*)'") {
         normalized = re_nstr.replace_all(&normalized, "${1}'${2}'").into_owned();
     }
 
     // 2. T-SQL Identity: INT IDENTITY(1,1) PRIMARY KEY -> INTEGER PRIMARY KEY AUTOINCREMENT
-    if let Ok(re_id_pk) = regex::Regex::new(r"(?i)\bINT(?:EGER)?\s+IDENTITY(?:\(\s*\d+\s*,\s*\d+\s*\))?\s+PRIMARY\s+KEY\b") {
+    if let Ok(re_id_pk) = regex::Regex::new(r"(?i)\b(?:INT(?:EGER)?|BIGINT|SMALLINT|TINYINT)\s+IDENTITY(?:\(\s*\d+\s*,\s*\d+\s*\))?\s+PRIMARY\s+KEY\b") {
         normalized = re_id_pk.replace_all(&normalized, "INTEGER PRIMARY KEY AUTOINCREMENT").into_owned();
     }
     if let Ok(re_id) = regex::Regex::new(r"(?i)\bIDENTITY(?:\(\s*\d+\s*,\s*\d+\s*\))?\b") {
@@ -420,7 +460,7 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
     }
 
     // 4. Ensure INT PRIMARY KEY AUTOINCREMENT becomes INTEGER PRIMARY KEY AUTOINCREMENT
-    if let Ok(re_int_pk) = regex::Regex::new(r"(?i)\bINT\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b") {
+    if let Ok(re_int_pk) = regex::Regex::new(r"(?i)\b(?:INT|BIGINT|SMALLINT)\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b") {
         normalized = re_int_pk.replace_all(&normalized, "INTEGER PRIMARY KEY AUTOINCREMENT").into_owned();
     }
 
@@ -2469,5 +2509,52 @@ OPTION (MAXRECURSION 100);
         assert_eq!(result.rows.len(), 6);
         assert!(result.columns.contains(&"FullName".to_string()));
         assert!(result.columns.contains(&"RowNumberByBalance".to_string()));
+    }
+
+    #[test]
+    fn test_sql_server_temp_tables_and_types_script() {
+        let db = NovaDb::open_in_memory().unwrap();
+        let script = r#"
+SET NOCOUNT ON;
+
+IF OBJECT_ID('tempdb..#nova_numeric') IS NOT NULL
+    DROP TABLE #nova_numeric;
+
+CREATE TABLE #nova_numeric
+(
+    c_tinyint TINYINT,
+    c_smallint SMALLINT,
+    c_int INT,
+    c_bigint BIGINT,
+    c_decimal DECIMAL(18,4),
+    c_numeric NUMERIC(18,4),
+    c_money MONEY,
+    c_smallmoney SMALLMONEY,
+    c_real REAL,
+    c_float FLOAT,
+    c_bit BIT
+);
+
+INSERT INTO #nova_numeric
+VALUES
+(
+    255,
+    32000,
+    2000000000,
+    9000000000000,
+    123456.7890,
+    987654.3210,
+    1000.50,
+    100.25,
+    1.25,
+    3.14159,
+    1
+);
+
+SELECT * FROM #nova_numeric;
+
+DROP TABLE #nova_numeric;
+        "#;
+        db.execute_batch(script).expect("Should execute full SQL Server temp table script");
     }
 }
