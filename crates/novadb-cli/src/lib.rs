@@ -57,6 +57,10 @@ pub enum Command {
     Serve(ServeArgs),
     /// Open an interactive SQL shell (REPL console) for a database.
     Console(ConsoleArgs),
+    /// Import CSV data into a database table.
+    Import(ImportArgs),
+    /// Export query results to a CSV or JSON file.
+    Export(ExportArgs),
 }
 
 #[derive(Debug, Args)]
@@ -382,7 +386,139 @@ pub async fn run_with(cli: Cli) -> Result<()> {
         Command::Remote(args) => remote_command(&args).await,
         Command::Serve(args) => serve(&args).await,
         Command::Console(args) => console(&args),
+        Command::Import(args) => import(&args),
+        Command::Export(args) => export(&args),
     }
+}
+
+#[derive(Debug, Args)]
+pub struct ImportArgs {
+    /// Path to the local `NovaDB` database file.
+    #[arg(value_name = "DATABASE_PATH")]
+    pub path: PathBuf,
+
+    /// Path to the CSV file to import.
+    #[arg(value_name = "CSV_FILE")]
+    pub file: PathBuf,
+
+    /// Target table name to insert data into.
+    #[arg(value_name = "TABLE_NAME")]
+    pub table: String,
+
+    /// Delimiter character (default: comma ',').
+    #[arg(long, default_value = ",")]
+    pub delimiter: char,
+}
+
+fn import(args: &ImportArgs) -> Result<()> {
+    let db = NovaDb::open(&args.path)?;
+    let content = std::fs::read_to_string(&args.file)
+        .map_err(|e| anyhow::anyhow!("Failed to read CSV file '{}': {e}", args.file.display()))?;
+
+    let mut lines = content.lines().filter(|l| !l.trim().is_empty());
+    let header_line = lines.next().ok_or_else(|| anyhow::anyhow!("CSV file is empty"))?;
+
+    let headers: Vec<&str> = header_line.split(args.delimiter).map(|s| s.trim()).collect();
+    if headers.is_empty() {
+        bail!("No headers found in CSV file");
+    }
+
+    let escaped_cols = headers
+        .iter()
+        .map(|h| format!("\"{}\"", h.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut count = 0usize;
+    let mut batch_sql = String::new();
+
+    for line in lines {
+        let values: Vec<&str> = line.split(args.delimiter).collect();
+        if values.len() != headers.len() {
+            continue;
+        }
+
+        let val_literals: Vec<String> = values
+            .iter()
+            .map(|v| {
+                let trimmed = v.trim().trim_matches('"');
+                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+                    "NULL".to_string()
+                } else if trimmed.parse::<f64>().is_ok() && !trimmed.starts_with('0') || trimmed == "0" {
+                    trimmed.to_string()
+                } else {
+                    format!("'{}'", trimmed.replace('\'', "''"))
+                }
+            })
+            .collect();
+
+        batch_sql.push_str(&format!(
+            "INSERT INTO \"{}\" ({}) VALUES ({});\n",
+            args.table.replace('"', "\"\""),
+            escaped_cols,
+            val_literals.join(", ")
+        ));
+        count += 1;
+    }
+
+    if !batch_sql.is_empty() {
+        db.execute_batch(&batch_sql)?;
+    }
+
+    println!("[SUCCESS] Imported {} record(s) into table '{}' from '{}'", count, args.table, args.file.display());
+    Ok(())
+}
+
+#[derive(Debug, Args)]
+pub struct ExportArgs {
+    /// Path to the local `NovaDB` database file.
+    #[arg(value_name = "DATABASE_PATH")]
+    pub path: PathBuf,
+
+    /// SQL query to execute.
+    #[arg(value_name = "QUERY")]
+    pub query: String,
+
+    /// Target destination file (e.g. results.csv or results.json).
+    #[arg(value_name = "OUTPUT_FILE")]
+    pub output: PathBuf,
+}
+
+fn export(args: &ExportArgs) -> Result<()> {
+    let db = NovaDb::open(&args.path)?;
+    let result = db.query(&args.query)?;
+
+    let is_json = args.output.extension().and_then(|ext| ext.to_str()).map(|s| s.eq_ignore_ascii_case("json")).unwrap_or(false);
+
+    if is_json {
+        let json_str = serde_json::to_string_pretty(&result.rows)?;
+        std::fs::write(&args.output, json_str)?;
+    } else {
+        // Default to CSV format
+        let mut csv = String::new();
+        // Header
+        csv.push_str(&result.columns.iter().map(|c| format!("\"{}\"", c.replace('"', "\"\""))).collect::<Vec<_>>().join(","));
+        csv.push('\n');
+
+        // Rows
+        for row in &result.rows {
+            let mut line_vals = Vec::new();
+            for col in &result.columns {
+                let val_str = match row.get(col) {
+                    Some(serde_json::Value::Null) | None => "".to_string(),
+                    Some(serde_json::Value::String(s)) => format!("\"{}\"", s.replace('"', "\"\"")),
+                    Some(v) => v.to_string(),
+                };
+                line_vals.push(val_str);
+            }
+            csv.push_str(&line_vals.join(","));
+            csv.push('\n');
+        }
+        std::fs::write(&args.output, csv)?;
+    }
+
+    println!("[SUCCESS] Exported {} row(s) to '{}'", result.rows.len(), args.output.display());
+    Ok(())
 }
 
 #[derive(Debug, Args)]
