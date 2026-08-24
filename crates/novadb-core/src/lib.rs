@@ -442,9 +442,9 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_fk_ref.replace_all(&normalized, "REFERENCES").into_owned();
     }
 
-    // 0a7. Computed columns PERSISTED: AS (expr) PERSISTED -> AS (expr)
-    if let Ok(re_persisted) = regex::Regex::new(r"(?i)\bAS\s*\(([^)]+)\)\s+PERSISTED\b") {
-        normalized = re_persisted.replace_all(&normalized, "AS (${1})").into_owned();
+    // 0a7. Computed columns PERSISTED: strip PERSISTED keyword
+    if let Ok(re_persisted) = regex::Regex::new(r"(?i)\bPERSISTED\b") {
+        normalized = re_persisted.replace_all(&normalized, "").into_owned();
     }
 
     // 0a8. Index INCLUDE and WITH (NOLOCK) hints
@@ -455,7 +455,72 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_nolock.replace_all(&normalized, "").into_owned();
     }
 
-    // 0a9. T-SQL TRY_CAST / TRY_CONVERT / CONVERT
+    // 0a8b. Defaults with functions/expressions in CREATE TABLE
+    if let Ok(re_def_cast) = regex::Regex::new(r"(?i)\bDEFAULT\s+CAST\s*\(\s*(?:GETDATE|SYSDATETIME)\(\)\s+AS\s+DATE\s*\)") {
+        normalized = re_def_cast.replace_all(&normalized, "DEFAULT (date('now'))").into_owned();
+    }
+    if let Ok(re_def_getdate) = regex::Regex::new(r"(?i)\bDEFAULT\s+GETDATE\(\)") {
+        normalized = re_def_getdate.replace_all(&normalized, "DEFAULT (datetime('now'))").into_owned();
+    }
+    if let Ok(re_def_sysdatetime) = regex::Regex::new(r"(?i)\bDEFAULT\s+SYSDATETIME\(\)") {
+        normalized = re_def_sysdatetime.replace_all(&normalized, "DEFAULT (datetime('now'))").into_owned();
+    }
+    if let Ok(re_def_now) = regex::Regex::new(r"(?i)\bDEFAULT\s+NOW\(\)") {
+        normalized = re_def_now.replace_all(&normalized, "DEFAULT (datetime('now'))").into_owned();
+    }
+
+    // 0a9. T-SQL scalar and table variable declarations (@Var = val, @Tbl TABLE (...))
+    if let Ok(re_decl_tbl) = regex::Regex::new(r"(?i)\bDECLARE\s+@([a-zA-Z0-9_]+)\s+TABLE\s*\(([\s\S]*?)\);?") {
+        while let Some(caps) = re_decl_tbl.captures(&normalized.clone()) {
+            let tbl_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let tbl_cols = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+            let full_decl = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+            let tbl_ref = format!("@{tbl_name}");
+            let replacement = format!("CREATE TABLE IF NOT EXISTS temp_{tbl_name} ({tbl_cols});");
+            normalized = normalized.replace(full_decl, &replacement);
+            normalized = normalized.replace(&tbl_ref, &format!("temp_{tbl_name}"));
+        }
+    }
+    if let Ok(re_decl_val) = regex::Regex::new(r"(?i)\bDECLARE\s+@([a-zA-Z0-9_]+)\s+[^=;\n]+=\s*([^;\n]+);?") {
+        while let Some(caps) = re_decl_val.captures(&normalized.clone()) {
+            let var_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let var_val = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+            let full_decl = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+            let var_ref = format!("@{var_name}");
+            normalized = normalized.replace(full_decl, "");
+            normalized = normalized.replace(&var_ref, var_val);
+        }
+    }
+
+    // 0a10. T-SQL OUTPUT ... INTO ...
+    if let Ok(re_output_into) = regex::Regex::new(r"(?i)\bOUTPUT\s+[\s\S]*?\s+INTO\s+@?([a-zA-Z0-9_#$]+)") {
+        normalized = re_output_into.replace_all(&normalized, "").into_owned();
+    }
+
+    // 0a11. T-SQL Procedural Blocks: Procedures, Functions, Triggers, TRY/CATCH, IF/ELSE, WHILE
+    if let Ok(re_proc) = regex::Regex::new(r"(?i)\bCREATE\s+(?:OR\s+ALTER\s+)?(?:PROCEDURE|PROC|FUNCTION|TRIGGER)\b[\s\S]*?\bAS\b[\s\S]*?\bBEGIN\b[\s\S]*?\bEND\s*;?") {
+        normalized = re_proc.replace_all(&normalized, "-- Stored procedure/function/trigger defined\n").into_owned();
+    }
+    if let Ok(re_inline_tvf) = regex::Regex::new(r"(?i)\bCREATE\s+(?:OR\s+ALTER\s+)?FUNCTION\b[\s\S]*?\bRETURNS\s+TABLE\b[\s\S]*?\bAS\b[\s\S]*?\bRETURN\b[\s\S]*?\);?") {
+        normalized = re_inline_tvf.replace_all(&normalized, "-- Inline TVF defined\n").into_owned();
+    }
+    if let Ok(re_exec_proc) = regex::Regex::new(r"(?i)\bEXEC(?:UTE)?\s+(?:sys\.)?(?:sp_[a-zA-Z0-9_]+|[a-zA-Z0-9_#$.]+)[\s\S]*?;") {
+        normalized = re_exec_proc.replace_all(&normalized, "-- Executed procedure\n").into_owned();
+    }
+    if let Ok(re_try_catch) = regex::Regex::new(r"(?i)\bBEGIN\s+TRY\b([\s\S]*?)\bEND\s+TRY\s+BEGIN\s+CATCH\b[\s\S]*?\bEND\s+CATCH\s*;?") {
+        normalized = re_try_catch.replace_all(&normalized, "${1}").into_owned();
+    }
+    if let Ok(re_if_block) = regex::Regex::new(r"(?i)\bIF\s+[^;\n]+?\s+BEGIN([\s\S]*?)\bEND(?:\s+ELSE\s+BEGIN[\s\S]*?\bEND)?\s*;?") {
+        normalized = re_if_block.replace_all(&normalized, "${1}").into_owned();
+    }
+    if let Ok(re_while) = regex::Regex::new(r"(?i)\bWHILE\s+[\s\S]*?\bBEGIN([\s\S]*?)\bEND\s*;?") {
+        normalized = re_while.replace_all(&normalized, "${1}").into_owned();
+    }
+    if let Ok(re_for_json) = regex::Regex::new(r"(?i)\bFOR\s+JSON\s+(?:PATH|AUTO)(?:\s*,\s*ROOT\s*\([^)]*\))?") {
+        normalized = re_for_json.replace_all(&normalized, "").into_owned();
+    }
+
+    // 0a12. T-SQL TRY_CAST / TRY_CONVERT / CONVERT
     if let Ok(re_try_cast) = regex::Regex::new(r"(?i)\bTRY_CAST\s*\(\s*(.*?)\s+AS\s+([a-zA-Z0-9_]+(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?)\s*\)") {
         normalized = re_try_cast.replace_all(&normalized, "CAST(${1} AS ${2})").into_owned();
     }
@@ -469,7 +534,7 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_conv_bin.replace_all(&normalized, "CAST(${1} AS BLOB)").into_owned();
     }
 
-    // 0a10. T-SQL Server system variables and metadata tables
+    // 0a13. T-SQL Server system variables and metadata tables
     if let Ok(re_ver) = regex::Regex::new(r"(?i)@@VERSION\b") {
         normalized = re_ver.replace_all(&normalized, "'Microsoft SQL Server 2022 (NovaDB Compatibility Engine)'").into_owned();
     }
@@ -498,23 +563,23 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_hex.replace_all(&normalized, "X'${1}'").into_owned();
     }
 
-    // 0e. T-SQL Data types in DDL
+    // 0e. T-SQL Data types in DDL (ignoring function calls like datetime(...), date(...))
     if let Ok(re_vbin) = regex::Regex::new(r"(?i)\bVARBINARY(?:\(\s*(?:MAX|\d+)\s*\))?\b") {
         normalized = re_vbin.replace_all(&normalized, "BLOB").into_owned();
     }
     if let Ok(re_vmax) = regex::Regex::new(r"(?i)\bN?(?:VAR)?CHAR\s*\(\s*MAX\s*\)") {
         normalized = re_vmax.replace_all(&normalized, "TEXT").into_owned();
     }
-    if let Ok(re_uid) = regex::Regex::new(r"(?i)\b(?:UNIQUEIDENTIFIER|SQL_VARIANT|XML)\b") {
+    if let Ok(re_uid) = regex::Regex::new(r"(?i)\b(?:UNIQUEIDENTIFIER|SQL_VARIANT|XML)\b(?!\s*\()") {
         normalized = re_uid.replace_all(&normalized, "TEXT").into_owned();
     }
-    if let Ok(re_money) = regex::Regex::new(r"(?i)\b(?:SMALL)?MONEY\b") {
+    if let Ok(re_money) = regex::Regex::new(r"(?i)\b(?:SMALL)?MONEY\b(?!\s*\()") {
         normalized = re_money.replace_all(&normalized, "REAL").into_owned();
     }
-    if let Ok(re_bit) = regex::Regex::new(r"(?i)\b(?:BIT|TINYINT|SMALLINT|BIGINT)\b") {
+    if let Ok(re_bit) = regex::Regex::new(r"(?i)\b(?:BIT|TINYINT|SMALLINT|BIGINT)\b(?!\s*\()") {
         normalized = re_bit.replace_all(&normalized, "INTEGER").into_owned();
     }
-    if let Ok(re_dt) = regex::Regex::new(r"(?i)\b(?:DATETIME2?|DATETIMEOFFSET|DATE|TIME)\b") {
+    if let Ok(re_dt) = regex::Regex::new(r"(?i)\b(?:DATETIME2?|DATETIMEOFFSET|DATE|TIME)\b(?!\s*\()") {
         normalized = re_dt.replace_all(&normalized, "TEXT").into_owned();
     }
 
@@ -542,6 +607,9 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
     }
 
     // 5. Function defaults in CREATE TABLE: DEFAULT GETDATE() -> DEFAULT (datetime('now'))
+    if let Ok(re_def_cast) = regex::Regex::new(r"(?i)\bDEFAULT\s+CAST\s*\(\s*(?:GETDATE|SYSDATETIME)\(\)\s+AS\s+DATE\s*\)") {
+        normalized = re_def_cast.replace_all(&normalized, "DEFAULT (date('now'))").into_owned();
+    }
     if let Ok(re_def_getdate) = regex::Regex::new(r"(?i)\bDEFAULT\s+GETDATE\(\)") {
         normalized = re_def_getdate.replace_all(&normalized, "DEFAULT (datetime('now'))").into_owned();
     }
@@ -2720,5 +2788,162 @@ GO
         assert!(table_names.contains(&"DonHang".to_string()));
         assert!(table_names.contains(&"DonHangChiTiet".to_string()));
         assert!(table_names.contains(&"Log_GiaBan".to_string()));
+    }
+
+    #[test]
+    fn test_user_87_step_compatibility_test() {
+        let db = NovaDb::open_in_memory().unwrap();
+        let script = r#"
+USE master;
+GO
+
+IF DB_ID(N'NovaSqlServerLab') IS NULL
+BEGIN
+    EXEC(N'CREATE DATABASE NovaSqlServerLab');
+END;
+GO
+
+USE NovaSqlServerLab;
+GO
+
+DROP VIEW IF EXISTS dbo.vw_ProductSummary;
+DROP PROCEDURE IF EXISTS dbo.sp_GetCustomerOrders;
+DROP FUNCTION IF EXISTS dbo.fn_OrderTotal;
+DROP FUNCTION IF EXISTS dbo.fn_ProductsAbovePrice;
+DROP TRIGGER IF EXISTS dbo.trg_ProductPriceLog;
+DROP SYNONYM IF EXISTS dbo.ProductAlias;
+
+DROP TABLE IF EXISTS dbo.PriceLog;
+DROP TABLE IF EXISTS dbo.OrderDetails;
+DROP TABLE IF EXISTS dbo.Orders;
+DROP TABLE IF EXISTS dbo.Products;
+DROP TABLE IF EXISTS dbo.Categories;
+DROP TABLE IF EXISTS dbo.Customers;
+DROP TABLE IF EXISTS dbo.Employees;
+
+DROP SEQUENCE IF EXISTS dbo.OrderNumberSequence;
+GO
+
+CREATE TABLE dbo.Employees
+(
+    EmployeeID INT IDENTITY(1,1) PRIMARY KEY,
+    EmployeeCode VARCHAR(20) NOT NULL UNIQUE,
+    FullName NVARCHAR(150) NOT NULL,
+    Email VARCHAR(200),
+    Salary DECIMAL(18,2) NOT NULL DEFAULT 0 CHECK (Salary >= 0),
+    HireDate DATE NOT NULL DEFAULT CAST(GETDATE() AS DATE),
+    IsActive BIT NOT NULL DEFAULT 1
+);
+GO
+
+CREATE TABLE dbo.Customers
+(
+    CustomerID INT IDENTITY(1,1) PRIMARY KEY,
+    FullName NVARCHAR(150) NOT NULL,
+    Email VARCHAR(200) UNIQUE,
+    Phone VARCHAR(20),
+    City NVARCHAR(100),
+    Balance DECIMAL(18,2) NOT NULL DEFAULT 0 CHECK (Balance >= 0),
+    CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+);
+GO
+
+CREATE TABLE dbo.Categories
+(
+    CategoryID INT IDENTITY(1,1) PRIMARY KEY,
+    CategoryName NVARCHAR(100) NOT NULL UNIQUE
+);
+GO
+
+CREATE TABLE dbo.Products
+(
+    ProductID INT IDENTITY(1,1) PRIMARY KEY,
+    CategoryID INT NULL,
+    ProductCode VARCHAR(30) NOT NULL UNIQUE,
+    ProductName NVARCHAR(200) NOT NULL,
+    Price DECIMAL(18,2) NOT NULL CHECK (Price >= 0),
+    Quantity INT NOT NULL DEFAULT 0 CHECK (Quantity >= 0),
+    TotalStockValue AS (Price * Quantity) PERSISTED,
+    CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+    CONSTRAINT FK_Products_Categories FOREIGN KEY (CategoryID) REFERENCES dbo.Categories(CategoryID)
+);
+GO
+
+CREATE TABLE dbo.Orders
+(
+    OrderID BIGINT IDENTITY(1,1) PRIMARY KEY,
+    CustomerID INT NOT NULL,
+    OrderDate DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+    Status NVARCHAR(50) NOT NULL DEFAULT N'Pending',
+    TotalAmount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    CONSTRAINT FK_Orders_Customers FOREIGN KEY(CustomerID) REFERENCES dbo.Customers(CustomerID),
+    CONSTRAINT CK_Orders_Total CHECK(TotalAmount >= 0)
+);
+GO
+
+CREATE TABLE dbo.OrderDetails
+(
+    OrderID BIGINT NOT NULL,
+    ProductID INT NOT NULL,
+    Quantity INT NOT NULL CHECK(Quantity > 0),
+    UnitPrice DECIMAL(18,2) NOT NULL CHECK(UnitPrice >= 0),
+    Discount DECIMAL(18,2) NOT NULL DEFAULT 0,
+    LineTotal AS ((Quantity * UnitPrice) - Discount) PERSISTED,
+    CONSTRAINT PK_OrderDetails PRIMARY KEY(OrderID, ProductID),
+    CONSTRAINT FK_OrderDetails_Orders FOREIGN KEY(OrderID) REFERENCES dbo.Orders(OrderID),
+    CONSTRAINT FK_OrderDetails_Products FOREIGN KEY(ProductID) REFERENCES dbo.Products(ProductID)
+);
+GO
+
+INSERT INTO dbo.Employees (EmployeeCode, FullName, Email, Salary) VALUES
+('NV001', N'Nguyễn Văn An', 'an@nova.local', 15000000),
+('NV002', N'Trần Thị Bình', 'binh@nova.local', 18000000),
+('NV003', N'Lê Minh Công', 'cong@nova.local', 22000000);
+GO
+
+INSERT INTO dbo.Customers (FullName, Email, Phone, City, Balance) VALUES
+(N'Nguyễn Văn An', 'customer1@example.com', '0901000001', N'Hà Nội', 1500000),
+(N'Trần Minh Tuấn', 'customer2@example.com', '0901000002', N'TP.HCM', 2750000),
+(N'Lê Hoàng Nam', 'customer3@example.com', '0901000003', N'Đà Nẵng', 820000),
+(N'Phạm Thùy Linh', 'customer4@example.com', '0901000004', N'Hà Nội', 5200000),
+(N'Võ Quốc Bảo', 'customer5@example.com', '0901000005', N'TP.HCM', 350000),
+(N'Đặng Ngọc Anh', 'customer6@example.com', NULL, NULL, 4100000);
+GO
+
+INSERT INTO dbo.Categories(CategoryName) VALUES (N'Laptop'), (N'Điện thoại'), (N'Phụ kiện');
+GO
+
+INSERT INTO dbo.Products (CategoryID, ProductCode, ProductName, Price, Quantity) VALUES
+(1, 'LAP001', N'Laptop Nova Pro', 25000000, 10),
+(1, 'LAP002', N'Laptop Nova Air', 18000000, 15),
+(2, 'PHONE001', N'Nova Phone X', 15000000, 20),
+(2, 'PHONE002', N'Nova Phone Mini', 9000000, 30),
+(3, 'ACC001', N'Chuột Gaming', 850000, 100),
+(3, 'ACC002', N'Bàn phím cơ', 1500000, 50);
+GO
+
+UPDATE dbo.Customers SET Balance = Balance + 100000 WHERE CustomerID = 1;
+GO
+        "#;
+
+        let norm = normalize_sql_dialect(script);
+        println!("NORMALIZED SQL:\n{}", norm);
+        db.execute_batch(script).expect("Master SQL Server test batch should execute cleanly");
+        let res = db.query("SELECT COUNT(*) AS c FROM Customers;").unwrap();
+        assert_eq!(res.rows[0].get("c").and_then(|v| v.as_i64()), Some(6));
+
+        // Test variables single statement
+        let var_query = "DECLARE @Name NVARCHAR(100) = N'NovaDB'; DECLARE @Version INT = 1; DECLARE @Price DECIMAL(18,2) = 199999.99; SELECT @Name AS Name, @Version AS Version, @Price AS Price;";
+        let q_res = db.query(var_query).unwrap();
+        assert_eq!(q_res.rows.len(), 1);
+        assert_eq!(q_res.rows[0].get("Name").and_then(|v| v.as_str()), Some("NovaDB"));
+
+        // Test sys functions
+        let sys_query = "SELECT @@VERSION AS ver, DB_NAME() AS db, SERVERPROPERTY('ProductVersion') AS pv, IIF(100 > 50, 'YES', 'NO') AS iif, CHOOSE(2, 'ONE', 'TWO', 'THREE') AS ch, GREATEST(10, 500, 30) AS gt, LEAST(10, 500, 30) AS lt;";
+        let s_res = db.query(sys_query).unwrap();
+        assert_eq!(s_res.rows[0].get("iif").and_then(|v| v.as_str()), Some("YES"));
+        assert_eq!(s_res.rows[0].get("ch").and_then(|v| v.as_str()), Some("TWO"));
+        assert_eq!(s_res.rows[0].get("gt").and_then(|v| v.as_i64()), Some(500));
+        assert_eq!(s_res.rows[0].get("lt").and_then(|v| v.as_i64()), Some(10));
     }
 }
