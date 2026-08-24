@@ -471,24 +471,37 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
 
     // 0a9. T-SQL scalar and table variable declarations (@Var = val, @Tbl TABLE (...))
     if let Ok(re_decl_tbl) = regex::Regex::new(r"(?i)\bDECLARE\s+@([a-zA-Z0-9_]+)\s+TABLE\s*\(([\s\S]*?)\);?") {
-        while let Some(caps) = re_decl_tbl.captures(&normalized.clone()) {
-            let tbl_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-            let tbl_cols = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
-            let full_decl = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-            let tbl_ref = format!("@{tbl_name}");
-            let replacement = format!("CREATE TABLE IF NOT EXISTS temp_{tbl_name} ({tbl_cols});");
-            normalized = normalized.replace(full_decl, &replacement);
-            normalized = normalized.replace(&tbl_ref, &format!("temp_{tbl_name}"));
+        let mut tbl_vars: Vec<(String, String)> = Vec::new();
+        for caps in re_decl_tbl.captures_iter(&normalized) {
+            if let (Some(name), Some(cols)) = (caps.get(1), caps.get(2)) {
+                tbl_vars.push((name.as_str().to_string(), cols.as_str().trim().to_string()));
+            }
+        }
+        for (name, cols) in tbl_vars {
+            if let Ok(re_one_tbl) = regex::Regex::new(&format!(r"(?i)\bDECLARE\s+@{}\s+TABLE\s*\(([\s\S]*?)\);?", regex::escape(&name))) {
+                normalized = re_one_tbl.replace_all(&normalized, &format!("CREATE TABLE IF NOT EXISTS temp_{name} ({cols});")).into_owned();
+            }
+            if let Ok(re_var) = regex::Regex::new(&format!(r"(?i)@{}\b", regex::escape(&name))) {
+                normalized = re_var.replace_all(&normalized, &format!("temp_{name}")).into_owned();
+            }
         }
     }
     if let Ok(re_decl_val) = regex::Regex::new(r"(?i)\bDECLARE\s+@([a-zA-Z0-9_]+)\s+[^=;\n]+=\s*([^;\n]+);?") {
-        while let Some(caps) = re_decl_val.captures(&normalized.clone()) {
-            let var_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-            let var_val = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
-            let full_decl = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-            let var_ref = format!("@{var_name}");
-            normalized = normalized.replace(full_decl, "");
-            normalized = normalized.replace(&var_ref, var_val);
+        let mut vars: Vec<(String, String)> = Vec::new();
+        for caps in re_decl_val.captures_iter(&normalized) {
+            if let (Some(name), Some(val)) = (caps.get(1), caps.get(2)) {
+                vars.push((name.as_str().to_string(), val.as_str().trim().to_string()));
+            }
+        }
+        normalized = re_decl_val.replace_all(&normalized, "").into_owned();
+
+        // Sort by name length descending so @DateTime2 is replaced before @DateTime and @Date
+        vars.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+        for (name, val) in vars {
+            if let Ok(re_var) = regex::Regex::new(&format!(r"(?i)@{}\b", regex::escape(&name))) {
+                normalized = re_var.replace_all(&normalized, &val).into_owned();
+            }
         }
     }
 
@@ -2937,6 +2950,44 @@ GO
         let q_res = db.query(var_query).unwrap();
         assert_eq!(q_res.rows.len(), 1);
         assert_eq!(q_res.rows[0].get("Name").and_then(|v| v.as_str()), Some("NovaDB"));
+
+        // Test Section 04 date/time/numeric variables with prefix overlaps
+        let s4_query = r#"
+DECLARE @Tiny TINYINT = 255;
+DECLARE @Small SMALLINT = 32000;
+DECLARE @Normal INT = 2000000000;
+DECLARE @Big BIGINT = 9000000000000;
+DECLARE @Money MONEY = 1000000.50;
+DECLARE @Decimal DECIMAL(18,4) = 123456.7890;
+DECLARE @Float FLOAT = 3.1415926535;
+DECLARE @Bit BIT = 1;
+DECLARE @Date DATE = '2026-08-24';
+DECLARE @Time TIME = '17:30:00';
+DECLARE @DateTime DATETIME = GETDATE();
+DECLARE @DateTime2 DATETIME2 = SYSDATETIME();
+DECLARE @Offset DATETIMEOFFSET = SYSDATETIMEOFFSET();
+DECLARE @UUID UNIQUEIDENTIFIER = NEWID();
+
+SELECT
+    @Tiny AS TinyIntValue,
+    @Small AS SmallIntValue,
+    @Normal AS IntValue,
+    @Big AS BigIntValue,
+    @Money AS MoneyValue,
+    @Decimal AS DecimalValue,
+    @Float AS FloatValue,
+    @Bit AS BitValue,
+    @Date AS DateValue,
+    @Time AS TimeValue,
+    @DateTime AS DateTimeValue,
+    @DateTime2 AS DateTime2Value,
+    @Offset AS DateTimeOffsetValue,
+    @UUID AS UUID;
+        "#;
+        let s4_res = db.query(s4_query).unwrap();
+        assert_eq!(s4_res.rows.len(), 1);
+        assert_eq!(s4_res.rows[0].get("DateValue").and_then(|v| v.as_str()), Some("2026-08-24"));
+        assert_eq!(s4_res.rows[0].get("TimeValue").and_then(|v| v.as_str()), Some("17:30:00"));
 
         // Test sys functions
         let sys_query = "SELECT @@VERSION AS ver, DB_NAME() AS db, SERVERPROPERTY('ProductVersion') AS pv, IIF(100 > 50, 'YES', 'NO') AS iif, CHOOSE(2, 'ONE', 'TWO', 'THREE') AS ch, GREATEST(10, 500, 30) AS gt, LEAST(10, 500, 30) AS lt;";
