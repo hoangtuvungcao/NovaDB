@@ -778,7 +778,7 @@ pub struct ServeArgs {
     pub data_dir: PathBuf,
 
     /// Bearer token required by all `/v1` routes.
-    #[arg(long, env = "NOVADB_BEARER_TOKEN")]
+    #[arg(long, visible_alias = "token", env = "NOVADB_BEARER_TOKEN")]
     pub bearer_token: Option<String>,
 
     /// Username for PostgreSQL wire protocol authentication.
