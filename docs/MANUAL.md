@@ -485,3 +485,118 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+---
+
+## 9. SQL Server (T-SQL) Compatibility & Migration Guide
+
+NovaDB implements standard ANSI SQL and modern relational patterns that fully cover SQL Server (T-SQL) workflows with higher execution speed and zero memory bloat.
+
+### 9.1 Procedural Loops vs Recursive CTE Loops
+
+In SQL Server (T-SQL), row-by-row procedural loops (`WHILE` loops and `CURSOR`s) are notoriously slow. Modern database engineering in NovaDB uses **Set-Based Recursive CTEs** (`WITH RECURSIVE`) to achieve loop functionality with blazing fast performance:
+
+#### A. Number / Sequence Generation Loop
+* **SQL Server (T-SQL WHILE loop)**:
+  ```sql
+  -- T-SQL Slow Iterative Loop
+  DECLARE @i INT = 1;
+  WHILE @i <= 10
+  BEGIN
+      PRINT @i;
+      SET @i = @i + 1;
+  END;
+  ```
+* **NovaDB (Fast Set-Based Recursive Loop)**:
+  ```sql
+  WITH RECURSIVE loop(i) AS (
+      VALUES(1)
+      UNION ALL
+      SELECT i + 1 FROM loop WHERE i < 10
+  )
+  SELECT i FROM loop;
+  ```
+
+#### B. Date Range / Calendar Generation Loop
+* **NovaDB**:
+  ```sql
+  WITH RECURSIVE date_series(dt) AS (
+      SELECT '2026-01-01'
+      UNION ALL
+      SELECT date(dt, '+1 day') FROM date_series WHERE dt < '2026-01-31'
+  )
+  SELECT dt as calendar_day FROM date_series;
+  ```
+
+#### C. Tree Hierarchy Traversal Loop (BOM / Org Chart)
+* **NovaDB**:
+  ```sql
+  WITH RECURSIVE org_tree(emp_id, manager_id, name, level, path) AS (
+      SELECT emp_id, manager_id, name, 0, name
+      FROM employees WHERE manager_id IS NULL
+      UNION ALL
+      SELECT e.emp_id, e.manager_id, e.name, o.level + 1, o.path || ' -> ' || e.name
+      FROM employees e
+      JOIN org_tree o ON e.manager_id = o.emp_id
+  )
+  SELECT * FROM org_tree ORDER BY level, name;
+  ```
+
+---
+
+### 9.2 Complete T-SQL Function Translation Matrix
+
+| SQL Server (T-SQL) | NovaDB Equivalent | Description |
+|:---|:---|:---|
+| `ISNULL(col, default)` | `COALESCE(col, default)` or `IFNULL(col, default)` | Return fallback value if null |
+| `IIF(condition, a, b)` | `IIF(condition, a, b)` or `CASE WHEN ... THEN ... END` | Inline conditional logic |
+| `GETDATE()`, `SYSDATETIME()` | `now_iso()`, `now_ms()`, `datetime('now')` | Current timestamp |
+| `DATEADD(day, 7, dt)` | `date(dt, '+7 days')` | Add interval to date |
+| `DATEDIFF(day, d1, d2)` | `age_ms(d2, d1)` or `(julianday(d2) - julianday(d1))` | Difference between timestamps |
+| `CHARINDEX(sub, str)` | `instr(str, sub)` | Find substring index |
+| `LEN(str)` | `char_length(str)` or `length(str)` | Character length |
+| `SUBSTRING(str, start, len)` | `substr(str, start, len)` | Extract substring |
+| `STUFF(str, pos, len, repl)` | `substr(str, 1, pos-1) \|\| repl \|\| substr(str, pos+len)` | Replace substring slice |
+| `NEWID()` | `uuid_v4()` | Random UUID v4 |
+| `NEWSEQUENTIALID()` | `uuid_v7()` | Time-ordered monotonic UUID v7 |
+| `TOP (N)` | `LIMIT N` | Restrict number of rows |
+| `OFFSET N ROWS FETCH NEXT M ROWS ONLY` | `LIMIT M OFFSET N` | Result pagination |
+| `STRING_AGG(col, ',')` | `string_agg(col, ',')` | Concatenate grouped strings |
+| `HASHBYTES('SHA2_256', val)` | `sha256(val)` | Cryptographic SHA-256 |
+
+---
+
+### 9.3 T-SQL `MERGE` vs NovaDB `UPSERT`
+
+* **SQL Server T-SQL**:
+  ```sql
+  MERGE target_table AS t
+  USING source_table AS s ON t.id = s.id
+  WHEN MATCHED THEN UPDATE SET t.name = s.name
+  WHEN NOT MATCHED THEN INSERT (id, name) VALUES (s.id, s.name);
+  ```
+* **NovaDB**:
+  ```sql
+  INSERT INTO target_table (id, name)
+  VALUES (101, 'Updated Item')
+  ON CONFLICT (id) DO UPDATE SET name = excluded.name;
+  ```
+
+---
+
+### 9.4 T-SQL Triggers vs NovaDB Triggers
+
+* **SQL Server T-SQL**:
+  ```sql
+  CREATE TRIGGER trg_audit ON staff AFTER INSERT AS
+  BEGIN
+      INSERT INTO audit_log (msg) SELECT 'Inserted ' + name FROM inserted;
+  END;
+  ```
+* **NovaDB**:
+  ```sql
+  CREATE TRIGGER trg_audit AFTER INSERT ON staff FOR EACH ROW
+  BEGIN
+      INSERT INTO audit_log (msg, ts) VALUES ('Inserted ' || NEW.name, now_iso());
+  END;
+  ```
