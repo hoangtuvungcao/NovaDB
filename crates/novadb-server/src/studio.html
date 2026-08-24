@@ -491,6 +491,44 @@
       align-items: center;
       margin-bottom: 6px;
     }
+
+    /* TOAST NOTIFICATIONS */
+    #toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 9999;
+      pointer-events: none;
+    }
+    .toast-msg {
+      pointer-events: auto;
+      min-width: 300px;
+      max-width: 480px;
+      background: #090d14;
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 6px;
+      padding: 12px 14px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-primary);
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.7);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      animation: slideInToast 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .toast-msg.toast-success { border-left-color: var(--success); }
+    .toast-msg.toast-error { border-left-color: var(--danger); }
+    .toast-msg.toast-info { border-left-color: var(--accent); }
+    @keyframes slideInToast {
+      from { opacity: 0; transform: translateY(12px) scale(0.96); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
   </style>
 </head>
 <body>
@@ -1059,6 +1097,32 @@
     </div>
   </div>
 
+  <!-- MODAL: APPLICATION ERROR DIALOG -->
+  <div id="modal-app-error" class="modal-overlay">
+    <div class="modal-dialog" style="width: 520px; border-color: rgba(239, 68, 68, 0.4);">
+      <div id="error-modal-title" style="font-weight: 700; font-size: 14px; color: var(--danger);">Execution Error</div>
+      <div id="error-modal-body" style="background: #04070a; border: 1px solid var(--border); border-radius: 5px; padding: 12px 14px; font-family: var(--font-mono); font-size: 12px; color: #f87171; max-height: 220px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; line-height: 1.6;"></div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;">
+        <button class="btn btn-primary" onclick="closeModal('modal-app-error')">Dismiss</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: CONFIRMATION DIALOG -->
+  <div id="modal-app-confirm" class="modal-overlay">
+    <div class="modal-dialog" style="width: 440px;">
+      <div id="confirm-modal-title" style="font-weight: 700; font-size: 14px;">Confirm Action</div>
+      <div id="confirm-modal-body" style="font-size: 13px; color: var(--text-secondary); line-height: 1.5;"></div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;">
+        <button class="btn" onclick="closeModal('modal-app-confirm')">Cancel</button>
+        <button id="confirm-modal-btn" class="btn btn-danger" onclick="executeAppConfirm()">Proceed</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST NOTIFICATION CONTAINER -->
+  <div id="toast-container"></div>
+
   <!-- JAVASCRIPT APP LOGIC -->
   <script>
     let activeDatabase = "";
@@ -1113,6 +1177,48 @@
       } catch (e) {
         return res.statusText || fallback;
       }
+    }
+
+    function showToast(msg, type = "info") {
+      const box = document.getElementById("toast-container");
+      if (!box) return;
+      const t = document.createElement("div");
+      t.className = `toast-msg toast-${type}`;
+      t.innerHTML = `
+        <div style="flex: 1; word-break: break-word;">${escapeHtml(msg)}</div>
+        <button onclick="this.parentElement.remove()" style="background: none; border: none; color: #64748b; cursor: pointer; font-size: 11px; font-family: var(--font-mono); padding: 0 4px;">[X]</button>
+      `;
+      box.appendChild(t);
+      setTimeout(() => {
+        if (t.parentElement) {
+          t.style.opacity = "0";
+          t.style.transform = "translateY(8px)";
+          setTimeout(() => t.remove(), 200);
+        }
+      }, 4000);
+    }
+
+    function showAppError(title, errorMsg) {
+      document.getElementById("error-modal-title").textContent = title || "Execution Error";
+      document.getElementById("error-modal-body").textContent = errorMsg || "An unexpected error occurred.";
+      openModal("modal-app-error");
+    }
+
+    let confirmCallback = null;
+    function showConfirm(title, message, confirmBtnText, onConfirm) {
+      document.getElementById("confirm-modal-title").textContent = title || "Confirm Action";
+      document.getElementById("confirm-modal-body").textContent = message || "Are you sure you want to proceed?";
+      document.getElementById("confirm-modal-btn").textContent = confirmBtnText || "Proceed";
+      confirmCallback = onConfirm;
+      openModal("modal-app-confirm");
+    }
+
+    function executeAppConfirm() {
+      closeModal("modal-app-confirm");
+      if (typeof confirmCallback === "function") {
+        confirmCallback();
+      }
+      confirmCallback = null;
     }
 
     function saveAuthToken() {
@@ -1458,7 +1564,7 @@
 
     // TABLE OPERATIONS: ADD COLUMN, RENAME, TRUNCATE, EXPORT
     function openAddColumnModal() {
-      if (!activeSelectedTable) return alert("Select a table first.");
+      if (!activeSelectedTable) return showToast("Select a table first.", "error");
       document.getElementById("add-col-table-badge").textContent = activeSelectedTable;
       document.getElementById("input-new-col-name").value = "";
       document.getElementById("input-new-col-default").value = "";
@@ -1469,7 +1575,7 @@
       const cName = document.getElementById("input-new-col-name").value.trim();
       const cType = document.getElementById("input-new-col-type").value;
       const cDef = document.getElementById("input-new-col-default").value.trim();
-      if (!cName) return alert("Enter column name");
+      if (!cName) return showToast("Enter column name", "error");
 
       let sql = `ALTER TABLE "${activeSelectedTable.replace(/"/g, '""')}" ADD COLUMN "${cName.replace(/"/g, '""')}" ${cType}`;
       if (cDef) sql += ` DEFAULT ${cDef}`;
@@ -1484,18 +1590,19 @@
         if (res.ok) {
           closeModal("modal-add-column");
           refreshActiveTable();
+          showToast(`Added column '${cName}' to table '${activeSelectedTable}'.`, "success");
           logOps(`Added column '${cName}' to table '${activeSelectedTable}'.`);
         } else {
           const errMsg = await parseApiError(res, "Add Column Failed");
-          alert("Add Column Error:\n\n" + errMsg);
+          showAppError("Add Column Error", errMsg);
         }
       } catch (e) {
-        alert(e.message);
+        showAppError("Error", e.message);
       }
     }
 
     function openRenameTableModal() {
-      if (!activeSelectedTable) return alert("Select a table first.");
+      if (!activeSelectedTable) return showToast("Select a table first.", "error");
       document.getElementById("rename-table-badge").textContent = activeSelectedTable;
       document.getElementById("input-rename-table-name").value = activeSelectedTable;
       openModal("modal-rename-table");
@@ -1518,40 +1625,48 @@
           activeSelectedTable = newName;
           loadSidebarTables();
           selectActiveTable(newName);
+          showToast(`Renamed table '${old}' to '${newName}'.`, "success");
           logOps(`Renamed table '${old}' to '${newName}'.`);
         } else {
           const errMsg = await parseApiError(res, "Rename Failed");
-          alert("Rename Error:\n\n" + errMsg);
+          showAppError("Rename Error", errMsg);
         }
       } catch (e) {
-        alert(e.message);
+        showAppError("Error", e.message);
       }
     }
 
-    async function truncateActiveTable() {
+    function truncateActiveTable() {
       if (!activeSelectedTable) return;
-      if (!confirm(`Are you sure you want to TRUNCATE (delete all rows from) table '${activeSelectedTable}'?`)) return;
-      const sql = `DELETE FROM "${activeSelectedTable.replace(/"/g, '""')}";`;
-      try {
-        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
-          method: "POST",
-          headers: getAuthHeaders(),
-          body: JSON.stringify({ sql })
-        });
-        if (res.ok) {
-          loadGridData();
-          logOps(`Truncated table '${activeSelectedTable}'.`);
-        } else {
-          const errMsg = await parseApiError(res, "Truncate Failed");
-          alert("Truncate Error:\n\n" + errMsg);
+      showConfirm(
+        "Truncate Table",
+        `Are you sure you want to TRUNCATE (delete all rows from) table '${activeSelectedTable}'? This action cannot be undone.`,
+        "Truncate All Rows",
+        async () => {
+          const sql = `DELETE FROM "${activeSelectedTable.replace(/"/g, '""')}";`;
+          try {
+            const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
+              method: "POST",
+              headers: getAuthHeaders(),
+              body: JSON.stringify({ sql })
+            });
+            if (res.ok) {
+              loadGridData();
+              showToast(`Truncated table '${activeSelectedTable}'.`, "success");
+              logOps(`Truncated table '${activeSelectedTable}'.`);
+            } else {
+              const errMsg = await parseApiError(res, "Truncate Failed");
+              showAppError("Truncate Error", errMsg);
+            }
+          } catch (e) {
+            showAppError("Error", e.message);
+          }
         }
-      } catch (e) {
-        alert(e.message);
-      }
+      );
     }
 
     async function exportActiveTableDirect(format) {
-      if (!activeSelectedTable) return alert("Select a table first.");
+      if (!activeSelectedTable) return showToast("Select a table first.", "error");
       const sql = `SELECT * FROM "${activeSelectedTable.replace(/"/g, '""')}";`;
       try {
         const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/query", {
@@ -1589,14 +1704,15 @@
           const blob = new Blob([csv], { type: "text/csv" });
           downloadBlob(blob, `${activeSelectedTable}.csv`);
         }
+        showToast(`Exported '${activeSelectedTable}' (${format.toUpperCase()}).`, "success");
       } catch (e) {
-        alert(e.message);
+        showAppError("Export Error", e.message);
       }
     }
 
     // SQL CONSOLE LOGIC
     async function executeSqlQuery() {
-      if (!activeDatabase) return alert("Select a database first.");
+      if (!activeDatabase) return showToast("Select a database first.", "error");
       const sql = document.getElementById("sql-query-editor").value.trim();
       if (!sql) return;
 
@@ -1737,7 +1853,7 @@
     function clearSqlEditor() { document.getElementById("sql-query-editor").value = ""; }
 
     function exportQueryResults(format) {
-      if (!lastQueryData.rows || lastQueryData.rows.length === 0) return alert("No query results to export.");
+      if (!lastQueryData.rows || lastQueryData.rows.length === 0) return showToast("No query results to export.", "error");
       if (format === 'json') {
         const blob = new Blob([JSON.stringify(lastQueryData.rows, null, 2)], { type: "application/json" });
         downloadBlob(blob, "query_results.json");
@@ -1749,11 +1865,12 @@
         const blob = new Blob([csv], { type: "text/csv" });
         downloadBlob(blob, "query_results.csv");
       }
+      showToast(`Exported ${lastQueryData.rows.length} rows (${format.toUpperCase()}).`, "success");
     }
 
     // MODAL ROW OPERATIONS
     function openInsertRowModal() {
-      if (!activeSelectedTable) return alert("Select a table first.");
+      if (!activeSelectedTable) return showToast("Select a table first.", "error");
       document.getElementById("insert-table-badge").textContent = activeSelectedTable;
       const box = document.getElementById("insert-fields-box");
       box.innerHTML = '<div style="color: var(--text-tertiary);">Loading column fields...</div>';
@@ -1793,7 +1910,7 @@
         }
       });
 
-      if (cols.length === 0) return alert("Enter at least one column value.");
+      if (cols.length === 0) return showToast("Enter at least one column value.", "error");
       const sql = `INSERT INTO "${activeSelectedTable.replace(/"/g, '""')}" (${cols.join(", ")}) VALUES (${vals.join(", ")});`;
 
       try {
@@ -1805,12 +1922,13 @@
         if (res.ok) {
           closeModal("modal-insert-row");
           loadGridData();
+          showToast("Record inserted successfully.", "success");
         } else {
           const errMsg = await parseApiError(res, "Insert Failed");
-          alert("Insert Error:\n\n" + errMsg);
+          showAppError("Insert Error", errMsg);
         }
       } catch (e) {
-        alert(e.message);
+        showAppError("Error", e.message);
       }
     }
 
@@ -1863,61 +1981,79 @@
         if (res.ok) {
           closeModal("modal-edit-row");
           loadGridData();
+          showToast("Record updated successfully.", "success");
         } else {
           const errMsg = await parseApiError(res, "Update Failed");
-          alert("Update Error:\n\n" + errMsg);
+          showAppError("Update Error", errMsg);
         }
       } catch (e) {
-        alert(e.message);
+        showAppError("Error", e.message);
       }
     }
 
-    async function deleteRowRecord(row) {
-      if (!confirm("Are you sure you want to delete this record?")) return;
-      const wheres = [];
-      Object.keys(row).forEach(k => {
-        const v = row[k];
-        if (v === null) wheres.push(`"${k.replace(/"/g, '""')}" IS NULL`);
-        else if (typeof v === "number") wheres.push(`"${k.replace(/"/g, '""')}" = ${v}`);
-        else wheres.push(`"${k.replace(/"/g, '""')}" = '${String(v).replace(/'/g, "''")}'`);
-      });
-      const sql = `DELETE FROM "${activeSelectedTable.replace(/"/g, '""')}" WHERE ${wheres.join(" AND ")} LIMIT 1;`;
+    function deleteRowRecord(row) {
+      showConfirm(
+        "Delete Record",
+        "Are you sure you want to delete this record? This action cannot be undone.",
+        "Delete Record",
+        async () => {
+          const wheres = [];
+          Object.keys(row).forEach(k => {
+            const v = row[k];
+            if (v === null) wheres.push(`"${k.replace(/"/g, '""')}" IS NULL`);
+            else if (typeof v === "number") wheres.push(`"${k.replace(/"/g, '""')}" = ${v}`);
+            else wheres.push(`"${k.replace(/"/g, '""')}" = '${String(v).replace(/'/g, "''")}'`);
+          });
+          const sql = `DELETE FROM "${activeSelectedTable.replace(/"/g, '""')}" WHERE ${wheres.join(" AND ")} LIMIT 1;`;
 
-      try {
-        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
-          method: "POST",
-          headers: getAuthHeaders(),
-          body: JSON.stringify({ sql })
-        });
-        if (res.ok) loadGridData();
-        else {
-          const errMsg = await parseApiError(res, "Delete Failed");
-          alert("Delete Error:\n\n" + errMsg);
+          try {
+            const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
+              method: "POST",
+              headers: getAuthHeaders(),
+              body: JSON.stringify({ sql })
+            });
+            if (res.ok) {
+              loadGridData();
+              showToast("Record deleted successfully.", "success");
+            } else {
+              const errMsg = await parseApiError(res, "Delete Failed");
+              showAppError("Delete Error", errMsg);
+            }
+          } catch (e) {
+            showAppError("Error", e.message);
+          }
         }
-      } catch (e) {
-        alert(e.message);
-      }
+      );
     }
 
-    async function dropActiveTable() {
-      if (!confirm(`Are you sure you want to DROP TABLE '${activeSelectedTable}'?`)) return;
-      const sql = `DROP TABLE "${activeSelectedTable.replace(/"/g, '""')}";`;
-      try {
-        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
-          method: "POST",
-          headers: getAuthHeaders(),
-          body: JSON.stringify({ sql })
-        });
-        if (res.ok) {
-          activeSelectedTable = "";
-          loadSidebarTables();
-        } else {
-          const errMsg = await parseApiError(res, "Drop Table Failed");
-          alert("Drop Table Error:\n\n" + errMsg);
+    function dropActiveTable() {
+      if (!activeSelectedTable) return;
+      showConfirm(
+        "Drop Table",
+        `Are you sure you want to DROP TABLE '${activeSelectedTable}'? All schema definition and table rows will be permanently deleted.`,
+        "Drop Table",
+        async () => {
+          const sql = `DROP TABLE "${activeSelectedTable.replace(/"/g, '""')}";`;
+          try {
+            const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
+              method: "POST",
+              headers: getAuthHeaders(),
+              body: JSON.stringify({ sql })
+            });
+            if (res.ok) {
+              const dropped = activeSelectedTable;
+              activeSelectedTable = "";
+              loadSidebarTables();
+              showToast(`Table '${dropped}' dropped successfully.`, "success");
+            } else {
+              const errMsg = await parseApiError(res, "Drop Table Failed");
+              showAppError("Drop Table Error", errMsg);
+            }
+          } catch (e) {
+            showAppError("Error", e.message);
+          }
         }
-      } catch (e) {
-        alert(e.message);
-      }
+      );
     }
 
     // TABLE DESIGNER FUNCTIONS
@@ -1957,7 +2093,7 @@
 
     async function submitTableDesigner() {
       const tName = document.getElementById("input-builder-table-name").value.trim();
-      if (!tName) return alert("Provide a table name");
+      if (!tName) return showToast("Provide a table name", "error");
 
       const rows = document.querySelectorAll(".builder-col-row");
       const colDefs = [];
@@ -1977,7 +2113,7 @@
         }
       });
 
-      if (colDefs.length === 0) return alert("Specify at least one column");
+      if (colDefs.length === 0) return showToast("Specify at least one column", "error");
       const sql = `CREATE TABLE "${tName.replace(/"/g, '""')}" (\n  ${colDefs.join(",\n  ")}\n);`;
 
       try {
@@ -1990,12 +2126,13 @@
           closeModal("modal-create-table");
           loadSidebarTables();
           selectActiveTable(tName);
+          showToast(`Table '${tName}' created successfully.`, "success");
         } else {
           const errMsg = await parseApiError(res, "Create Table Failed");
-          alert("Create Table Error:\n\n" + errMsg);
+          showAppError("Create Table Error", errMsg);
         }
       } catch (e) {
-        alert(e.message);
+        showAppError("Error", e.message);
       }
     }
 
@@ -2075,6 +2212,7 @@
       reader.onload = (e) => {
         loadedSqlFileContent = e.target.result;
         logOps(`Loaded SQL script '${file.name}' (${formatBytes(file.size)}). Ready to execute on database '${activeDatabase}'.`);
+        showToast(`Loaded SQL file '${file.name}' (${formatBytes(file.size)}).`, "info");
       };
       reader.readAsText(file);
     }
@@ -2101,18 +2239,23 @@
         const text = e.target.result;
         document.getElementById("io-csv-content").value = text;
         logOps(`Loaded CSV file '${file.name}' (${formatBytes(file.size)}).`);
+        showToast(`Loaded CSV file '${file.name}'.`, "info");
       };
       reader.readAsText(file);
     }
 
     async function submitSqlScriptFile() {
-      if (!activeDatabase) return alert("Select database first");
+      if (!activeDatabase) return showToast("Select database first", "error");
       let sql = loadedSqlFileContent || document.getElementById("io-sql-content").value.trim();
-      if (!sql) return alert("No SQL script content found. Select a .sql file or paste SQL script.");
+      if (!sql) return showToast("No SQL script content found. Select a .sql file or paste SQL script.", "error");
 
       const ifNotExists = document.getElementById("io-sql-if-not-exists").checked;
       if (ifNotExists) {
-        sql = sql.replace(/\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)/gi, "CREATE TABLE IF NOT EXISTS ");
+        sql = sql
+          .replace(/\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)/gi, "CREATE TABLE IF NOT EXISTS ")
+          .replace(/\bCREATE\s+(UNIQUE\s+)?INDEX\s+(?!IF\s+NOT\s+EXISTS\b)/gi, "CREATE $1INDEX IF NOT EXISTS ")
+          .replace(/\bCREATE\s+VIEW\s+(?!IF\s+NOT\s+EXISTS\b)/gi, "CREATE VIEW IF NOT EXISTS ")
+          .replace(/\bCREATE\s+TRIGGER\s+(?!IF\s+NOT\s+EXISTS\b)/gi, "CREATE TRIGGER IF NOT EXISTS ");
       }
 
       const btn = document.getElementById("btn-exec-sql-file");
@@ -2138,17 +2281,18 @@
           logOps(`SQL Script execution SUCCESS (${elapsed} ms).`);
           clearSelectedSqlFile();
           loadSidebarTables();
+          showToast(`SQL script executed successfully (${elapsed} ms).`, "success");
         } else {
           const errMsg = await parseApiError(res, "SQL execution failed");
           stat.innerHTML = `<span style="color: var(--danger)">Execution failed (${elapsed} ms).</span>`;
-          alert("SQL Execution Error:\n\n" + errMsg);
+          showAppError("SQL Execution Error", errMsg);
           logOps("SQL Script FAILED: " + errMsg);
         }
       } catch (e) {
         btn.disabled = false;
         btn.textContent = "Execute Full Database Script";
         stat.innerHTML = `<span style="color: var(--danger)">Network error: ${escapeHtml(e.message)}</span>`;
-        alert("Network Error: " + e.message);
+        showAppError("Network Error", e.message);
       }
     }
 
@@ -2156,10 +2300,10 @@
       const targetTbl = document.getElementById("io-target-table").value;
       const delimiter = document.getElementById("io-csv-delimiter").value || ",";
       const text = document.getElementById("io-csv-content").value.trim();
-      if (!targetTbl || !text) return alert("Target table and CSV content required");
+      if (!targetTbl || !text) return showToast("Target table and CSV content required", "error");
 
       const lines = text.split("\n").filter(l => l.trim().length > 0);
-      if (lines.length < 2) return alert("CSV needs 1 header row and at least 1 data row");
+      if (lines.length < 2) return showToast("CSV needs 1 header row and at least 1 data row", "error");
 
       const headers = lines[0].split(delimiter).map(h => `"${h.trim().replace(/"/g, '""')}"`);
       const inserts = [];
@@ -2184,22 +2328,22 @@
           body: JSON.stringify({ sql })
         });
         if (res.ok) {
-          alert(`Imported ${inserts.length} rows successfully!`);
+          showToast(`Imported ${inserts.length} rows successfully!`, "success");
           document.getElementById("io-csv-content").value = "";
           loadSidebarTables();
           loadGridData();
         } else {
           const errMsg = await parseApiError(res, "CSV import failed");
-          alert("CSV Import Error:\n\n" + errMsg);
+          showAppError("CSV Import Error", errMsg);
           logOps("CSV Import FAILED: " + errMsg);
         }
       } catch (e) {
-        alert("Network Error: " + e.message);
+        showAppError("Network Error", e.message);
       }
     }
 
     async function exportFullDatabaseSqlDump() {
-      if (!activeDatabase) return alert("Select database first");
+      if (!activeDatabase) return showToast("Select database first", "error");
       logOps(`Generating complete SQL Dump for '${activeDatabase}'...`);
 
       try {
@@ -2259,14 +2403,15 @@
         const blob = new Blob([dumpSql], { type: "text/plain" });
         downloadBlob(blob, `${activeDatabase}_dump.sql`);
         logOps(`SQL Dump completed: '${activeDatabase}_dump.sql' downloaded.`);
+        showToast(`Full database SQL dump downloaded.`, "success");
       } catch (e) {
-        alert("SQL Dump Error: " + e.message);
+        showAppError("SQL Dump Error", e.message);
       }
     }
 
     async function exportCustomQueryDump(format) {
       const sql = document.getElementById("io-export-query").value.trim();
-      if (!sql) return alert("Enter SQL query to export");
+      if (!sql) return showToast("Enter SQL query to export", "error");
 
       try {
         const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/query", {
@@ -2304,8 +2449,9 @@
           const blob = new Blob([csv], { type: "text/csv" });
           downloadBlob(blob, "export.csv");
         }
+        showToast(`Query export completed (${format.toUpperCase()}).`, "success");
       } catch (e) {
-        alert(e.message);
+        showAppError("Query Export Error", e.message);
       }
     }
 
@@ -2335,8 +2481,9 @@
           Euclidean L2 Dist:  <b>${r.l2_distance}</b><br>
           Dot Product:        <b>${r.dot_product}</b>
         `;
+        showToast("Vector similarity metrics calculated.", "success");
       } catch (e) {
-        alert(e.message);
+        showAppError("Vector Error", e.message);
       }
     }
 
@@ -2369,10 +2516,16 @@
           headers: getAuthHeaders()
         });
         const data = await res.json();
-        if (res.ok) logOps(`Backup SUCCESS: Snapshot '${data.backup_id}' created (${formatBytes(data.size_bytes)}).`);
-        else logOps(`Backup FAILED: ${data.message || res.statusText}`);
+        if (res.ok) {
+          logOps(`Backup SUCCESS: Snapshot '${data.backup_id}' created (${formatBytes(data.size_bytes)}).`);
+          showToast(`Hot backup '${data.backup_id}' created successfully.`, "success");
+        } else {
+          logOps(`Backup FAILED: ${data.message || res.statusText}`);
+          showAppError("Backup Failed", data.message || res.statusText);
+        }
       } catch (e) {
         logOps(`Backup ERROR: ${e.message}`);
+        showAppError("Backup Error", e.message);
       }
     }
 
@@ -2385,10 +2538,16 @@
           headers: getAuthHeaders()
         });
         const data = await res.json();
-        if (res.ok && data.ok) logOps("Integrity Scan: PASSED (B-Trees and page pointers healthy).");
-        else logOps("Integrity Scan: " + JSON.stringify(data));
+        if (res.ok && data.ok) {
+          logOps("Integrity Scan: PASSED (B-Trees and page pointers healthy).");
+          showToast("Integrity Scan PASSED (All B-Trees healthy).", "success");
+        } else {
+          logOps("Integrity Scan: " + JSON.stringify(data));
+          showAppError("Integrity Scan Result", JSON.stringify(data, null, 2));
+        }
       } catch (e) {
         logOps("Integrity ERROR: " + e.message);
+        showAppError("Integrity Error", e.message);
       }
     }
 
@@ -2400,10 +2559,16 @@
           method: "POST",
           headers: getAuthHeaders()
         });
-        if (res.ok) logOps("WAL Checkpoint: SUCCESS (Write-ahead log committed and truncated).");
-        else logOps("Checkpoint FAILED");
+        if (res.ok) {
+          logOps("WAL Checkpoint: SUCCESS (Write-ahead log committed and truncated).");
+          showToast("WAL Checkpoint completed successfully.", "success");
+        } else {
+          logOps("Checkpoint FAILED");
+          showAppError("Checkpoint Failed", "WAL checkpoint could not be completed.");
+        }
       } catch (e) {
         logOps("Checkpoint ERROR: " + e.message);
+        showAppError("Checkpoint Error", e.message);
       }
     }
 
@@ -2416,15 +2581,21 @@
           headers: getAuthHeaders(),
           body: JSON.stringify({ sql: "VACUUM;" })
         });
-        if (res.ok) logOps("VACUUM SUCCESS: Unused disk space reclaimed and pages defragmented.");
-        else logOps("VACUUM failed");
+        if (res.ok) {
+          logOps("VACUUM SUCCESS: Unused disk space reclaimed and pages defragmented.");
+          showToast("Database VACUUM optimization completed.", "success");
+        } else {
+          logOps("VACUUM failed");
+          showAppError("VACUUM Failed", "Optimization failed.");
+        }
       } catch (e) {
         logOps("VACUUM ERROR: " + e.message);
+        showAppError("VACUUM Error", e.message);
       }
     }
 
     function openCloneDbModal() {
-      if (!activeDatabase) return alert("Select active database first");
+      if (!activeDatabase) return showToast("Select active database first", "error");
       document.getElementById("clone-db-badge").textContent = activeDatabase;
       document.getElementById("input-clone-db-name").value = activeDatabase + "_clone";
       openModal("modal-clone-db");
@@ -2432,7 +2603,7 @@
 
     async function submitCloneDatabase() {
       const cloneName = document.getElementById("input-clone-db-name").value.trim();
-      if (!cloneName) return alert("Enter cloned database identifier");
+      if (!cloneName) return showToast("Enter cloned database identifier", "error");
       logOps(`Cloning database '${activeDatabase}' to '${cloneName}'...`);
       try {
         const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/backup", {
@@ -2442,12 +2613,13 @@
         if (res.ok) {
           closeModal("modal-clone-db");
           logOps(`Clone SUCCESS: Database '${cloneName}' created.`);
+          showToast(`Database '${cloneName}' cloned successfully.`, "success");
           await fetchDatabaseList();
         } else {
-          alert("Clone failed");
+          showAppError("Clone Failed", "Database cloning failed.");
         }
       } catch (e) {
-        alert(e.message);
+        showAppError("Clone Error", e.message);
       }
     }
 
@@ -2459,7 +2631,7 @@
 
     async function submitCreateDatabase() {
       const name = document.getElementById("input-new-db-name").value.trim();
-      if (!name) return;
+      if (!name) return showToast("Enter database name", "error");
       try {
         const res = await fetch("/v1/admin/databases/" + encodeURIComponent(name), {
           method: "POST",
@@ -2468,17 +2640,21 @@
         if (res.ok) {
           closeModal("modal-create-db");
           activeDatabase = name;
+          showToast(`Database '${name}' created successfully.`, "success");
           await fetchDatabaseList();
+        } else {
+          const errMsg = await parseApiError(res, "Create Database Failed");
+          showAppError("Create Database Error", errMsg);
         }
       } catch (e) {
-        alert(e.message);
+        showAppError("Error", e.message);
       }
     }
 
     async function submitCreateUserRecord() {
       const u = document.getElementById("input-new-username").value.trim();
       const p = document.getElementById("input-new-password").value.trim();
-      if (!u || !p) return;
+      if (!u || !p) return showToast("Username and password are required", "error");
       const sql = `INSERT INTO _novadb_users (username, password_hash, is_active, is_superuser, created_at)
         VALUES ('${u.replace(/'/g, "''")}', sha256('${p.replace(/'/g, "''")}'), 1, 0, now_iso());`;
       try {
@@ -2490,9 +2666,13 @@
         if (res.ok) {
           closeModal("modal-create-user");
           loadRbacUsers();
+          showToast(`User '${u}' created successfully.`, "success");
+        } else {
+          const errMsg = await parseApiError(res, "Create User Failed");
+          showAppError("Create User Error", errMsg);
         }
       } catch (e) {
-        alert(e.message);
+        showAppError("Error", e.message);
       }
     }
 
