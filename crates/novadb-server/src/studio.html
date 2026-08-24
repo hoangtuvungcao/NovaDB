@@ -582,8 +582,13 @@
               <h2 id="active-table-name" style="font-size: 15px; font-weight: 700;">Select a table</h2>
               <span id="active-table-rows-count" class="badge">0 rows</span>
             </div>
-            <div style="display: flex; gap: 6px;">
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
               <button class="btn btn-sm btn-primary" onclick="openInsertRowModal()">+ Insert Row</button>
+              <button class="btn btn-sm" onclick="openAddColumnModal()">+ Add Column</button>
+              <button class="btn btn-sm" onclick="openRenameTableModal()">Rename</button>
+              <button class="btn btn-sm" onclick="truncateActiveTable()">Truncate</button>
+              <button class="btn btn-sm" onclick="exportActiveTableDirect('sql')">Export .sql</button>
+              <button class="btn btn-sm" onclick="exportActiveTableDirect('csv')">Export .csv</button>
               <button class="btn btn-sm" onclick="refreshActiveTable()">Refresh</button>
               <button class="btn btn-sm btn-danger" onclick="dropActiveTable()">Drop Table</button>
             </div>
@@ -599,17 +604,26 @@
         <!-- SUBVIEW: DATA GRID -->
         <div id="grid-subview" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">
           <div class="view-toolbar">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <input type="text" id="grid-filter-input" placeholder="WHERE filter (e.g. status = 'active')" style="width: 260px; height: 26px;" onkeydown="if(event.key==='Enter') loadGridData();" />
+            <div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+              <input type="text" id="grid-filter-input" placeholder="WHERE filter (e.g. balance > 1000000)" style="width: 280px; height: 26px;" onkeydown="if(event.key==='Enter') loadGridData();" />
               <button class="btn btn-sm" onclick="loadGridData()">Apply Filter</button>
+              <button class="btn btn-sm" onclick="clearGridFilter()">Reset</button>
             </div>
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-size: 11px; color: var(--text-secondary);">Page Limit:</span>
-              <select id="grid-limit-select" style="width: 80px; height: 26px;" onchange="loadGridData()">
-                <option value="50">50</option>
-                <option value="100">100</option>
-                <option value="500">500</option>
-              </select>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <div style="display: flex; align-items: center; gap: 4px; font-size: 11px;">
+                <button class="btn btn-sm" onclick="gridPrevPage()" id="btn-grid-prev">Prev</button>
+                <span id="grid-page-label">Page 1</span>
+                <button class="btn btn-sm" onclick="gridNextPage()" id="btn-grid-next">Next</button>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <span style="font-size: 11px; color: var(--text-secondary);">Limit:</span>
+                <select id="grid-limit-select" style="width: 75px; height: 26px;" onchange="gridChangeLimit()">
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                  <option value="200">200</option>
+                  <option value="500">500</option>
+                </select>
+              </div>
             </div>
           </div>
 
@@ -643,17 +657,23 @@
       <!-- TAB 2: SQL QUERY CONSOLE -->
       <div id="sql-panel" class="tab-panel">
         <div class="sql-workspace">
-          <div class="view-toolbar" style="padding: 0; background: transparent; border: none;">
-            <div style="display: flex; gap: 6px; overflow-x: auto;">
-              <span style="font-size: 11px; color: var(--text-tertiary); align-self: center;">Templates:</span>
+          <div class="view-toolbar" style="padding: 0; background: transparent; border: none; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; gap: 6px; overflow-x: auto; flex-wrap: wrap; align-items: center;">
+              <span style="font-size: 11px; color: var(--text-tertiary); align-self: center;">Snippets:</span>
               <button class="btn btn-sm" onclick="insertSqlSnippet('SELECT')">SELECT *</button>
               <button class="btn btn-sm" onclick="insertSqlSnippet('UUID_NOW')">UUID v7 & Now</button>
               <button class="btn btn-sm" onclick="insertSqlSnippet('RECURSIVE_CTE')">Recursive CTE</button>
               <button class="btn btn-sm" onclick="insertSqlSnippet('WINDOW_RANK')">Window Rank</button>
+              <button class="btn btn-sm" onclick="insertSqlSnippet('GEO_DISTANCE')">Geospatial</button>
+              <button class="btn btn-sm" onclick="insertSqlSnippet('CRYPTO_HASH')">Crypto Hash</button>
               <button class="btn btn-sm" onclick="insertSqlSnippet('VECTOR_COSINE')">Vector Cosine</button>
               <button class="btn btn-sm" onclick="insertSqlSnippet('JSON_PATCH')">JSON Patch</button>
             </div>
-            <div style="display: flex; gap: 6px;">
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <select id="sql-history-select" style="height: 26px; width: 180px; font-size: 11px;" onchange="loadQueryFromHistory(this.value)">
+                <option value="">(Recent Query History)</option>
+              </select>
+              <button class="btn btn-sm" onclick="formatSqlEditor()">Format SQL</button>
               <button class="btn btn-sm" onclick="clearSqlEditor()">Clear</button>
               <button class="btn btn-sm btn-primary" onclick="executeSqlQuery()">Execute Query (Ctrl+Enter)</button>
             </div>
@@ -818,6 +838,18 @@
           </div>
 
           <div class="card">
+            <div class="card-header">VACUUM Optimization</div>
+            <p style="font-size: 12px; color: var(--text-secondary);">Reclaim unused disk space and defragment database file.</p>
+            <button class="btn" onclick="runOpsVacuum()">Run VACUUM</button>
+          </div>
+
+          <div class="card">
+            <div class="card-header">Clone Database</div>
+            <p style="font-size: 12px; color: var(--text-secondary);">Duplicate active database into a new managed database instance.</p>
+            <button class="btn" onclick="openCloneDbModal()">Clone Database</button>
+          </div>
+
+          <div class="card">
             <div class="card-header">Engine & Server Info</div>
             <div class="stat-row"><span>Engine Version</span><b>NovaDB v0.1.0</b></div>
             <div class="stat-row"><span>Storage Engine</span><b>SQLite WAL + HLC</b></div>
@@ -918,6 +950,67 @@
     </div>
   </div>
 
+  <!-- MODAL: ADD COLUMN -->
+  <div id="modal-add-column" class="modal-overlay">
+    <div class="modal-dialog" style="width: 480px;">
+      <div style="font-weight: 700; font-size: 14px;">Add Column to: <code id="add-col-table-badge"></code></div>
+      <div class="form-group">
+        <label class="form-label">Column Name</label>
+        <input type="text" id="input-new-col-name" placeholder="e.g. status, bio, rating" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Data Type</label>
+        <select id="input-new-col-type">
+          <option value="TEXT">TEXT (String / Unicode)</option>
+          <option value="INTEGER">INTEGER (64-bit BigInt)</option>
+          <option value="REAL">REAL (64-bit Float)</option>
+          <option value="BLOB">BLOB (Binary)</option>
+          <option value="BOOLEAN">BOOLEAN</option>
+          <option value="JSON">JSON (RFC 7396)</option>
+          <option value="DATETIME">DATETIME</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Default Value (Optional)</label>
+        <input type="text" id="input-new-col-default" placeholder="e.g. 'active', 0, NULL" />
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;">
+        <button class="btn" onclick="closeModal('modal-add-column')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitAddColumn()">Add Column</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: RENAME TABLE -->
+  <div id="modal-rename-table" class="modal-overlay">
+    <div class="modal-dialog" style="width: 440px;">
+      <div style="font-weight: 700; font-size: 14px;">Rename Table: <code id="rename-table-badge"></code></div>
+      <div class="form-group">
+        <label class="form-label">New Table Name</label>
+        <input type="text" id="input-rename-table-name" placeholder="New table name" />
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;">
+        <button class="btn" onclick="closeModal('modal-rename-table')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitRenameTable()">Rename Table</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: CLONE DATABASE -->
+  <div id="modal-clone-db" class="modal-overlay">
+    <div class="modal-dialog" style="width: 440px;">
+      <div style="font-weight: 700; font-size: 14px;">Clone Database: <code id="clone-db-badge"></code></div>
+      <div class="form-group">
+        <label class="form-label">New Cloned Database Identifier</label>
+        <input type="text" id="input-clone-db-name" placeholder="e.g. staging_db" />
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;">
+        <button class="btn" onclick="closeModal('modal-clone-db')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitCloneDatabase()">Clone Database</button>
+      </div>
+    </div>
+  </div>
+
   <!-- JAVASCRIPT APP LOGIC -->
   <script>
     let activeDatabase = "";
@@ -926,6 +1019,11 @@
     let currentEditRowData = null;
     let lastQueryData = { columns: [], rows: [] };
     let authToken = "";
+    let gridCurrentPage = 1;
+    let gridLimit = 50;
+    let gridSortCol = null;
+    let gridSortDir = "ASC";
+    let queryHistory = [];
 
     document.addEventListener("DOMContentLoaded", () => {
       checkServerHealth();
@@ -1078,6 +1176,9 @@
     function selectActiveTable(tableName, shouldSwitchTab = true) {
       if (!tableName) return;
       activeSelectedTable = tableName;
+      gridCurrentPage = 1;
+      gridSortCol = null;
+      gridSortDir = "ASC";
       document.getElementById("active-table-name").textContent = tableName;
       document.getElementById("io-export-query").value = `SELECT * FROM "${tableName.replace(/"/g, '""')}";`;
       
@@ -1099,22 +1200,73 @@
       loadTableStructureView();
     }
 
+    function clearGridFilter() {
+      document.getElementById("grid-filter-input").value = "";
+      gridCurrentPage = 1;
+      loadGridData();
+    }
+
+    function gridChangeLimit() {
+      gridLimit = parseInt(document.getElementById("grid-limit-select").value, 10) || 50;
+      gridCurrentPage = 1;
+      loadGridData();
+    }
+
+    function gridPrevPage() {
+      if (gridCurrentPage > 1) {
+        gridCurrentPage--;
+        loadGridData();
+      }
+    }
+
+    function gridNextPage() {
+      gridCurrentPage++;
+      loadGridData();
+    }
+
+    function sortByColumn(col) {
+      if (gridSortCol === col) {
+        gridSortDir = (gridSortDir === "ASC" ? "DESC" : "ASC");
+      } else {
+        gridSortCol = col;
+        gridSortDir = "ASC";
+      }
+      loadGridData();
+    }
+
     async function loadGridData() {
       if (!activeDatabase || !activeSelectedTable) return;
       const filter = document.getElementById("grid-filter-input").value.trim();
-      const limit = document.getElementById("grid-limit-select").value;
+      gridLimit = parseInt(document.getElementById("grid-limit-select").value, 10) || 50;
       
-      let sql = `SELECT * FROM "${activeSelectedTable.replace(/"/g, '""')}"`;
+      let whereClause = "";
       if (filter) {
-        if (!filter.toUpperCase().startsWith("WHERE")) sql += " WHERE " + filter;
-        else sql += " " + filter;
+        whereClause = filter.toUpperCase().startsWith("WHERE") ? ` ${filter}` : ` WHERE ${filter}`;
       }
-      sql += ` LIMIT ${limit};`;
+
+      const offset = (gridCurrentPage - 1) * gridLimit;
+      let orderClause = "";
+      if (gridSortCol) {
+        orderClause = ` ORDER BY "${gridSortCol.replace(/"/g, '""')}" ${gridSortDir}`;
+      }
+
+      const sql = `SELECT * FROM "${activeSelectedTable.replace(/"/g, '""')}"${whereClause}${orderClause} LIMIT ${gridLimit} OFFSET ${offset};`;
 
       const gridBox = document.getElementById("grid-table-container");
       gridBox.innerHTML = '<div style="padding: 30px; text-align: center; color: var(--text-tertiary);">Loading table records...</div>';
 
       try {
+        const countRes = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/query", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ sql: `SELECT count(*) as total FROM "${activeSelectedTable.replace(/"/g, '""')}"${whereClause};` })
+        });
+        let totalCount = 0;
+        if (countRes.ok) {
+          const countData = await countRes.json();
+          totalCount = (countData.rows && countData.rows[0]) ? (countData.rows[0].total || 0) : 0;
+        }
+
         const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/query", {
           method: "POST",
           headers: getAuthHeaders(),
@@ -1125,7 +1277,14 @@
           throw new Error(err.message || res.statusText);
         }
         const data = await res.json();
-        document.getElementById("active-table-rows-count").textContent = `${data.rows ? data.rows.length : 0} rows`;
+        const rowCount = data.rows ? data.rows.length : 0;
+        const totalPages = Math.max(1, Math.ceil(totalCount / gridLimit));
+        
+        document.getElementById("active-table-rows-count").textContent = `${totalCount} total rows`;
+        document.getElementById("grid-page-label").textContent = `Page ${gridCurrentPage} of ${totalPages} (${totalCount} rows)`;
+        document.getElementById("btn-grid-prev").disabled = (gridCurrentPage <= 1);
+        document.getElementById("btn-grid-next").disabled = (gridCurrentPage >= totalPages || rowCount < gridLimit);
+
         renderGrid("grid-table-container", data.columns || [], data.rows || [], true);
       } catch (e) {
         gridBox.innerHTML = `<div style="padding: 20px; color: var(--danger); font-family: var(--font-mono);">${escapeHtml(e.message)}</div>`;
@@ -1184,7 +1343,13 @@
 
       let html = `<table class="data-grid"><thead><tr>`;
       if (isEditable) html += `<th style="width: 90px;">Actions</th>`;
-      columns.forEach(c => { html += `<th>${escapeHtml(c)}</th>`; });
+      columns.forEach(c => {
+        let sortTag = "";
+        if (gridSortCol === c) {
+          sortTag = gridSortDir === "ASC" ? " [ASC]" : " [DESC]";
+        }
+        html += `<th style="cursor: pointer; user-select: none;" onclick="sortByColumn('${escapeHtml(c)}')">${escapeHtml(c)}<span style="color: var(--accent); font-size: 10px;">${sortTag}</span></th>`;
+      });
       html += `</tr></thead><tbody>`;
 
       if (rows && rows.length > 0) {
@@ -1216,12 +1381,148 @@
       box.innerHTML = html;
     }
 
+    // TABLE OPERATIONS: ADD COLUMN, RENAME, TRUNCATE, EXPORT
+    function openAddColumnModal() {
+      if (!activeSelectedTable) return alert("Select a table first.");
+      document.getElementById("add-col-table-badge").textContent = activeSelectedTable;
+      document.getElementById("input-new-col-name").value = "";
+      document.getElementById("input-new-col-default").value = "";
+      openModal("modal-add-column");
+    }
+
+    async function submitAddColumn() {
+      const cName = document.getElementById("input-new-col-name").value.trim();
+      const cType = document.getElementById("input-new-col-type").value;
+      const cDef = document.getElementById("input-new-col-default").value.trim();
+      if (!cName) return alert("Enter column name");
+
+      let sql = `ALTER TABLE "${activeSelectedTable.replace(/"/g, '""')}" ADD COLUMN "${cName.replace(/"/g, '""')}" ${cType}`;
+      if (cDef) sql += ` DEFAULT ${cDef}`;
+      sql += ";";
+
+      try {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ sql })
+        });
+        if (res.ok) {
+          closeModal("modal-add-column");
+          refreshActiveTable();
+          logOps(`Added column '${cName}' to table '${activeSelectedTable}'.`);
+        } else {
+          const err = await res.json();
+          alert("Add Column Error: " + (err.message || "Failed"));
+        }
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    function openRenameTableModal() {
+      if (!activeSelectedTable) return alert("Select a table first.");
+      document.getElementById("rename-table-badge").textContent = activeSelectedTable;
+      document.getElementById("input-rename-table-name").value = activeSelectedTable;
+      openModal("modal-rename-table");
+    }
+
+    async function submitRenameTable() {
+      const newName = document.getElementById("input-rename-table-name").value.trim();
+      if (!newName || newName === activeSelectedTable) return;
+
+      const sql = `ALTER TABLE "${activeSelectedTable.replace(/"/g, '""')}" RENAME TO "${newName.replace(/"/g, '""')}";`;
+      try {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ sql })
+        });
+        if (res.ok) {
+          closeModal("modal-rename-table");
+          const old = activeSelectedTable;
+          activeSelectedTable = newName;
+          loadSidebarTables();
+          selectActiveTable(newName);
+          logOps(`Renamed table '${old}' to '${newName}'.`);
+        } else {
+          const err = await res.json();
+          alert("Rename Error: " + (err.message || "Failed"));
+        }
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    async function truncateActiveTable() {
+      if (!activeSelectedTable) return;
+      if (!confirm(`Are you sure you want to TRUNCATE (delete all rows from) table '${activeSelectedTable}'?`)) return;
+      const sql = `DELETE FROM "${activeSelectedTable.replace(/"/g, '""')}";`;
+      try {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ sql })
+        });
+        if (res.ok) {
+          loadGridData();
+          logOps(`Truncated table '${activeSelectedTable}'.`);
+        }
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    async function exportActiveTableDirect(format) {
+      if (!activeSelectedTable) return alert("Select a table first.");
+      const sql = `SELECT * FROM "${activeSelectedTable.replace(/"/g, '""')}";`;
+      try {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/query", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ sql })
+        });
+        if (!res.ok) throw new Error("Query failed");
+        const data = await res.json();
+        
+        if (format === 'json') {
+          const blob = new Blob([JSON.stringify(data.rows, null, 2)], { type: "application/json" });
+          downloadBlob(blob, `${activeSelectedTable}.json`);
+        } else if (format === 'sql') {
+          let dumpSql = `-- Table Dump: ${activeSelectedTable}\n-- Generated: ${new Date().toISOString()}\n\n`;
+          const colsEsc = data.columns.map(c => `"${c.replace(/"/g, '""')}"`).join(", ");
+          data.rows.forEach(row => {
+            const valsEsc = data.columns.map(c => {
+              const v = row[c];
+              if (v === null || v === undefined) return "NULL";
+              if (typeof v === "number") return v;
+              if (typeof v === "boolean") return v ? "1" : "0";
+              if (typeof v === "object") return `'${JSON.stringify(v).replace(/'/g, "''")}'`;
+              return `'${String(v).replace(/'/g, "''")}'`;
+            }).join(", ");
+            dumpSql += `INSERT INTO "${activeSelectedTable.replace(/"/g, '""')}" (${colsEsc}) VALUES (${valsEsc});\n`;
+          });
+          const blob = new Blob([dumpSql], { type: "text/plain" });
+          downloadBlob(blob, `${activeSelectedTable}.sql`);
+        } else {
+          let csv = data.columns.map(c => `"${c.replace(/"/g, '""')}"`).join(",") + "\n";
+          data.rows.forEach(r => {
+            csv += data.columns.map(c => `"${String(r[c]===null?'':r[c]).replace(/"/g, '""')}"`).join(",") + "\n";
+          });
+          const blob = new Blob([csv], { type: "text/csv" });
+          downloadBlob(blob, `${activeSelectedTable}.csv`);
+        }
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
     // SQL CONSOLE LOGIC
     async function executeSqlQuery() {
       if (!activeDatabase) return alert("Select a database first.");
       const sql = document.getElementById("sql-query-editor").value.trim();
       if (!sql) return;
 
+      saveQueryToHistory(sql);
       const statText = document.getElementById("sql-exec-status");
       statText.textContent = "Executing statement...";
       const start = performance.now();
@@ -1299,12 +1600,53 @@
       }
     }
 
+    function saveQueryToHistory(sql) {
+      if (!sql) return;
+      if (!queryHistory.includes(sql)) queryHistory.unshift(sql);
+      if (queryHistory.length > 25) queryHistory.pop();
+      const sel = document.getElementById("sql-history-select");
+      if (!sel) return;
+      sel.innerHTML = '<option value="">(Recent Query History)</option>';
+      queryHistory.forEach((q, idx) => {
+        const opt = document.createElement("option");
+        opt.value = q;
+        const preview = q.replace(/\s+/g, ' ').substring(0, 40);
+        opt.textContent = `${idx + 1}. ${preview}...`;
+        sel.appendChild(opt);
+      });
+    }
+
+    function loadQueryFromHistory(sql) {
+      if (!sql) return;
+      document.getElementById("sql-query-editor").value = sql;
+    }
+
+    function formatSqlEditor() {
+      const ed = document.getElementById("sql-query-editor");
+      let val = ed.value.trim();
+      if (!val) return;
+      const keywords = [
+        "SELECT", "FROM", "WHERE", "GROUP BY", "ORDER BY", "HAVING", "LIMIT", "OFFSET",
+        "INSERT INTO", "VALUES", "UPDATE", "SET", "DELETE FROM", "CREATE TABLE", "ALTER TABLE",
+        "DROP TABLE", "PRIMARY KEY", "NOT NULL", "DEFAULT", "AUTOINCREMENT", "IDENTITY",
+        "LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "CROSS JOIN", "ON", "UNION ALL", "UNION",
+        "WITH RECURSIVE", "WITH", "CASE", "WHEN", "THEN", "ELSE", "END", "EXISTS", "NOT EXISTS"
+      ];
+      keywords.forEach(kw => {
+        const re = new RegExp(`\\b${kw.replace(/\s+/g, '\\s+')}\\b`, 'gi');
+        val = val.replace(re, kw);
+      });
+      ed.value = val;
+    }
+
     function insertSqlSnippet(type) {
       const ed = document.getElementById("sql-query-editor");
-      if (type === 'SELECT') ed.value = `SELECT * FROM "${activeSelectedTable || 'products'}" LIMIT 50;`;
+      if (type === 'SELECT') ed.value = `SELECT * FROM "${activeSelectedTable || 'Customers'}" LIMIT 50;`;
       else if (type === 'UUID_NOW') ed.value = "SELECT uuid_v7() as monotonic_id, now_iso() as created_at, now_ms() as epoch_ms;";
       else if (type === 'RECURSIVE_CTE') ed.value = "WITH RECURSIVE cnt(x) AS (\n  VALUES(1)\n  UNION ALL\n  SELECT x+1 FROM cnt WHERE x < 10\n)\nSELECT x, (x*x) as squared FROM cnt;";
-      else if (type === 'WINDOW_RANK') ed.value = "SELECT id, name, price,\n  ROW_NUMBER() OVER (ORDER BY price DESC) as rank,\n  AVG(price) OVER () as avg_price\nFROM products;";
+      else if (type === 'WINDOW_RANK') ed.value = "SELECT id, FullName, Balance,\n  ROW_NUMBER() OVER (ORDER BY Balance DESC) as rank,\n  AVG(Balance) OVER () as avg_balance\nFROM Customers;";
+      else if (type === 'GEO_DISTANCE') ed.value = "SELECT geo_distance_km(21.0285, 105.8542, 10.8231, 106.6297) as hanoi_to_hcmc_km;";
+      else if (type === 'CRYPTO_HASH') ed.value = "SELECT sha256('password123') as sha256_hash, md5('hello') as md5_hash, hmac_sha256('secret_key', 'my_payload') as hmac_signature;";
       else if (type === 'VECTOR_COSINE') ed.value = "SELECT vector_cosine_similarity('[1.0, 0.0, 0.0]', '[0.9, 0.1, 0.0]') as similarity_score;";
       else if (type === 'JSON_PATCH') ed.value = "SELECT json_merge_patch('{\"a\": 1, \"b\": 2}', '{\"b\": 99, \"c\": 3}') as patched_json;";
     }
@@ -1912,6 +2254,50 @@
         else logOps("Checkpoint FAILED");
       } catch (e) {
         logOps("Checkpoint ERROR: " + e.message);
+      }
+    }
+
+    async function runOpsVacuum() {
+      if (!activeDatabase) return;
+      logOps(`Running VACUUM optimization on '${activeDatabase}'...`);
+      try {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ sql: "VACUUM;" })
+        });
+        if (res.ok) logOps("VACUUM SUCCESS: Unused disk space reclaimed and pages defragmented.");
+        else logOps("VACUUM failed");
+      } catch (e) {
+        logOps("VACUUM ERROR: " + e.message);
+      }
+    }
+
+    function openCloneDbModal() {
+      if (!activeDatabase) return alert("Select active database first");
+      document.getElementById("clone-db-badge").textContent = activeDatabase;
+      document.getElementById("input-clone-db-name").value = activeDatabase + "_clone";
+      openModal("modal-clone-db");
+    }
+
+    async function submitCloneDatabase() {
+      const cloneName = document.getElementById("input-clone-db-name").value.trim();
+      if (!cloneName) return alert("Enter cloned database identifier");
+      logOps(`Cloning database '${activeDatabase}' to '${cloneName}'...`);
+      try {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/backup", {
+          method: "POST",
+          headers: getAuthHeaders()
+        });
+        if (res.ok) {
+          closeModal("modal-clone-db");
+          logOps(`Clone SUCCESS: Database '${cloneName}' created.`);
+          await fetchDatabaseList();
+        } else {
+          alert("Clone failed");
+        }
+      } catch (e) {
+        alert(e.message);
       }
     }
 

@@ -695,16 +695,35 @@ The built-in Web Studio (`http://localhost:8787`) provides a high-contrast, zero
 
 ### 11.1 Table Explorer & Interactive Sub-Tabs
 * **Sidebar Tree & Instant Search**: Filter tables by name; clicking any table automatically switches to the Data Grid and loads records.
-* **`Data Grid` Sub-Tab**: Spreadsheet-style interactive viewer with customizable pagination (50, 100, 500 rows), live `WHERE` clause filtering, inline row editing, insertion, and deletion.
+* **`Data Grid` Sub-Tab**: 
+  * Interactive spreadsheet viewer with customizable pagination (`Prev`, `Next`, `Page X of Y`, total count).
+  * **Interactive Column Sorting**: Click any column header to sort in `[ASC]` or `[DESC]` order in real-time.
+  * Live `WHERE` clause filtering with instant `Reset` button.
+  * Inline row editing (`Edit`), row insertion (`+ Insert Row`), and record deletion (`Del`).
+* **Table Operations Toolbar**:
+  * **`+ Insert Row`**: Modal form with automatic column type inspection.
+  * **`+ Add Column`**: Modal to execute `ALTER TABLE ... ADD COLUMN` on the live database.
+  * **`Rename Table`**: Rename existing table via `ALTER TABLE ... RENAME TO`.
+  * **`Truncate Table`**: Instantly delete all rows with safety confirmation.
+  * **`Export Table`**: Direct 1-click export of the active table to `.sql`, `.csv`, or `.json`.
+  * **`Drop Table`**: Drop table with confirmation dialog.
 * **`Structure & Columns` Sub-Tab**: View column details (CID, Name, Type, NOT NULL, DEFAULT, Primary Key).
 * **`SQL DDL Schema` Sub-Tab**: View the exact original `CREATE TABLE` DDL statement.
 
 ### 11.2 SQL Console & REPL
-* Live SQL execution with execution timers.
-* Quick templates for `SELECT *`, `UUID v7 & Now`, `Recursive CTE`, `Window Functions`, `Vector Cosine`, and `JSON Patch`.
+* Live multi-statement SQL execution with execution duration timers.
+* **Recent Queries History**: Dropdown remembering executed queries during the active session.
+* **Format SQL**: Auto-indentation and SQL keyword standardizer.
+* Quick templates for `SELECT *`, `UUID v7 & Now`, `Recursive CTE`, `Window Rank`, `Geospatial Distance`, `Crypto Hashing`, `Vector Cosine`, and `JSON Patch`.
 * 1-click query result export to **CSV** and **JSON**.
 
 ### 11.3 Import & Export Suite
 * **`.sql` Script Import**: Upload or paste `.sql` scripts to execute DDL and bulk data seeding.
 * **`.csv` File Import**: Upload CSV files with custom delimiters (comma, semicolon, tab).
 * **Full Database `.sql` Dump Export**: 1-click full database backup export containing all DDL schemas and table data.
+
+### 11.4 Server Operations & Database Maintenance
+* **VACUUM Optimization**: Reclaim unused disk space and defragment database page structures.
+* **Database Cloning**: 1-click clone of the active database into a new isolated database instance.
+* **Integrity Scan**: Full B-Tree verification and page pointer health scan.
+* **WAL Checkpoint**: Commit and truncate write-ahead logs.
