@@ -383,6 +383,52 @@ pub fn register(connection: &Connection) -> Result<()> {
         },
     )?;
 
+    // SYSDATETIMEOFFSET() -> string
+    connection.create_scalar_function("sysdatetimeoffset", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+        Ok(format!("{}+07:00", epoch_ms_to_iso(now)))
+    })?;
+
+    // DATEFROMPARTS(year, month, day) -> 'YYYY-MM-DD'
+    connection.create_scalar_function("datefromparts", 3, FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
+        let y: i64 = ctx.get(0)?;
+        let m: i64 = ctx.get(1)?;
+        let d: i64 = ctx.get(2)?;
+        Ok(format!("{y:04}-{m:02}-{d:02}"))
+    })?;
+
+    // EOMONTH(date_str) -> 'YYYY-MM-DD' (last day of month)
+    connection.create_scalar_function("eomonth", 1, FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
+        let text: String = ctx.get(0)?;
+        if let Some(ms) = parse_iso8601_to_epoch_ms(&text) {
+            let days = (ms / 1_000) / 86_400;
+            let (y, m, _) = days_to_ymd(days);
+            let next_m_y = if m == 12 { y as i32 + 1 } else { y as i32 };
+            let next_m = if m == 12 { 1u32 } else { (m + 1) as u32 };
+            let first_day_next_month = ymd_to_days(next_m_y, next_m, 1);
+            let last_day = days_to_ymd(first_day_next_month - 1);
+            Ok(Some(format!("{:04}-{:02}-{:02}", last_day.0, last_day.1, last_day.2)))
+        } else {
+            Ok(None)
+        }
+    })?;
+
+    // DB_NAME() -> 'NovaSqlServerLab'
+    connection.create_scalar_function("db_name", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        Ok("NovaSqlServerLab".to_string())
+    })?;
+
+    // SERVERPROPERTY(prop) -> property string
+    connection.create_scalar_function("serverproperty", 1, FunctionFlags::SQLITE_UTF8, |ctx| {
+        let prop: String = ctx.get(0)?;
+        match prop.to_lowercase().as_str() {
+            "productversion" => Ok("16.0.4095.4".to_string()),
+            "productlevel" => Ok("RTM".to_string()),
+            "edition" => Ok("Enterprise Edition: Core-based (64-bit)".to_string()),
+            _ => Ok("NovaDB Enterprise".to_string()),
+        }
+    })?;
+
     Ok(())
 }
 

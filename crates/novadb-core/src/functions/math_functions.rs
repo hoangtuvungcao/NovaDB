@@ -182,15 +182,80 @@ pub fn register(connection: &Connection) -> Result<()> {
         let lat2: f64 = ctx.get(2)?;
         let lon2: f64 = ctx.get(3)?;
 
-        let r = 6371.0; // Earth radius in km
+        let r = 6371.0f64; // Earth radius in km
         let d_lat = (lat2 - lat1).to_radians();
         let d_lon = (lon2 - lon1).to_radians();
 
         let a = (d_lat / 2.0).sin().powi(2)
             + lat1.to_radians().cos() * lat2.to_radians().cos() * (d_lon / 2.0).sin().powi(2);
-        let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+        let c = 2.0 * a.sqrt().atan2((1.0f64 - a).sqrt());
 
         Ok(r * c)
+    })?;
+
+    // CHOOSE(index, val1, val2, ...)
+    connection.create_scalar_function("choose", -1, deterministic, |ctx| {
+        if ctx.len() < 2 {
+            return Ok(rusqlite::types::Value::Null);
+        }
+        let index: i64 = ctx.get(0)?;
+        if index < 1 || index >= ctx.len() as i64 {
+            return Ok(rusqlite::types::Value::Null);
+        }
+        let val: rusqlite::types::Value = ctx.get(index as usize)?;
+        Ok(val)
+    })?;
+
+    // GREATEST(v1, v2, ...)
+    connection.create_scalar_function("greatest", -1, deterministic, |ctx| {
+        if ctx.len() == 0 {
+            return Ok(rusqlite::types::Value::Null);
+        }
+        let mut max_val: Option<f64> = None;
+        for i in 0..ctx.len() {
+            if let Ok(v) = ctx.get::<f64>(i) {
+                max_val = Some(match max_val {
+                    Some(cur) => cur.max(v),
+                    None => v,
+                });
+            }
+        }
+        match max_val {
+            Some(v) => {
+                if v.fract() == 0.0 {
+                    Ok(rusqlite::types::Value::Integer(v as i64))
+                } else {
+                    Ok(rusqlite::types::Value::Real(v))
+                }
+            }
+            None => Ok(rusqlite::types::Value::Null),
+        }
+    })?;
+
+    // LEAST(v1, v2, ...)
+    connection.create_scalar_function("least", -1, deterministic, |ctx| {
+        if ctx.len() == 0 {
+            return Ok(rusqlite::types::Value::Null);
+        }
+        let mut min_val: Option<f64> = None;
+        for i in 0..ctx.len() {
+            if let Ok(v) = ctx.get::<f64>(i) {
+                min_val = Some(match min_val {
+                    Some(cur) => cur.min(v),
+                    None => v,
+                });
+            }
+        }
+        match min_val {
+            Some(v) => {
+                if v.fract() == 0.0 {
+                    Ok(rusqlite::types::Value::Integer(v as i64))
+                } else {
+                    Ok(rusqlite::types::Value::Real(v))
+                }
+            }
+            None => Ok(rusqlite::types::Value::Null),
+        }
     })?;
 
     Ok(())

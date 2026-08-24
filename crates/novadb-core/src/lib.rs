@@ -406,7 +406,10 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_set.replace_all(&normalized, "").into_owned();
     }
 
-    // 0a. Strip / Comment SQL Server CREATE DATABASE and USE commands
+    // 0a. Strip / Comment SQL Server CREATE DATABASE, USE, and DB_ID check blocks
+    if let Ok(re_dbid) = regex::Regex::new(r"(?i)\bIF\s+DB_ID\s*\([^)]*\)\s+IS\s+NULL\s+BEGIN[\s\S]*?END;?") {
+        normalized = re_dbid.replace_all(&normalized, "-- DB_ID check\n").into_owned();
+    }
     if let Ok(re_create_db) = regex::Regex::new(r"(?i)\bCREATE\s+DATABASE\s+([a-zA-Z0-9_#$]+);?") {
         normalized = re_create_db.replace_all(&normalized, "-- CREATE DATABASE ${1}\n").into_owned();
     }
@@ -419,9 +422,65 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_go.replace_all(&normalized, "\n").into_owned();
     }
 
-    // 0a3. T-SQL inline column FOREIGN KEY REFERENCES -> REFERENCES
+    // 0a3. Drop unsupported objects gracefully (PROCEDURE, FUNCTION, SYNONYM, SEQUENCE)
+    if let Ok(re_drop_unsupported) = regex::Regex::new(r"(?i)\bDROP\s+(?:PROCEDURE|PROC|FUNCTION|SYNONYM|SEQUENCE)\s+(?:IF\s+EXISTS\s+)?([a-zA-Z0-9_#$.]+);?") {
+        normalized = re_drop_unsupported.replace_all(&normalized, "-- DROP ${1}\n").into_owned();
+    }
+
+    // 0a4. CREATE OR ALTER VIEW -> CREATE VIEW IF NOT EXISTS
+    if let Ok(re_view) = regex::Regex::new(r"(?i)\bCREATE\s+(?:OR\s+ALTER\s+)?VIEW\b") {
+        normalized = re_view.replace_all(&normalized, "CREATE VIEW IF NOT EXISTS").into_owned();
+    }
+
+    // 0a5. Strip dbo. schema prefix
+    if let Ok(re_dbo) = regex::Regex::new(r"(?i)\bdbo\.([a-zA-Z0-9_#$]+)\b") {
+        normalized = re_dbo.replace_all(&normalized, "${1}").into_owned();
+    }
+
+    // 0a6. T-SQL inline column FOREIGN KEY REFERENCES -> REFERENCES
     if let Ok(re_fk_ref) = regex::Regex::new(r"(?i)\bFOREIGN\s+KEY\s+REFERENCES\b") {
         normalized = re_fk_ref.replace_all(&normalized, "REFERENCES").into_owned();
+    }
+
+    // 0a7. Computed columns PERSISTED: AS (expr) PERSISTED -> AS (expr)
+    if let Ok(re_persisted) = regex::Regex::new(r"(?i)\bAS\s*\(([^)]+)\)\s+PERSISTED\b") {
+        normalized = re_persisted.replace_all(&normalized, "AS (${1})").into_owned();
+    }
+
+    // 0a8. Index INCLUDE and WITH (NOLOCK) hints
+    if let Ok(re_include) = regex::Regex::new(r"(?i)\bINCLUDE\s*\([^)]*\)") {
+        normalized = re_include.replace_all(&normalized, "").into_owned();
+    }
+    if let Ok(re_nolock) = regex::Regex::new(r"(?i)\bWITH\s*\(\s*NOLOCK\s*\)") {
+        normalized = re_nolock.replace_all(&normalized, "").into_owned();
+    }
+
+    // 0a9. T-SQL TRY_CAST / TRY_CONVERT / CONVERT
+    if let Ok(re_try_cast) = regex::Regex::new(r"(?i)\bTRY_CAST\s*\(\s*(.*?)\s+AS\s+([a-zA-Z0-9_]+(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?)\s*\)") {
+        normalized = re_try_cast.replace_all(&normalized, "CAST(${1} AS ${2})").into_owned();
+    }
+    if let Ok(re_try_conv) = regex::Regex::new(r"(?i)\bTRY_CONVERT\s*\(\s*([a-zA-Z0-9_]+(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?)\s*,\s*(.*?)\s*\)") {
+        normalized = re_try_conv.replace_all(&normalized, "CAST(${2} AS ${1})").into_owned();
+    }
+    if let Ok(re_conv_str) = regex::Regex::new(r"(?i)\bCONVERT\s*\(\s*N?(?:VAR)?CHAR(?:\(\s*(?:\d+|MAX)\s*\))?\s*,\s*(.*?)(?:\s*,\s*\d+)?\s*\)") {
+        normalized = re_conv_str.replace_all(&normalized, "CAST(${1} AS TEXT)").into_owned();
+    }
+    if let Ok(re_conv_bin) = regex::Regex::new(r"(?i)\bCONVERT\s*\(\s*VARBINARY(?:\(\s*(?:MAX|\d+)\s*\))?\s*,\s*(.*?)\s*\)") {
+        normalized = re_conv_bin.replace_all(&normalized, "CAST(${1} AS BLOB)").into_owned();
+    }
+
+    // 0a10. T-SQL Server system variables and metadata tables
+    if let Ok(re_ver) = regex::Regex::new(r"(?i)@@VERSION\b") {
+        normalized = re_ver.replace_all(&normalized, "'Microsoft SQL Server 2022 (NovaDB Compatibility Engine)'").into_owned();
+    }
+    if let Ok(re_srv) = regex::Regex::new(r"(?i)@@SERVERNAME\b") {
+        normalized = re_srv.replace_all(&normalized, "'NovaDB-Server'").into_owned();
+    }
+    if let Ok(re_newseq) = regex::Regex::new(r"(?i)\bNEWSEQUENTIALID\(\)") {
+        normalized = re_newseq.replace_all(&normalized, "uuid_v7()").into_owned();
+    }
+    if let Ok(re_info_tbl) = regex::Regex::new(r"(?i)\bINFORMATION_SCHEMA\.TABLES\b") {
+        normalized = re_info_tbl.replace_all(&normalized, "(SELECT 'dbo' AS TABLE_SCHEMA, name AS TABLE_NAME, 'BASE TABLE' AS TABLE_TYPE FROM sqlite_master WHERE type='table' AND name NOT GLOB '_novadb_*')").into_owned();
     }
 
     // 0b. T-SQL IF OBJECT_ID(...) IS NOT NULL DROP TABLE #table -> DROP TABLE IF EXISTS temp_table

@@ -35,6 +35,29 @@ pub fn register(connection: &Connection) -> Result<()> {
         Ok(Some(format!("{:x}", Sha256::digest(bytes))))
     })?;
 
+    // HASHBYTES(algorithm, data) -> BLOB
+    connection.create_scalar_function("hashbytes", 2, deterministic, |ctx| {
+        let algo: String = ctx.get(0)?;
+        let val = ctx.get_raw(1);
+        let bytes = match val {
+            ValueRef::Blob(b) => b,
+            ValueRef::Text(t) => t,
+            ValueRef::Null => return Ok(None::<Vec<u8>>),
+            ValueRef::Integer(_) | ValueRef::Real(_) => {
+                let s = ctx.get::<String>(1)?;
+                return Ok(Some(Sha256::digest(s.as_bytes()).to_vec()));
+            }
+        };
+        let hash = match algo.to_uppercase().replace('_', "").replace('-', "").as_str() {
+            "MD5" => md5::Md5::digest(bytes).to_vec(),
+            "SHA" | "SHA1" => sha1::Sha1::digest(bytes).to_vec(),
+            "SHA2256" | "SHA256" => sha2::Sha256::digest(bytes).to_vec(),
+            "SHA2512" | "SHA512" => sha2::Sha512::digest(bytes).to_vec(),
+            _ => sha2::Sha256::digest(bytes).to_vec(),
+        };
+        Ok(Some(hash))
+    })?;
+
     // SHA512(data) -> hex string
     connection.create_scalar_function("sha512", 1, deterministic, |ctx| {
         let val = ctx.get_raw(0);
