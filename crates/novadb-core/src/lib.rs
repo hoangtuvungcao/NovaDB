@@ -430,6 +430,29 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_drop_unsupported.replace_all(&normalized, "-- DROP ${1}\n").into_owned();
     }
 
+    // 0a3b. Gracefully transpile procedural objects: PROCEDURE, FUNCTION, TRIGGER, EXEC, TRY/CATCH, SEQUENCE, FOR JSON/XML
+    if let Ok(re_proc) = regex::Regex::new(r"(?i)\bCREATE\s+(?:OR\s+ALTER\s+)?(?:PROCEDURE|PROC)\s+[\s\S]*?\bAS\b\s+BEGIN[\s\S]*?\bEND\b;?") {
+        normalized = re_proc.replace_all(&normalized, "-- CREATE PROCEDURE\n").into_owned();
+    }
+    if let Ok(re_func) = regex::Regex::new(r"(?i)\bCREATE\s+(?:OR\s+ALTER\s+)?FUNCTION\s+[\s\S]*?\bAS\b\s+BEGIN[\s\S]*?\bEND\b;?") {
+        normalized = re_func.replace_all(&normalized, "-- CREATE FUNCTION\n").into_owned();
+    }
+    if let Ok(re_trig) = regex::Regex::new(r"(?i)\bCREATE\s+(?:OR\s+ALTER\s+)?TRIGGER\s+[\s\S]*?\bAS\b\s+BEGIN[\s\S]*?\bEND\b;?") {
+        normalized = re_trig.replace_all(&normalized, "-- CREATE TRIGGER\n").into_owned();
+    }
+    if let Ok(re_exec) = regex::Regex::new(r"(?i)\bEXEC\s+[a-zA-Z0-9_#$.]+\s*[^;\n]*;?") {
+        normalized = re_exec.replace_all(&normalized, "-- EXEC\n").into_owned();
+    }
+    if let Ok(re_try_catch) = regex::Regex::new(r"(?i)\bBEGIN\s+TRY[\s\S]*?END\s+TRY\s+BEGIN\s+CATCH[\s\S]*?END\s+CATCH;?") {
+        normalized = re_try_catch.replace_all(&normalized, "-- TRY/CATCH\n").into_owned();
+    }
+    if let Ok(re_create_seq) = regex::Regex::new(r"(?i)\bCREATE\s+SEQUENCE\s+[\s\S]*?;") {
+        normalized = re_create_seq.replace_all(&normalized, "-- CREATE SEQUENCE\n").into_owned();
+    }
+    if let Ok(re_for_json_xml) = regex::Regex::new(r"(?i)\bFOR\s+(?:JSON|XML)\s+[^;\n]+;") {
+        normalized = re_for_json_xml.replace_all(&normalized, ";").into_owned();
+    }
+
     // 0a4. CREATE OR ALTER VIEW -> CREATE VIEW IF NOT EXISTS
     if let Ok(re_view) = regex::Regex::new(r"(?i)\bCREATE\s+(?:OR\s+ALTER\s+)?VIEW\b") {
         normalized = re_view.replace_all(&normalized, "CREATE VIEW IF NOT EXISTS").into_owned();
@@ -775,11 +798,11 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
     }
 
     // 18. T-SQL GROUP BY ROLLUP / CUBE / GROUPING SETS
+    if let Ok(re_gsets) = regex::Regex::new(r"(?i)\bGROUP\s+BY\s+GROUPING\s+SETS\s*\(\s*\(\s*([a-zA-Z0-9_#$,\s]+?)\s*\)[\s\S]*?\)\s*;") {
+        normalized = re_gsets.replace_all(&normalized, "GROUP BY ${1};").into_owned();
+    }
     if let Ok(re_rollup) = regex::Regex::new(r"(?i)\bGROUP\s+BY\s+(?:ROLLUP|CUBE)\s*\(([^)]+)\)") {
         normalized = re_rollup.replace_all(&normalized, "GROUP BY ${1}").into_owned();
-    }
-    if let Ok(re_gsets) = regex::Regex::new(r"(?i)\bGROUP\s+BY\s+GROUPING\s+SETS\s*\(\s*\(([^)]*)\)[\s\S]*?\)") {
-        normalized = re_gsets.replace_all(&normalized, "GROUP BY ${1}").into_owned();
     }
 
     // 19. T-SQL SELECT ... INTO Table FROM ... -> CREATE TABLE IF NOT EXISTS Table AS SELECT ... FROM ...

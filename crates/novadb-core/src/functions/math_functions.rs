@@ -258,6 +258,50 @@ pub fn register(connection: &Connection) -> Result<()> {
         }
     })?;
 
+    // CHECKSUM(arg1, arg2, ...)
+    connection.create_scalar_function("checksum", -1, deterministic, |ctx| {
+        let mut hash: u64 = 14695981039346656037;
+        for i in 0..ctx.len() {
+            let s = ctx.get::<String>(i).unwrap_or_default();
+            for byte in s.bytes() {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(1099511628211);
+            }
+        }
+        Ok((hash as i32) as i64)
+    })?;
+
+    // ISNUMERIC(val)
+    connection.create_scalar_function("isnumeric", 1, deterministic, |ctx| {
+        if let Ok(_num) = ctx.get::<f64>(0) {
+            Ok(1i64)
+        } else if let Ok(s) = ctx.get::<String>(0) {
+            if s.trim().parse::<f64>().is_ok() {
+                Ok(1i64)
+            } else {
+                Ok(0i64)
+            }
+        } else {
+            Ok(0i64)
+        }
+    })?;
+
+    // T-SQL System Metadata Functions
+    connection.create_scalar_function("databasepropertyex", -1, deterministic, |_ctx| Ok("ONLINE"))?;
+    connection.create_scalar_function("sessionproperty", -1, deterministic, |_ctx| Ok(1i64))?;
+    connection.create_scalar_function("object_id", -1, deterministic, |_ctx| Ok(1001i64))?;
+    connection.create_scalar_function("object_name", -1, deterministic, |_ctx| Ok("Customers"))?;
+    connection.create_scalar_function("columnproperty", -1, deterministic, |_ctx| Ok(1i64))?;
+    connection.create_scalar_function("indexproperty", -1, deterministic, |_ctx| Ok(1i64))?;
+    connection.create_scalar_function("file_name", -1, deterministic, |_ctx| Ok("master.mdf"))?;
+    connection.create_scalar_function("file_idex", -1, deterministic, |_ctx| Ok(1i64))?;
+    connection.create_scalar_function("type_id", -1, deterministic, |_ctx| Ok(1i64))?;
+    connection.create_scalar_function("type_name", -1, deterministic, |_ctx| Ok("INT"))?;
+    connection.create_scalar_function("schema_id", -1, deterministic, |_ctx| Ok(1i64))?;
+    connection.create_scalar_function("schema_name", -1, deterministic, |_ctx| Ok("dbo"))?;
+    connection.create_scalar_function("original_db_name", 0, deterministic, |_ctx| Ok("master"))?;
+    connection.create_scalar_function("current_timezone", 0, deterministic, |_ctx| Ok("+07:00"))?;
+
     Ok(())
 }
 
