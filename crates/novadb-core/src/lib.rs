@@ -559,19 +559,7 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_for_json.replace_all(&normalized, "").into_owned();
     }
 
-    // 0a12. T-SQL TRY_CAST / TRY_CONVERT / CONVERT
-    if let Ok(re_try_cast) = regex::Regex::new(r"(?i)\bTRY_CAST\s*\(\s*(.*?)\s+AS\s+([a-zA-Z0-9_]+(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?)\s*\)") {
-        normalized = re_try_cast.replace_all(&normalized, "CAST(${1} AS ${2})").into_owned();
-    }
-    if let Ok(re_try_conv) = regex::Regex::new(r"(?i)\bTRY_CONVERT\s*\(\s*([a-zA-Z0-9_]+(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?)\s*,\s*(.*?)\s*\)") {
-        normalized = re_try_conv.replace_all(&normalized, "CAST(${2} AS ${1})").into_owned();
-    }
-    if let Ok(re_conv_str) = regex::Regex::new(r"(?i)\bCONVERT\s*\(\s*N?(?:VAR)?CHAR(?:\(\s*(?:\d+|MAX)\s*\))?\s*,\s*(.*?)(?:\s*,\s*\d+)?\s*\)") {
-        normalized = re_conv_str.replace_all(&normalized, "CAST(${1} AS TEXT)").into_owned();
-    }
-    if let Ok(re_conv_bin) = regex::Regex::new(r"(?i)\bCONVERT\s*\(\s*VARBINARY(?:\(\s*(?:MAX|\d+)\s*\))?\s*,\s*(.*?)\s*\)") {
-        normalized = re_conv_bin.replace_all(&normalized, "CAST(${1} AS BLOB)").into_owned();
-    }
+
 
     // 0a13. T-SQL Server system variables and metadata tables
     if let Ok(re_ver) = regex::Regex::new(r"(?i)@@VERSION\b") {
@@ -677,27 +665,33 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
     if let Ok(re_isnull) = regex::Regex::new(r"(?i)\bISNULL\s*\(") {
         normalized = re_isnull.replace_all(&normalized, "ifnull(").into_owned();
     }
-    if let Ok(re_try_cast) = regex::Regex::new(r"(?i)\bTRY_CAST\s*\(\s*([\s\S]*?)\s+AS\s+([a-zA-Z0-9_()]+)\s*\)") {
+    if let Ok(re_try_cast) = regex::Regex::new(r"(?i)\bTRY_CAST\s*\(\s*((?:[^()]+|\([^)]*\))+)\s+AS\s+([a-zA-Z0-9_]+(?:\(\s*(?:\d+|MAX)\s*\))?)\s*\)") {
         normalized = re_try_cast.replace_all(&normalized, "CAST(${1} AS ${2})").into_owned();
     }
-    if let Ok(re_try_conv) = regex::Regex::new(r"(?i)\bTRY_CONVERT\s*\(\s*([a-zA-Z0-9_()]+)\s*,\s*((?:[^(),]+|\([^)]*\))+?)(?:\s*,\s*\d+)?\s*\)") {
+    if let Ok(re_try_conv_style) = regex::Regex::new(r"(?i)\bTRY_CONVERT\s*\(\s*([a-zA-Z0-9_]+(?:\(\s*(?:\d+|MAX)\s*\))?)\s*,\s*((?:[^(),]+|\([^)]*\))+)\s*,\s*\d+\s*\)") {
+        normalized = re_try_conv_style.replace_all(&normalized, "CAST(${2} AS ${1})").into_owned();
+    }
+    if let Ok(re_try_conv) = regex::Regex::new(r"(?i)\bTRY_CONVERT\s*\(\s*([a-zA-Z0-9_]+(?:\(\s*(?:\d+|MAX)\s*\))?)\s*,\s*((?:[^()]+|\([^)]*\))+)\s*\)") {
         normalized = re_try_conv.replace_all(&normalized, "CAST(${2} AS ${1})").into_owned();
     }
-    if let Ok(re_conv) = regex::Regex::new(r"(?i)\bCONVERT\s*\(\s*([a-zA-Z0-9_()]+)\s*,\s*((?:[^(),]+|\([^)]*\))+?)(?:\s*,\s*\d+)?\s*\)") {
+    if let Ok(re_conv_style) = regex::Regex::new(r"(?i)\bCONVERT\s*\(\s*([a-zA-Z0-9_]+(?:\(\s*(?:\d+|MAX)\s*\))?)\s*,\s*((?:[^(),]+|\([^)]*\))+)\s*,\s*\d+\s*\)") {
+        normalized = re_conv_style.replace_all(&normalized, "CAST(${2} AS ${1})").into_owned();
+    }
+    if let Ok(re_conv) = regex::Regex::new(r"(?i)\bCONVERT\s*\(\s*([a-zA-Z0-9_]+(?:\(\s*(?:\d+|MAX)\s*\))?)\s*,\s*((?:[^()]+|\([^)]*\))+)\s*\)") {
         normalized = re_conv.replace_all(&normalized, "CAST(${2} AS ${1})").into_owned();
     }
 
     // 8. T-SQL CAST(... AS NVARCHAR/VARCHAR/DECIMAL/DATE/BIGINT) -> CAST(... AS TEXT/REAL/INTEGER)
-    if let Ok(re_cast_str) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+N?(?:VAR)?CHAR(?:\(\s*(?:\d+|MAX)\s*\))?\s*\)") {
+    if let Ok(re_cast_str) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*((?:[^()]+|\([^)]*\))+)\s+AS\s+N?(?:VAR)?CHAR(?:\(\s*(?:\d+|MAX)\s*\))?\s*\)") {
         normalized = re_cast_str.replace_all(&normalized, "CAST(${1} AS TEXT)").into_owned();
     }
-    if let Ok(re_cast_date) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+(?:DATE|DATETIME2?|DATETIMEOFFSET|TIME)\s*\)") {
+    if let Ok(re_cast_date) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*((?:[^()]+|\([^)]*\))+)\s+AS\s+(?:DATE|DATETIME2?|DATETIMEOFFSET|TIME)\s*\)") {
         normalized = re_cast_date.replace_all(&normalized, "CAST(${1} AS TEXT)").into_owned();
     }
-    if let Ok(re_cast_dec) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+(?:DECIMAL|NUMERIC|MONEY|SMALLMONEY|FLOAT|REAL)(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\s*\)") {
+    if let Ok(re_cast_dec) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*((?:[^()]+|\([^)]*\))+)\s+AS\s+(?:DECIMAL|NUMERIC|MONEY|SMALLMONEY|FLOAT|REAL)(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\s*\)") {
         normalized = re_cast_dec.replace_all(&normalized, "CAST(${1} AS REAL)").into_owned();
     }
-    if let Ok(re_cast_int) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+(?:BIGINT|INT|INTEGER|SMALLINT|TINYINT|BIT)\s*\)") {
+    if let Ok(re_cast_int) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*((?:[^()]+|\([^)]*\))+)\s+AS\s+(?:BIGINT|INT|INTEGER|SMALLINT|TINYINT|BIT)\s*\)") {
         normalized = re_cast_int.replace_all(&normalized, "CAST(${1} AS INTEGER)").into_owned();
     }
 
@@ -3192,6 +3186,21 @@ LIMIT 1;
         assert_eq!(s40_res.rows[0].get("NotNum").and_then(|v| v.as_i64()), Some(0));
         assert_eq!(s40_res.rows[0].get("IsJsonValid").and_then(|v| v.as_i64()), Some(1));
         assert_eq!(s40_res.rows[0].get("JsonVal").and_then(|v| v.as_str()), Some("hello"));
+        // Test Section 41 exact query
+        let s41_query = r#"
+SELECT
+    Balance,
+    CAST(Balance AS INT) AS BalanceInt,
+    CAST(Balance AS VARCHAR(50)) AS BalanceText,
+    CAST(GETDATE() AS DATE) AS DateOnly,
+    CONVERT(VARCHAR(30), GETDATE(), 120) AS ISODate,
+    CONVERT(VARCHAR(10), GETDATE(), 23) AS DateHyphen
+FROM dbo.Customers;
+        "#;
+        let norm_s41 = normalize_sql_dialect(s41_query);
+        println!("S41 NORMALIZED:\n{}", norm_s41);
+        let s41_res = db.query(s41_query).unwrap();
+        assert_eq!(s41_res.rows.len(), 6);
 
         // Test sys functions
         let sys_query = "SELECT @@VERSION AS ver, DB_NAME() AS db, SERVERPROPERTY('ProductVersion') AS pv, IIF(100 > 50, 'YES', 'NO') AS iif, CHOOSE(2, 'ONE', 'TWO', 'THREE') AS ch, GREATEST(10, 500, 30) AS gt, LEAST(10, 500, 30) AS lt;";
