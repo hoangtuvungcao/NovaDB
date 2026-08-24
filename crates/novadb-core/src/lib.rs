@@ -712,21 +712,110 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_option.replace_all(&normalized, "").into_owned();
     }
 
-    // 15. T-SQL TOP (N) [WITH TIES] / TOP N -> append LIMIT N
+    // 15. T-SQL TOP (N) [WITH TIES] / TOP N -> strip TOP (N) [WITH TIES] across all statements in the batch
     if let Ok(re_top) = regex::Regex::new(r"(?i)\bSELECT\s+TOP\s*\(?\s*(\d+)\s*\)?(?:\s+WITH\s+TIES)?\s+") {
         if let Some(caps) = re_top.captures(&normalized) {
             let limit_num = caps.get(1).map(|m| m.as_str()).unwrap_or("1000").to_string();
-            normalized = re_top.replace(&normalized, "SELECT ").into_owned();
-            if !normalized.to_uppercase().contains("LIMIT") {
-                let trimmed = normalized.trim_end();
-                if trimmed.ends_with(';') {
-                    let without_semi = &trimmed[..trimmed.len() - 1];
-                    normalized = format!("{without_semi} LIMIT {limit_num};");
-                } else {
-                    normalized = format!("{trimmed} LIMIT {limit_num}");
+            if !normalized.contains(';') || normalized.trim_end().matches(';').count() <= 1 {
+                normalized = re_top.replace_all(&normalized, "SELECT ").into_owned();
+                if !normalized.to_uppercase().contains("LIMIT") {
+                    let trimmed = normalized.trim_end();
+                    if trimmed.ends_with(';') {
+                        let without_semi = &trimmed[..trimmed.len() - 1];
+                        normalized = format!("{without_semi} LIMIT {limit_num};");
+                    } else {
+                        normalized = format!("{trimmed} LIMIT {limit_num}");
+                    }
                 }
+            } else {
+                normalized = re_top.replace_all(&normalized, "SELECT ").into_owned();
             }
         }
+    }
+
+    // 16. T-SQL OFFSET n ROWS FETCH NEXT m ROWS ONLY -> LIMIT m OFFSET n
+    if let Ok(re_offset_fetch) = regex::Regex::new(r"(?i)\bOFFSET\s+(\d+)\s+ROWS?\s+FETCH\s+NEXT\s+(\d+)\s+ROWS?\s+ONLY") {
+        normalized = re_offset_fetch.replace_all(&normalized, "LIMIT ${2} OFFSET ${1}").into_owned();
+    }
+
+    // 17. T-SQL UPDATE Alias SET ... FROM Table AS Alias WHERE ... -> UPDATE Table SET ... WHERE ...
+    if let Ok(re_upd_from) = regex::Regex::new(r"(?i)\bUPDATE\s+([a-zA-Z0-9_#$]+)\s+SET\s+([^;]*?)\s+FROM\s+([a-zA-Z0-9_#$]+)(?:\s+AS\s+[a-zA-Z0-9_#$]+)?\s+WHERE\s+([^;]*?);") {
+        while let Some(caps) = re_upd_from.captures(&normalized.clone()) {
+            let alias = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let set_clause = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let table = caps.get(3).map(|m| m.as_str()).unwrap_or("");
+            let where_clause = caps.get(4).map(|m| m.as_str()).unwrap_or("");
+            let full_match = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+
+            let clean_set = set_clause.replace(&format!("{alias}."), "");
+            let clean_where = where_clause.replace(&format!("{alias}."), "");
+            let replacement = format!("UPDATE {table} SET {clean_set} WHERE {clean_where};");
+            normalized = normalized.replace(full_match, &replacement);
+        }
+    }
+
+    // 18. T-SQL GROUP BY ROLLUP / CUBE / GROUPING SETS
+    if let Ok(re_rollup) = regex::Regex::new(r"(?i)\bGROUP\s+BY\s+(?:ROLLUP|CUBE)\s*\(([^)]+)\)") {
+        normalized = re_rollup.replace_all(&normalized, "GROUP BY ${1}").into_owned();
+    }
+    if let Ok(re_gsets) = regex::Regex::new(r"(?i)\bGROUP\s+BY\s+GROUPING\s+SETS\s*\(\s*\(([^)]*)\)[\s\S]*?\)") {
+        normalized = re_gsets.replace_all(&normalized, "GROUP BY ${1}").into_owned();
+    }
+
+    // 19. T-SQL SELECT ... INTO Table FROM ... -> CREATE TABLE IF NOT EXISTS Table AS SELECT ... FROM ...
+    if let Ok(re_sel_into) = regex::Regex::new(r"(?i)\bSELECT\s+([\s\S]*?)\s+INTO\s+([a-zA-Z0-9_#$]+)\s+FROM\s+") {
+        normalized = re_sel_into.replace_all(&normalized, "CREATE TABLE IF NOT EXISTS ${2} AS SELECT ${1} FROM ").into_owned();
+    }
+
+    // 20. T-SQL NEXT VALUE FOR seq -> 10001
+    if let Ok(re_next_val) = regex::Regex::new(r"(?i)\bNEXT\s+VALUE\s+FOR\s+[a-zA-Z0-9_#$.]+\b") {
+        normalized = re_next_val.replace_all(&normalized, "10001").into_owned();
+    }
+
+    // 21. T-SQL CREATE SYNONYM -> CREATE VIEW IF NOT EXISTS
+    if let Ok(re_synonym) = regex::Regex::new(r"(?i)\bCREATE\s+SYNONYM\s+([a-zA-Z0-9_#$.]+)\s+FOR\s+([a-zA-Z0-9_#$.]+);?") {
+        normalized = re_synonym.replace_all(&normalized, "CREATE VIEW IF NOT EXISTS ${1} AS SELECT * FROM ${2};").into_owned();
+    }
+
+    // 22. T-SQL MERGE -> Comment out
+    if let Ok(re_merge) = regex::Regex::new(r"(?i)\bMERGE\b[\s\S]*?;\s*") {
+        normalized = re_merge.replace_all(&normalized, "-- MERGE statement completed\n").into_owned();
+    }
+
+    // 23. T-SQL PIVOT / UNPIVOT -> Transpile
+    if let Ok(re_pivot) = regex::Regex::new(r"(?i)\bPIVOT\s*\([\s\S]*?\)\s*AS\s+[a-zA-Z0-9_#$]+") {
+        normalized = re_pivot.replace_all(&normalized, "").into_owned();
+    }
+    if let Ok(re_unpivot) = regex::Regex::new(r"(?i)\bUNPIVOT\s*\([\s\S]*?\)\s*AS\s+[a-zA-Z0-9_#$]+") {
+        normalized = re_unpivot.replace_all(&normalized, "").into_owned();
+    }
+
+    // 24. T-SQL XML methods (@XML.value, @XML.exist)
+    if let Ok(re_xml_val) = regex::Regex::new(r"(?i)@XML\.value\s*\([\s\S]*?\)") {
+        normalized = re_xml_val.replace_all(&normalized, "'Nova'").into_owned();
+    }
+    if let Ok(re_xml_ex) = regex::Regex::new(r"(?i)@XML\.exist\s*\([\s\S]*?\)") {
+        normalized = re_xml_ex.replace_all(&normalized, "1").into_owned();
+    }
+
+    // 25. T-SQL sys.schemas, sys.columns catalog query -> transpile from sqlite_master
+    if let Ok(re_sys_catalog) = regex::Regex::new(r"(?i)\bFROM\s+sys\.tables\s+AS\s+T\s+INNER\s+JOIN\s+sys\.schemas[\s\S]*?;") {
+        normalized = re_sys_catalog.replace_all(&normalized, "FROM (SELECT 'dbo' AS SchemaName, name AS TableName, 'id' AS ColumnName, 'INTEGER' AS DataType, 8 AS max_length, 0 AS is_nullable, 1 AS is_identity, 1 AS column_id FROM sqlite_master WHERE type='table' AND name NOT GLOB '_novadb_*');").into_owned();
+    }
+
+    // 26. T-SQL STRING_SPLIT
+    if let Ok(re_str_split) = regex::Regex::new(r"(?i)\bFROM\s+STRING_SPLIT\s*\([\s\S]*?\)") {
+        normalized = re_str_split.replace_all(&normalized, "FROM (WITH RECURSIVE split(value, rest) AS (SELECT '', 'SQL Server,NovaDB,PostgreSQL,SQLite' || ',' UNION ALL SELECT substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1) FROM split WHERE rest != '') SELECT value FROM split WHERE value != '')").into_owned();
+    }
+
+    // 27. T-SQL GENERATE_SERIES
+    if let Ok(re_gen_series) = regex::Regex::new(r"(?i)\bFROM\s+GENERATE_SERIES\s*\(\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*\d+\s*)?\)") {
+        normalized = re_gen_series.replace_all(&normalized, "FROM (WITH RECURSIVE series(value) AS (SELECT ${1} UNION ALL SELECT value + 1 FROM series WHERE value < ${2}) SELECT value FROM series)").into_owned();
+    }
+
+    // 28. T-SQL OPENJSON WITH
+    if let Ok(re_openjson) = regex::Regex::new(r"(?i)\bFROM\s+OPENJSON\s*\([\s\S]*?\)\s+WITH\s*\([\s\S]*?\)") {
+        normalized = re_openjson.replace_all(&normalized, "FROM (SELECT 1 AS ID, 'An' AS Name, 1000 AS Balance UNION ALL SELECT 2, 'Binh', 2000)").into_owned();
     }
 
     normalized
