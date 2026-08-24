@@ -716,60 +716,95 @@
       <div id="io-panel" class="tab-panel">
         <div class="dashboard-grid">
           <div class="card">
-            <div class="card-header">Import SQL Script / CSV File</div>
-            <p style="font-size: 12px; color: var(--text-secondary);">Upload raw <code>.sql</code> files (DDL/DML) or <code>.csv</code> data files directly.</p>
-            
-            <div class="form-group">
-              <label class="form-label">Upload File (.sql, .csv)</label>
-              <input type="file" id="io-file-picker" accept=".sql,.csv,.txt" onchange="onIoFileSelected(this)" />
-            </div>
-
-            <div id="io-sql-section" style="display: none;">
-              <div class="form-group">
-                <label class="form-label">SQL File Content</label>
-                <textarea id="io-sql-content" style="height: 120px; font-family: var(--font-mono); font-size: 11px;"></textarea>
+            <div class="card-header">
+              <span>Database & Table Data Import</span>
+              <div style="display: flex; gap: 4px;">
+                <button id="btn-io-mode-sql" class="btn btn-sm btn-primary" onclick="toggleIoMode('sql')">Full Database (.sql)</button>
+                <button id="btn-io-mode-csv" class="btn btn-sm" onclick="toggleIoMode('csv')">Single Table (CSV)</button>
               </div>
-              <button class="btn btn-primary" onclick="submitSqlScriptFile()">Execute SQL Script</button>
             </div>
 
-            <div id="io-csv-section">
+            <!-- SECTION 1: FULL DATABASE SQL IMPORT -->
+            <div id="io-sql-section">
+              <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 10px;">
+                Import an entire database schema, multiple tables DDL, triggers, and full bulk datasets from raw <code>.sql</code> files.
+              </p>
+              
               <div class="form-group">
-                <label class="form-label">Target Table</label>
+                <label class="form-label">Upload .sql Script File</label>
+                <input type="file" id="io-file-picker-sql" accept=".sql,.txt" onchange="onIoSqlFileSelected(this)" />
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">SQL Script Content (Multi-Table DDL & DML)</label>
+                <textarea id="io-sql-content" style="height: 140px; font-family: var(--font-mono); font-size: 11px;" placeholder="-- Paste multi-table CREATE TABLE, INSERT INTO scripts here..."></textarea>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button class="btn btn-primary" onclick="submitSqlScriptFile()">Execute Full Database Script</button>
+                <button class="btn" onclick="document.getElementById('io-sql-content').value = ''">Clear</button>
+              </div>
+            </div>
+
+            <!-- SECTION 2: SINGLE TABLE CSV IMPORT -->
+            <div id="io-csv-section" style="display: none;">
+              <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 10px;">
+                Import raw tabular rows from a CSV or TSV file directly into a specific target table.
+              </p>
+
+              <div class="form-group">
+                <label class="form-label">Target Table in Active Database</label>
                 <select id="io-target-table"></select>
               </div>
+
+              <div class="form-group">
+                <label class="form-label">Upload CSV / TSV File</label>
+                <input type="file" id="io-file-picker-csv" accept=".csv,.tsv,.txt" onchange="onIoCsvFileSelected(this)" />
+              </div>
+
               <div class="form-group">
                 <label class="form-label">CSV Delimiter</label>
                 <input type="text" id="io-csv-delimiter" value="," style="width: 50px;" />
               </div>
               <div class="form-group">
-                <label class="form-label">CSV Content (Header + Rows)</label>
-                <textarea id="io-csv-content" style="height: 90px; font-family: var(--font-mono); font-size: 11px;" placeholder="id,name,price&#10;1,Item A,10.5"></textarea>
+                <label class="form-label">CSV Raw Content (Header Row + Data Rows)</label>
+                <textarea id="io-csv-content" style="height: 90px; font-family: var(--font-mono); font-size: 11px;" placeholder="id,name,price&#10;1,Item A,10.5&#10;2,Item B,25.0"></textarea>
               </div>
               <div style="display: flex; gap: 8px;">
-                <button class="btn btn-primary" onclick="submitCsvImport()">Import CSV Data</button>
-                <button class="btn" onclick="toggleIoMode('sql')">Switch to SQL Mode</button>
+                <button class="btn btn-primary" onclick="submitCsvImport()">Import CSV to Table</button>
+                <button class="btn" onclick="document.getElementById('io-csv-content').value = ''">Clear</button>
               </div>
             </div>
           </div>
 
           <div class="card">
-            <div class="card-header">Export Database / SQL Dump</div>
-            <p style="font-size: 12px; color: var(--text-secondary);">Download complete database dumps or export custom SQL queries.</p>
-            <div class="form-group">
-              <label class="form-label">Custom Query to Export</label>
-              <textarea id="io-export-query" style="height: 70px; font-family: var(--font-mono); font-size: 11px;" placeholder="SELECT * FROM products;"></textarea>
-            </div>
-            
-            <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 6px;">
-              <div class="form-label">Full Database Dumps:</div>
-              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                <button class="btn btn-primary" onclick="exportFullDatabaseSqlDump()">Full Database .sql Dump</button>
-                <button class="btn" onclick="exportCustomQueryDump('sql')">Query .sql Dump</button>
+            <div class="card-header">Export Database & Tables</div>
+            <p style="font-size: 12px; color: var(--text-secondary);">Download complete database dumps, single-table exports, or custom query outputs.</p>
+
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+              <div style="padding: 10px; background: #04070a; border: 1px solid var(--border); border-radius: 4px;">
+                <div style="font-weight: 700; font-size: 12px; margin-bottom: 4px;">Full Database Dump (.sql)</div>
+                <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Exports all tables, schema DDL, and data rows in the active database into a single portable <code>.sql</code> file.</p>
+                <button class="btn btn-primary" onclick="exportFullDatabaseSqlDump()">Export Full Database .sql Dump</button>
               </div>
-              <div class="form-label" style="margin-top: 4px;">Data File Formats:</div>
-              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                <button class="btn" onclick="exportCustomQueryDump('csv')">Download .csv</button>
-                <button class="btn" onclick="exportCustomQueryDump('json')">Download .json</button>
+
+              <div style="padding: 10px; background: #04070a; border: 1px solid var(--border); border-radius: 4px;">
+                <div style="font-weight: 700; font-size: 12px; margin-bottom: 4px;">Active Table Export (<code id="io-active-tbl-badge">All Tables</code>)</div>
+                <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Export currently selected table dataset in various formats.</p>
+                <div style="display: flex; gap: 6px;">
+                  <button class="btn btn-sm" onclick="exportActiveTableDirect('sql')">Table .sql</button>
+                  <button class="btn btn-sm" onclick="exportActiveTableDirect('csv')">Table .csv</button>
+                  <button class="btn btn-sm" onclick="exportActiveTableDirect('json')">Table .json</button>
+                </div>
+              </div>
+
+              <div>
+                <div class="form-label">Custom SQL Query Export:</div>
+                <textarea id="io-export-query" style="height: 60px; font-family: var(--font-mono); font-size: 11px;" placeholder="SELECT * FROM Customers;"></textarea>
+                <div style="display: flex; gap: 6px; margin-top: 6px;">
+                  <button class="btn btn-sm" onclick="exportCustomQueryDump('sql')">Export .sql</button>
+                  <button class="btn btn-sm" onclick="exportCustomQueryDump('csv')">Export .csv</button>
+                  <button class="btn btn-sm" onclick="exportCustomQueryDump('json')">Export .json</button>
+                </div>
               </div>
             </div>
           </div>
@@ -1182,6 +1217,8 @@
       gridSortDir = "ASC";
       document.getElementById("active-table-name").textContent = tableName;
       document.getElementById("io-export-query").value = `SELECT * FROM "${tableName.replace(/"/g, '""')}";`;
+      const ioBadge = document.getElementById("io-active-tbl-badge");
+      if (ioBadge) ioBadge.textContent = tableName;
       
       document.querySelectorAll(".table-nav-item").forEach(el => {
         el.classList.toggle("active", el.textContent.trim().endsWith(tableName) || el.textContent.includes(tableName));
@@ -1957,25 +1994,37 @@
 
     // I/O IMPORT & EXPORT
     function toggleIoMode(mode) {
-      document.getElementById("io-sql-section").style.display = (mode === "sql" ? "block" : "none");
-      document.getElementById("io-csv-section").style.display = (mode === "csv" ? "block" : "none");
+      const isSql = mode === "sql";
+      document.getElementById("io-sql-section").style.display = isSql ? "block" : "none";
+      document.getElementById("io-csv-section").style.display = isSql ? "none" : "block";
+      const btnSql = document.getElementById("btn-io-mode-sql");
+      const btnCsv = document.getElementById("btn-io-mode-csv");
+      if (btnSql && btnCsv) {
+        btnSql.className = isSql ? "btn btn-sm btn-primary" : "btn btn-sm";
+        btnCsv.className = isSql ? "btn btn-sm" : "btn btn-sm btn-primary";
+      }
     }
 
-    function onIoFileSelected(input) {
+    function onIoSqlFileSelected(input) {
       const file = input.files && input.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = (e) => {
         const text = e.target.result;
-        if (file.name.toLowerCase().endsWith(".sql")) {
-          toggleIoMode("sql");
-          document.getElementById("io-sql-content").value = text;
-          logOps(`Loaded SQL file '${file.name}' (${formatBytes(file.size)}). Ready to execute.`);
-        } else {
-          toggleIoMode("csv");
-          document.getElementById("io-csv-content").value = text;
-          logOps(`Loaded CSV file '${file.name}' (${formatBytes(file.size)}).`);
-        }
+        document.getElementById("io-sql-content").value = text;
+        logOps(`Loaded SQL script '${file.name}' (${formatBytes(file.size)}). Ready to execute on database '${activeDatabase}'.`);
+      };
+      reader.readAsText(file);
+    }
+
+    function onIoCsvFileSelected(input) {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target.result;
+        document.getElementById("io-csv-content").value = text;
+        logOps(`Loaded CSV file '${file.name}' (${formatBytes(file.size)}).`);
       };
       reader.readAsText(file);
     }
