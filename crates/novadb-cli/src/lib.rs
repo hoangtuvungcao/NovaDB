@@ -413,7 +413,14 @@ pub struct ImportArgs {
 fn import(args: &ImportArgs) -> Result<()> {
     let db = NovaDb::open(&args.path)?;
     let content = std::fs::read_to_string(&args.file)
-        .map_err(|e| anyhow::anyhow!("Failed to read CSV file '{}': {e}", args.file.display()))?;
+        .map_err(|e| anyhow::anyhow!("Failed to read file '{}': {e}", args.file.display()))?;
+
+    let ext = args.file.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext.eq_ignore_ascii_case("sql") {
+        db.execute_batch(&content)?;
+        println!("[SUCCESS] Executed SQL script '{}' in database '{}'", args.file.display(), args.path.display());
+        return Ok(());
+    }
 
     let mut lines = content.lines().filter(|l| !l.trim().is_empty());
     let header_line = lines.next().ok_or_else(|| anyhow::anyhow!("CSV file is empty"))?;
@@ -479,7 +486,7 @@ pub struct ExportArgs {
     #[arg(value_name = "QUERY")]
     pub query: String,
 
-    /// Target destination file (e.g. results.csv or results.json).
+    /// Target destination file (e.g. results.csv, results.json, or dump.sql).
     #[arg(value_name = "OUTPUT_FILE")]
     pub output: PathBuf,
 }
@@ -488,11 +495,28 @@ fn export(args: &ExportArgs) -> Result<()> {
     let db = NovaDb::open(&args.path)?;
     let result = db.query(&args.query)?;
 
-    let is_json = args.output.extension().and_then(|ext| ext.to_str()).map(|s| s.eq_ignore_ascii_case("json")).unwrap_or(false);
+    let ext = args.output.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    if is_json {
+    if ext.eq_ignore_ascii_case("json") {
         let json_str = serde_json::to_string_pretty(&result.rows)?;
         std::fs::write(&args.output, json_str)?;
+    } else if ext.eq_ignore_ascii_case("sql") {
+        let mut sql = String::new();
+        sql.push_str("-- NovaDB SQL Export Dump\n");
+        for row in &result.rows {
+            let cols = result.columns.iter().map(|c| format!("\"{}\"", c.replace('"', "\"\""))).collect::<Vec<_>>().join(", ");
+            let vals = result.columns.iter().map(|c| {
+                match row.get(c) {
+                    Some(serde_json::Value::Null) | None => "NULL".to_string(),
+                    Some(serde_json::Value::Number(n)) => n.to_string(),
+                    Some(serde_json::Value::Bool(b)) => if *b { "1".to_string() } else { "0".to_string() },
+                    Some(serde_json::Value::String(s)) => format!("'{}'", s.replace('\'', "''")),
+                    Some(v) => format!("'{}'", v.to_string().replace('\'', "''")),
+                }
+            }).collect::<Vec<_>>().join(", ");
+            sql.push_str(&format!("INSERT INTO exported_data ({cols}) VALUES ({vals});\n"));
+        }
+        std::fs::write(&args.output, sql)?;
     } else {
         // Default to CSV format
         let mut csv = String::new();

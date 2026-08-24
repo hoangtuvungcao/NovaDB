@@ -567,34 +567,67 @@
       <!-- TAB 4: Import & Export Suite -->
       <div id="io-tab" class="tab-content">
         <div class="grid-2">
+          <!-- Import Card -->
           <div class="card">
-            <div class="card-title">Bulk CSV / SQL Import</div>
-            <p style="font-size: 12px; color: var(--text-muted);">Import CSV raw text directly into a database table.</p>
+            <div class="card-title">Import Data (.sql / .csv)</div>
+            <p style="font-size: 12px; color: var(--text-muted);">
+              Upload or paste SQL script files (DDL/DML) or CSV data files.
+            </p>
+            
             <div class="form-group">
-              <label class="form-label">Target Table</label>
-              <select id="import-target-table"></select>
+              <label class="form-label">Upload File (.sql, .csv)</label>
+              <input type="file" id="import-file-picker" accept=".sql,.csv,.txt" onchange="handleFileSelected(this)" />
             </div>
-            <div class="form-group">
-              <label class="form-label">Delimiter</label>
-              <input type="text" id="import-delimiter" value="," style="width: 50px;" />
+
+            <div id="import-sql-mode" style="display: none;">
+              <div class="form-group">
+                <label class="form-label">SQL Script Content to Execute</label>
+                <textarea id="import-sql-text" style="height: 110px; font-family: var(--font-mono); font-size: 11px;" placeholder="-- Paste SQL statements to execute&#10;CREATE TABLE test(id INT);"></textarea>
+              </div>
+              <button class="btn btn-primary" onclick="executeSqlScriptImport()">Execute SQL File / Script</button>
             </div>
-            <div class="form-group">
-              <label class="form-label">Paste CSV Content (with Header Row)</label>
-              <textarea id="import-csv-text" style="height: 100px; font-family: var(--font-mono); font-size: 11px;" placeholder="id,name,price&#10;1,Item A,10.5&#10;2,Item B,20.0"></textarea>
+
+            <div id="import-csv-mode">
+              <div class="form-group">
+                <label class="form-label">Target Table</label>
+                <select id="import-target-table"></select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Delimiter</label>
+                <input type="text" id="import-delimiter" value="," style="width: 50px;" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">CSV Content (Header + Rows)</label>
+                <textarea id="import-csv-text" style="height: 90px; font-family: var(--font-mono); font-size: 11px;" placeholder="id,name,price&#10;1,Item A,10.5&#10;2,Item B,20.0"></textarea>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button class="btn btn-primary" onclick="executeWebImport()">Import CSV Data</button>
+                <button class="btn" onclick="toggleImportMode('sql')">Switch to SQL Mode</button>
+              </div>
             </div>
-            <button class="btn btn-primary" onclick="executeWebImport()">Import Data</button>
           </div>
 
+          <!-- Export Card -->
           <div class="card">
-            <div class="card-title">Export Database Table / Custom Query</div>
-            <p style="font-size: 12px; color: var(--text-muted);">Export table records or SQL queries to CSV, JSON, or SQL Dump.</p>
+            <div class="card-title">Export Database / Tables (.sql / .csv / .json)</div>
+            <p style="font-size: 12px; color: var(--text-muted);">
+              Download full database SQL dumps (DDL + Data) or export table query results.
+            </p>
             <div class="form-group">
-              <label class="form-label">Source Query or Table</label>
-              <textarea id="export-query-input" style="height: 80px; font-family: var(--font-mono); font-size: 11px;" placeholder="SELECT * FROM products;"></textarea>
+              <label class="form-label">Source SQL Query or Table</label>
+              <textarea id="export-query-input" style="height: 70px; font-family: var(--font-mono); font-size: 11px;" placeholder="SELECT * FROM products;"></textarea>
             </div>
-            <div style="display: flex; gap: 8px; margin-top: 8px;">
-              <button class="btn btn-primary" onclick="executeWebExport('csv')">Download CSV</button>
-              <button class="btn btn-primary" onclick="executeWebExport('json')">Download JSON</button>
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 4px;">
+              <div style="font-size: 11px; font-weight: 700; color: var(--text-dim);">Database Dump Options:</div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button class="btn btn-primary" onclick="exportFullDatabaseSql()">Full DB SQL Dump (.sql)</button>
+                <button class="btn" onclick="executeWebExport('sql')">Query SQL Dump (.sql)</button>
+              </div>
+              <div style="font-size: 11px; font-weight: 700; color: var(--text-dim); margin-top: 4px;">Data Format Exports:</div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button class="btn" onclick="executeWebExport('csv')">Download CSV (.csv)</button>
+                <button class="btn" onclick="executeWebExport('json')">Download JSON (.json)</button>
+              </div>
             </div>
           </div>
         </div>
@@ -1313,6 +1346,64 @@
     }
 
     // Web Import / Export
+    function toggleImportMode(mode) {
+      if (mode === 'sql') {
+        document.getElementById("import-sql-mode").style.display = "block";
+        document.getElementById("import-csv-mode").style.display = "none";
+      } else {
+        document.getElementById("import-sql-mode").style.display = "none";
+        document.getElementById("import-csv-mode").style.display = "block";
+      }
+    }
+
+    function handleFileSelected(input) {
+      const file = input.files && input.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target.result;
+        if (file.name.toLowerCase().endsWith(".sql")) {
+          toggleImportMode("sql");
+          document.getElementById("import-sql-text").value = text;
+          logOps(`Loaded SQL file '${file.name}' (${formatBytes(file.size)}). Click 'Execute SQL File' to run.`);
+        } else {
+          toggleImportMode("csv");
+          document.getElementById("import-csv-text").value = text;
+          logOps(`Loaded CSV file '${file.name}' (${formatBytes(file.size)}).`);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    async function executeSqlScriptImport() {
+      if (!activeDatabase) return alert("Select a database first");
+      const sql = document.getElementById("import-sql-text").value.trim();
+      if (!sql) return alert("Please upload or paste a SQL script to execute.");
+
+      logOps(`Executing SQL file in database '${activeDatabase}'...`);
+      try {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
+          method: "POST",
+          headers: getAuthHeaders(),
+          body: JSON.stringify({ sql })
+        });
+        if (res.ok) {
+          alert("SQL Script executed successfully!");
+          logOps("SQL Script execution SUCCESS.");
+          loadSidebarTables();
+          loadSchemaTab();
+        } else {
+          const err = await res.json();
+          alert("SQL Execution Error: " + (err.message || "Failed"));
+          logOps("SQL Execution Error: " + (err.message || "Failed"));
+        }
+      } catch (e) {
+        alert(e.message);
+        logOps("SQL Error: " + e.message);
+      }
+    }
+
     async function executeWebImport() {
       const targetTbl = document.getElementById("import-target-table").value;
       const delimiter = document.getElementById("import-delimiter").value || ",";
@@ -1357,6 +1448,72 @@
       }
     }
 
+    async function exportFullDatabaseSql() {
+      if (!activeDatabase) return alert("Select a database first");
+      logOps(`Generating full SQL Dump for '${activeDatabase}'...`);
+
+      try {
+        const schemaRes = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/schema", {
+          headers: getAuthHeaders()
+        });
+        if (!schemaRes.ok) throw new Error("Failed to fetch schema");
+        const schema = await schemaRes.json();
+
+        let dumpSql = `-- ====================================================================\n`;
+        dumpSql += `-- NovaDB Complete SQL Dump\n`;
+        dumpSql += `-- Database: ${activeDatabase}\n`;
+        dumpSql += `-- Exported At: ${new Date().toISOString()}\n`;
+        dumpSql += `-- ====================================================================\n\n`;
+
+        if (Array.isArray(schema.tables) && schema.tables.length > 0) {
+          for (const tbl of schema.tables) {
+            dumpSql += `-- Table structure for: ${tbl.name}\n`;
+            if (Array.isArray(tbl.columns) && tbl.columns.length > 0) {
+              const colDefs = tbl.columns.map(c => {
+                let d = `  "${c.name.replace(/"/g, '""')}" ${c.type || 'TEXT'}`;
+                if (c.pk) d += " PRIMARY KEY";
+                return d;
+              }).join(",\n");
+              dumpSql += `CREATE TABLE IF NOT EXISTS "${tbl.name.replace(/"/g, '""')}" (\n${colDefs}\n);\n\n`;
+            }
+
+            // Dump rows
+            const rowsRes = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/query", {
+              method: "POST",
+              headers: getAuthHeaders(),
+              body: JSON.stringify({ sql: `SELECT * FROM "${tbl.name.replace(/"/g, '""')}";` })
+            });
+            if (rowsRes.ok) {
+              const rowsData = await rowsRes.json();
+              if (rowsData.rows && rowsData.rows.length > 0) {
+                dumpSql += `-- Data for: ${tbl.name} (${rowsData.rows.length} rows)\n`;
+                const colsEsc = rowsData.columns.map(c => `"${c.replace(/"/g, '""')}"`).join(", ");
+                for (const row of rowsData.rows) {
+                  const valsEsc = rowsData.columns.map(c => {
+                    const v = row[c];
+                    if (v === null || v === undefined) return "NULL";
+                    if (typeof v === "number") return v;
+                    if (typeof v === "boolean") return v ? "1" : "0";
+                    if (typeof v === "object") return `'${JSON.stringify(v).replace(/'/g, "''")}'`;
+                    return `'${String(v).replace(/'/g, "''")}'`;
+                  }).join(", ");
+                  dumpSql += `INSERT INTO "${tbl.name.replace(/"/g, '""')}" (${colsEsc}) VALUES (${valsEsc});\n`;
+                }
+                dumpSql += `\n`;
+              }
+            }
+          }
+        }
+
+        const blob = new Blob([dumpSql], { type: "text/plain" });
+        downloadBlob(blob, `${activeDatabase}_dump.sql`);
+        logOps(`SQL Dump completed: '${activeDatabase}_dump.sql' downloaded.`);
+      } catch (e) {
+        alert("SQL Dump Error: " + e.message);
+        logOps("SQL Dump Error: " + e.message);
+      }
+    }
+
     async function executeWebExport(format) {
       const sql = document.getElementById("export-query-input").value.trim();
       if (!sql) return alert("Please specify SQL query to export");
@@ -1373,6 +1530,22 @@
         if (format === 'json') {
           const blob = new Blob([JSON.stringify(data.rows, null, 2)], { type: "application/json" });
           downloadBlob(blob, "export.json");
+        } else if (format === 'sql') {
+          let dumpSql = `-- NovaDB Query Export Dump\n-- Exported At: ${new Date().toISOString()}\n\n`;
+          const colsEsc = data.columns.map(c => `"${c.replace(/"/g, '""')}"`).join(", ");
+          data.rows.forEach(row => {
+            const valsEsc = data.columns.map(c => {
+              const v = row[c];
+              if (v === null || v === undefined) return "NULL";
+              if (typeof v === "number") return v;
+              if (typeof v === "boolean") return v ? "1" : "0";
+              if (typeof v === "object") return `'${JSON.stringify(v).replace(/'/g, "''")}'`;
+              return `'${String(v).replace(/'/g, "''")}'`;
+            }).join(", ");
+            dumpSql += `INSERT INTO "exported_data" (${colsEsc}) VALUES (${valsEsc});\n`;
+          });
+          const blob = new Blob([dumpSql], { type: "text/plain" });
+          downloadBlob(blob, "query_export.sql");
         } else {
           let csv = data.columns.map(c => `"${c.replace(/"/g, '""')}"`).join(",") + "\n";
           data.rows.forEach(r => {
