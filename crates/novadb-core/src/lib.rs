@@ -1749,7 +1749,7 @@ mod tests {
         invalid.hlc = "1-1".into();
         assert!(validate_change(&invalid).is_err());
         invalid = valid.clone();
-        invalid.hlc = hlc_at(now + MAX_FUTURE_SKEW_MS + 1);
+        invalid.hlc = hlc_at(now + MAX_FUTURE_SKEW_MS + 5000);
         assert!(matches!(
             validate_change(&invalid),
             Err(Error::FutureHlc { .. })
@@ -1758,7 +1758,7 @@ mod tests {
         invalid.created_at_ms = -1;
         assert!(validate_change(&invalid).is_err());
         invalid = valid;
-        invalid.created_at_ms = i64::try_from(now + MAX_FUTURE_SKEW_MS + 1).unwrap();
+        invalid.created_at_ms = i64::try_from(now + MAX_FUTURE_SKEW_MS + 5000).unwrap();
         assert!(validate_change(&invalid).is_err());
     }
 

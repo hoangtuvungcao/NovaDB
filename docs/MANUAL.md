@@ -1,139 +1,139 @@
-# NovaDB: Complete Unified Reference Manual
+# NovaDB: The Complete Master Reference and SQL Dialect Manual
 
-NovaDB is an ultra-fast, embeddable and client/server SQL database engine written in Rust. It combines single-file embedded performance with a standard PostgreSQL wire protocol gateway, deterministic local-first replication, multi-client connection pooling, built-in vector search for AI, and full role-based access control (RBAC).
-
----
-
-## 1. Architecture Overview
-
-```
-+-------------------------------------------------------------------------+
-|                              CLIENT APPS                                |
-|  PHP | Rust | Node.js | Python | Go | Java | C# | Ruby | C | psql / DBeaver |
-+--------------------+--------------------------------+-------------------+
-                     | (PostgreSQL Wire Protocol v3)  | (HTTP REST API)
-                     v                                v
-+-------------------------------------------------------------------------+
-|                     NovaDB Server Gateway (novadbd)                     |
-|  - PostgreSQL Wire Protocol Gateway (Port 5432)                         |
-|  - HTTP REST Admin API & Web Studio (Port 8787)                         |
-|  - Authentication & Role-Based Access Control (RBAC)                    |
-+------------------------------------+------------------------------------+
-                                     |
-                                     v
-+-------------------------------------------------------------------------+
-|                       NovaDB Engine Core (libnovadb)                    |
-|  - NovaDbPool: Lock-free Parallel Readers + Serialized WAL Writer       |
-|  - Hybrid Logical Clock (HLC) & Deterministic LWW Sync Engine           |
-|  - Extended SQL Engine: Vector AI, JSON RFC 7396, UUID v7, ISO 8601     |
-|  - Managed SQLite WAL Storage File (.novadb)                            |
-+-------------------------------------------------------------------------+
-```
-
-### Key Differences vs SQLite, MySQL, and PostgreSQL
-
-| Capability | SQLite | MySQL | PostgreSQL | NovaDB |
-|---|---|---|---|---|
-| Deployment Mode | Embedded File Only | Client/Server Only | Client/Server Only | Embedded File + Client/Server Dual-Mode |
-| Client Protocol | C ABI only | MySQL Protocol | PG Wire Protocol v3 | PG Wire Protocol v3 + HTTP REST |
-| Multi-Client Pooling | External pool needed | Server pool | Server pool | Built-in `NovaDbPool` (Parallel WAL Readers) |
-| Local-First Sync | None | Master-Slave / Group | Streaming replication | Built-in Deterministic LWW HLC Sync |
-| Vector / AI Search | Requires 3rd-party | None | Requires `pgvector` | Built-in Cosine, L2, Dot Product, Blobs |
-| Extended Types | Basic affinities | Standard types | Rich types | JSON, UUID v7, ISO 8601, Bitwise, Hashes |
-| Security / RBAC | None | User / Host | Role-Based (RBAC) | Built-in `_novadb_users` + RBAC Grants |
-| Web Admin Console | 3rd party | phpMyAdmin | pgAdmin | Built-in Web Studio (`/studio`) |
+NovaDB is an ultra-fast, single-file, embeddable and client/server SQL database engine written in Rust. It combines SQLite's embeddability and durability with a standard **PostgreSQL Wire Protocol v3 gateway**, deterministic Last-Writer-Wins (LWW) local-first replication, multi-client connection pooling (`NovaDbPool`), built-in **Vector Search for AI**, 40+ extended functions (JSON RFC 7396, UUID v7 monotonic, ISO 8601 UTC, String hashes), and Role-Based Access Control (RBAC).
 
 ---
 
-## 2. SQL Dialect and Supported Data Types
+## 1. Architecture and Storage Engine
 
-NovaDB supports full SQL data types with strict validation and canonical storage:
+### 1.1 Dual-Mode Operation (Embedded + Server)
+* **Embedded Mode**: Directly link `novadb-core` inside Rust applications for microsecond-latency in-process queries with lock-free parallel readers.
+* **Server Mode (`novadbd`)**: Runs a dual-gateway background service listening simultaneously on:
+  * **Port 5432**: Native PostgreSQL Wire Protocol v3 gateway for standard tools (`psql`, DBeaver, DataGrip, TablePlus, pgAdmin) and drivers (PHP PDO, Node.js `pg`, Python `psycopg2`, Go `database/sql`, Java JDBC, C# `.NET Npgsql`, Ruby `pg`, C/C++ `libpq`).
+  * **Port 8787**: HTTP REST Admin API + Built-in Web Admin Studio (`/studio`).
 
-| Type Name | Storage Class | Description / Example |
-|---|---|---|
-| `INTEGER` / `INT` / `BIGINT` | 64-bit Signed Integer | Whole numbers: `1`, `42`, `-1000` |
-| `REAL` / `FLOAT` / `DOUBLE` | 64-bit IEEE Float | Floating-point: `3.14159`, `-0.005` |
-| `TEXT` / `VARCHAR(N)` | UTF-8 String | Textual data: `'Hello World'`, `'user@example.com'` |
-| `BLOB` / `BYTEA` | Raw Binary | Binary data, images, hashes, packed vector blobs |
-| `BOOLEAN` / `BOOL` | Integer (`0` or `1`) | Logical: `1` (TRUE), `0` (FALSE) |
-| `JSON` / `JSONB` | Canonical Text / JSON | Structured JSON objects and arrays |
-| `UUID` | String / 16-byte Binary | RFC 4122 / 9562 UUIDs: `'018e3c6a-9f44-7b81-a953-...'` |
-| `DATE` / `TIMESTAMP` | ISO 8601 UTC String | Temporal: `'2026-08-24T12:00:00.000Z'` |
+### 1.2 Multi-Client Connection Pooling (`NovaDbPool`)
+* Multi-reader, single-writer concurrency backed by SQLite Write-Ahead Logging (WAL).
+* Uncapped parallel non-blocking read transactions across worker threads.
+* Serialized write transactions with deterministic ACID durability.
+
+---
+
+## 2. Complete SQL Data Types
+
+| Type Name | Storage Class | Constraints & Formatting | Example |
+|---|---|---|---|
+| `INTEGER` / `INT` / `BIGINT` | 64-bit Signed Integer | `-9223372036854775808` to `9223372036854775807` | `42`, `-1000` |
+| `REAL` / `FLOAT` / `DOUBLE` | 64-bit IEEE 754 Float | 8-byte floating point | `3.1415926535`, `-0.005` |
+| `TEXT` / `VARCHAR(N)` | UTF-8 String | Unicode supported with collation options | `'Hello World'`, `'user@domain.com'` |
+| `BLOB` / `BYTEA` | Raw Binary Byte Array | Preserves binary data, images, hashes, vectors | `X'01020304'`, packed float32 |
+| `BOOLEAN` / `BOOL` | Integer (`0` or `1`) | `1` (TRUE), `0` (FALSE) | `1`, `0`, `TRUE`, `FALSE` |
+| `JSON` / `JSONB` | Canonical Text / JSON | RFC 7396 JSON objects and arrays | `'{"theme": "dark", "tags": [1,2]}'` |
+| `UUID` | Canonical Text / Binary | RFC 4122 / 9562 UUID string or 16-byte blob | `'018e3c6a-9f44-7b81-a953-...'` |
+| `DATE` / `TIMESTAMP` | ISO 8601 UTC String | Formatted `YYYY-MM-DDTHH:MM:SS.mmmZ` | `'2026-08-24T12:00:00.000Z'` |
 
 ---
 
 ## 3. Data Definition Language (DDL)
 
-### 3.1 Tables, Constraints, and Generated Columns
-
+### 3.1 Creating Tables (`CREATE TABLE`)
 ```sql
--- Table with primary key, foreign key cascade, check constraints, and generated columns
-CREATE TABLE IF NOT EXISTS categories (
-    cat_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    status TEXT DEFAULT 'active' CHECK (status IN ('active', 'archived', 'pending'))
-);
-
-CREATE TABLE IF NOT EXISTS products (
-    prod_id TEXT PRIMARY KEY,
-    cat_id INTEGER NOT NULL REFERENCES categories(cat_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    title TEXT NOT NULL,
-    price REAL NOT NULL CHECK (price >= 0.0),
-    stock INTEGER DEFAULT 0 CHECK (stock >= 0),
-    sku TEXT UNIQUE NOT NULL,
-    embedding BLOB,
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL UNIQUE,
+    age INTEGER CHECK (age >= 0),
+    status TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'banned')),
+    profile JSON DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT (now_iso())
 );
 
-CREATE TABLE IF NOT EXISTS order_items (
+CREATE TABLE IF NOT EXISTS orders (
+    order_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    amount REAL NOT NULL CHECK (amount >= 0.0),
+    currency TEXT DEFAULT 'USD',
+    placed_at TEXT NOT NULL DEFAULT (now_iso())
+);
+```
+
+### 3.2 Generated / Computed Columns (`STORED` & `VIRTUAL`)
+```sql
+CREATE TABLE order_items (
     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    quantity INTEGER NOT NULL,
-    unit_price REAL NOT NULL,
-    discount REAL DEFAULT 0.0,
-    total_price REAL GENERATED ALWAYS AS (quantity * unit_price * (1.0 - discount)) STORED
+    order_id TEXT NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price REAL NOT NULL CHECK (unit_price >= 0.0),
+    discount_pct REAL DEFAULT 0.0 CHECK (discount_pct BETWEEN 0.0 AND 1.0),
+    line_total REAL GENERATED ALWAYS AS (quantity * unit_price * (1.0 - discount_pct)) STORED
 );
 ```
 
-### 3.2 Indexing (Unique, Composite, Partial, Expression)
-
+### 3.3 Altering Tables (`ALTER TABLE`)
 ```sql
--- Standard and Unique Index
-CREATE INDEX idx_products_cat ON products(cat_id);
-CREATE UNIQUE INDEX idx_products_sku ON products(sku);
+-- Add column with default value
+ALTER TABLE users ADD COLUMN phone TEXT;
 
--- Composite Index
-CREATE INDEX idx_products_cat_price ON products(cat_id, price);
+-- Rename a column
+ALTER TABLE users RENAME COLUMN phone TO mobile_number;
 
--- Partial Index (Conditional)
-CREATE INDEX idx_products_in_stock ON products(stock) WHERE stock > 0;
+-- Rename a table
+ALTER TABLE users RENAME TO accounts;
 
--- Expression Index
-CREATE INDEX idx_categories_lower_name ON categories(lower(name));
+-- Drop a column
+ALTER TABLE accounts DROP COLUMN mobile_number;
 ```
 
-### 3.3 Views and Triggers
-
+### 3.4 Indexes (`CREATE INDEX`)
 ```sql
--- Views
-CREATE VIEW v_active_products AS
-SELECT p.prod_id, p.title, p.price, c.name as category_name
-FROM products p
-JOIN categories c ON p.cat_id = c.cat_id
-WHERE c.status = 'active';
+-- Standard B-Tree Index
+CREATE INDEX idx_orders_user ON orders(user_id);
 
--- Triggers for automatic auditing
-CREATE TABLE audit_log (
-    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    action TEXT NOT NULL,
-    target_id TEXT NOT NULL,
-    performed_at TEXT NOT NULL DEFAULT (now_iso())
+-- Unique Multi-column Index
+CREATE UNIQUE INDEX idx_users_username_email ON accounts(username, email);
+
+-- Composite Index with Sorting
+CREATE INDEX idx_orders_user_placed ON orders(user_id, placed_at DESC);
+
+-- Partial / Filtered Index
+CREATE INDEX idx_orders_large ON orders(amount) WHERE amount > 1000.0;
+
+-- Expression-based Index
+CREATE INDEX idx_users_lower_email ON accounts(lower(email));
+```
+
+### 3.5 Views (`CREATE VIEW`)
+```sql
+CREATE VIEW v_active_user_orders AS
+SELECT 
+    u.id as user_id,
+    u.username,
+    u.email,
+    o.order_id,
+    o.amount,
+    o.placed_at
+FROM accounts u
+INNER JOIN orders o ON u.id = o.user_id
+WHERE u.status = 'active';
+```
+
+### 3.6 Triggers (`CREATE TRIGGER`)
+```sql
+CREATE TABLE order_audit (
+    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id TEXT NOT NULL,
+    old_amount REAL,
+    new_amount REAL,
+    modified_at TEXT NOT NULL DEFAULT (now_iso())
 );
 
-CREATE TRIGGER trg_products_insert_audit
-AFTER INSERT ON products
+CREATE TRIGGER trg_orders_update_audit
+AFTER UPDATE OF amount ON orders
 FOR EACH ROW
+WHEN OLD.amount != NEW.amount
 BEGIN
-    INSERT INTO audit_log (action, target_id) VALUES ('INSERT', NEW.prod_id);
+    INSERT INTO order_audit (order_id, old_amount, new_amount)
+    VALUES (OLD.order_id, OLD.amount, NEW.amount);
 END;
 ```
 
@@ -141,110 +141,176 @@ END;
 
 ## 4. Data Manipulation Language (DML)
 
-### 4.1 Insert, Multi-row, and Upsert
-
+### 4.1 Inserting Data (`INSERT`)
 ```sql
--- Multi-row insert with UUID v7 and now_iso
-INSERT INTO categories (name, status) VALUES 
-('Electronics', 'active'),
-('Books', 'active'),
-('Apparel', 'active');
+-- Single row insert with UUID v7 and now_iso
+INSERT INTO accounts (id, username, email, age, created_at)
+VALUES (uuid_v7(), 'alice', 'alice@example.com', 28, now_iso());
 
--- Upsert (ON CONFLICT DO UPDATE)
-INSERT INTO products (prod_id, cat_id, title, price, stock, sku)
-VALUES ('p_101', 1, 'Mechanical Keyboard v2', 129.99, 50, 'SKU-KB-01')
-ON CONFLICT (prod_id) DO UPDATE SET 
-    price = excluded.price,
-    stock = excluded.stock,
-    title = excluded.title;
+-- Multi-row batch insert
+INSERT INTO accounts (id, username, email, age, created_at) VALUES
+(uuid_v7(), 'bob', 'bob@example.com', 34, now_iso()),
+(uuid_v7(), 'charlie', 'charlie@example.com', 22, now_iso()),
+(uuid_v7(), 'diana', 'diana@example.com', 30, now_iso());
 
--- Insert or Replace
-INSERT OR REPLACE INTO categories (cat_id, name, status)
-VALUES (1, 'Electronics & Gadgets', 'active');
+-- Insert from SELECT
+INSERT INTO accounts (id, username, email, age, created_at)
+SELECT uuid_v7(), 'lead_' || id, email, 25, now_iso() FROM leads WHERE converted = 1;
 ```
 
-### 4.2 Update and Delete with Subqueries
-
+### 4.2 Upsert (`ON CONFLICT DO UPDATE / DO NOTHING`)
 ```sql
--- Update with calculation and subquery filter
-UPDATE products 
-SET price = price * 0.90 
-WHERE cat_id IN (SELECT cat_id FROM categories WHERE name LIKE 'Electronics%');
+-- Standard PostgreSQL / SQLite compatible UPSERT
+INSERT INTO accounts (id, username, email, age, created_at)
+VALUES ('usr_100', 'alice_updated', 'alice@example.com', 29, now_iso())
+ON CONFLICT (id) DO UPDATE SET
+    username = excluded.username,
+    age = excluded.age;
 
--- Delete cascade
-DELETE FROM categories WHERE name = 'Apparel';
+-- Insert or Ignore / Do Nothing on conflict
+INSERT INTO accounts (id, username, email, age, created_at)
+VALUES ('usr_100', 'alice', 'alice@example.com', 29, now_iso())
+ON CONFLICT (id) DO NOTHING;
+
+-- INSERT OR REPLACE shorthand
+INSERT OR REPLACE INTO accounts (id, username, email, age, created_at)
+VALUES ('usr_100', 'alice_replaced', 'alice@example.com', 30, now_iso());
+```
+
+### 4.3 Updating Data (`UPDATE`)
+```sql
+-- Standard Update
+UPDATE accounts SET age = age + 1 WHERE username = 'alice';
+
+-- Update with JSON patch
+UPDATE accounts
+SET profile = json_merge_patch(profile, '{"verified": true, "last_login": "' || now_iso() || '"}')
+WHERE status = 'active';
+
+-- Update with correlated subquery
+UPDATE orders
+SET currency = 'EUR'
+WHERE user_id IN (SELECT id FROM accounts WHERE email LIKE '%.eu');
+```
+
+### 4.4 Deleting Data (`DELETE`)
+```sql
+-- Standard Delete
+DELETE FROM accounts WHERE status = 'inactive' AND created_at < '2025-01-01';
+
+-- Delete with Subquery
+DELETE FROM orders WHERE user_id NOT IN (SELECT id FROM accounts);
 ```
 
 ---
 
-## 5. Querying and Advanced SQL (DQL)
+## 5. Querying Language & Advanced DQL
 
-### 5.1 Joins and Filtering
+### 5.1 Joins (INNER, LEFT, CROSS, Self Join)
+```sql
+-- Inner and Left Joins
+SELECT 
+    u.username,
+    u.email,
+    o.order_id,
+    o.amount,
+    COALESCE(SUM(i.line_total), 0) as items_sum
+FROM accounts u
+INNER JOIN orders o ON u.id = o.user_id
+LEFT JOIN order_items i ON o.order_id = i.order_id
+GROUP BY u.username, u.email, o.order_id, o.amount
+ORDER BY o.placed_at DESC;
 
+-- Self Join (Finding peers in same age group)
+SELECT a.username as user1, b.username as user2, a.age
+FROM accounts a
+JOIN accounts b ON a.age = b.age AND a.id < b.id;
+```
+
+### 5.2 Filtering, Logical & Pattern Matching Operators
+```sql
+SELECT * FROM accounts
+WHERE age BETWEEN 20 AND 40
+  AND status IN ('active', 'pending')
+  AND (email LIKE '%@gmail.com' OR ilike(username, 'admin%'))
+  AND username REGEXP '^[a-z0-9_]+$'
+  AND profile IS NOT NULL;
+```
+
+### 5.3 Conditional Expressions (`CASE WHEN`, `COALESCE`, `NULLIF`, `IIF`)
 ```sql
 SELECT 
-    p.title,
-    p.price,
-    c.name as category,
+    username,
+    age,
     CASE 
-        WHEN p.price > 100 THEN 'Premium'
-        ELSE 'Standard'
-    END as tier
-FROM products p
-INNER JOIN categories c ON p.cat_id = c.cat_id
-WHERE p.stock > 0 AND (p.title LIKE '%Keyboard%' OR ilike(p.title, '%mouse%'))
-ORDER BY p.price DESC
-LIMIT 10 OFFSET 0;
+        WHEN age >= 60 THEN 'Senior'
+        WHEN age >= 18 THEN 'Adult'
+        ELSE 'Minor'
+    END as age_group,
+    COALESCE(json_extract(profile, '$.nickname'), username) as display_name,
+    NULLIF(age, 0) as valid_age,
+    IIF(status = 'active', 1, 0) as is_active_bool
+FROM accounts;
 ```
 
-### 5.2 Common Table Expressions (CTE) & Recursive CTEs
-
+### 5.4 Common Table Expressions (CTE) & Recursive Queries
 ```sql
--- Chained CTEs
+-- Multi-CTE Pipeline
 WITH 
-CatStats AS (
-    SELECT cat_id, AVG(price) as avg_price FROM products GROUP BY cat_id
+UserSpending AS (
+    SELECT user_id, SUM(amount) as total_spent, COUNT(*) as order_count
+    FROM orders
+    GROUP BY user_id
 ),
-TopProducts AS (
-    SELECT p.title, p.price, c.avg_price
-    FROM products p
-    JOIN CatStats c ON p.cat_id = c.cat_id
-    WHERE p.price >= c.avg_price
+TopSpenders AS (
+    SELECT u.username, u.email, s.total_spent
+    FROM accounts u
+    JOIN UserSpending s ON u.id = s.user_id
+    WHERE s.total_spent > 500.0
 )
-SELECT * FROM TopProducts ORDER BY price DESC;
+SELECT * FROM TopSpenders ORDER BY total_spent DESC;
 
--- Recursive CTE: Generate date series
-WITH RECURSIVE dates(d) AS (
-    VALUES('2026-08-01')
+-- Recursive CTE: Organizational Hierarchy
+WITH RECURSIVE org_tree(emp_id, manager_id, name, level) AS (
+    -- Anchor member
+    SELECT emp_id, manager_id, name, 0 FROM employees WHERE manager_id IS NULL
     UNION ALL
-    SELECT date(d, '+1 day') FROM dates WHERE d < '2026-08-07'
+    -- Recursive member
+    SELECT e.emp_id, e.manager_id, e.name, t.level + 1
+    FROM employees e
+    JOIN org_tree t ON e.manager_id = t.emp_id
 )
-SELECT d as day_date FROM dates;
+SELECT * FROM org_tree ORDER BY level, name;
 ```
 
-### 5.3 Window Functions and Window Frames
-
+### 5.5 Window Functions and Window Frames
 ```sql
 SELECT 
-    prod_id,
-    cat_id,
-    title,
-    price,
-    ROW_NUMBER() OVER (PARTITION BY cat_id ORDER BY price DESC) as rank_in_cat,
-    AVG(price) OVER (PARTITION BY cat_id) as cat_avg_price,
-    SUM(price) OVER (ORDER BY price ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as running_total,
-    LAG(price, 1, 0.0) OVER (ORDER BY price) as prev_price
-FROM products;
+    order_id,
+    user_id,
+    amount,
+    placed_at,
+    -- Ranking within user partition
+    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY placed_at DESC) as user_order_seq,
+    RANK() OVER (PARTITION BY user_id ORDER BY amount DESC) as rank_by_amount,
+    DENSE_RANK() OVER (ORDER BY amount DESC) as global_amount_rank,
+    -- Analytical lead/lag
+    LAG(amount, 1, 0.0) OVER (PARTITION BY user_id ORDER BY placed_at) as prev_order_amount,
+    LEAD(amount, 1, 0.0) OVER (PARTITION BY user_id ORDER BY placed_at) as next_order_amount,
+    -- Moving average and running total window frames
+    AVG(amount) OVER (PARTITION BY user_id ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as moving_3order_avg,
+    SUM(amount) OVER (PARTITION BY user_id ORDER BY placed_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as cumulative_user_spent
+FROM orders;
 ```
 
-### 5.4 Set Operations
-
+### 5.6 Set Operations (`UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`)
 ```sql
-SELECT title as name FROM products WHERE price > 100
+-- Combine result sets
+SELECT email FROM accounts WHERE status = 'active'
 UNION ALL
-SELECT name FROM categories
+SELECT email FROM newsletter_subscribers
 EXCEPT
-SELECT 'Archived Category';
+SELECT email FROM unsubscribed_users;
 ```
 
 ---
@@ -260,18 +326,17 @@ SELECT 'Archived Category';
 | `VECTOR_L2_DISTANCE(v1, v2)` | `JSON/BLOB, JSON/BLOB` | `REAL` | Euclidean L2 distance `sqrt(sum((a - b)^2))` |
 | `VECTOR_DOT_PRODUCT(v1, v2)` | `JSON/BLOB, JSON/BLOB` | `REAL` | Inner dot product `sum(a * b)` |
 | `VECTOR_NORM(v)` | `JSON/BLOB` | `REAL` | Vector magnitude / L2 norm `sqrt(sum(a^2))` |
-| `VECTOR_DIM(v)` | `JSON/BLOB` | `INTEGER` | Dimensionality count of vector |
-| `VECTOR_NORMALIZE(v)` | `JSON/BLOB` | `TEXT` | Returns unit vector as normalized JSON array |
+| `VECTOR_DIM(v)` | `JSON/BLOB` | `INTEGER` | Dimensionality count of vector elements |
+| `VECTOR_NORMALIZE(v)` | `JSON/BLOB` | `TEXT` | Normalizes vector to unit length as JSON array |
 | `VECTOR_TO_BLOB(json_array)` | `TEXT` | `BLOB` | Serializes vector to compact float32 binary BLOB |
 | `VECTOR_FROM_BLOB(blob)` | `BLOB` | `TEXT` | Deserializes float32 binary BLOB to JSON array |
 
-**Vector Search Example:**
+**Vector Search in Production:**
 ```sql
--- Find top 5 most similar products using Cosine Similarity
-SELECT title, price, vector_cosine_similarity(embedding, vector_to_blob('[0.12, 0.95, -0.34, 0.44]')) as score
-FROM products
-WHERE embedding IS NOT NULL
-ORDER BY score DESC
+-- Find top 5 semantic matches for a query embedding
+SELECT id, title, vector_cosine_similarity(embedding, vector_to_blob('[0.12, -0.45, 0.88, 0.33]')) as sim
+FROM articles
+ORDER BY sim DESC
 LIMIT 5;
 ```
 
@@ -298,9 +363,9 @@ LIMIT 5;
 | `FROM_EPOCH_MS(ms)` | `INTEGER` | `TEXT` | Converts Unix milliseconds to ISO 8601 UTC string |
 | `DATE_PART(part, text)` | `TEXT, TEXT` | `INTEGER` | Extracts `'year'`, `'month'`, `'day'`, `'hour'`, `'minute'`, `'second'`, `'dow'` |
 | `DATE_TRUNC(part, text)` | `TEXT, TEXT` | `TEXT` | Truncates timestamp to `'year'`, `'month'`, `'day'`, `'hour'`, `'minute'`, `'second'` |
-| `AGE_MS(ts1, ts2)` | `TEXT, TEXT` | `INTEGER` | Milliseconds difference between two timestamps |
+| `AGE_MS(ts1, ts2)` | `TEXT, TEXT` | `INTEGER` | Calculates difference between two timestamps in milliseconds |
 
-### 6.4 JSON RFC 7396 Functions
+### 6.4 JSON Functions (RFC 7396)
 
 | Function | Arguments | Returns | Description |
 |---|---|---|---|
@@ -312,6 +377,8 @@ LIMIT 5;
 | `JSON_MERGE_PATCH(tgt, patch)` | `TEXT, TEXT` | `TEXT` | RFC 7396 JSON merge patch |
 | `JSON_CONTAINS(json, val)` | `TEXT, TEXT` | `INTEGER` | Returns `1` if container contains candidate value |
 | `JSON_TYPEOF(json)` | `TEXT` | `TEXT` | Returns `'null'`, `'boolean'`, `'number'`, `'string'`, `'array'`, `'object'` |
+| `JSON_ARRAY_LENGTH(json)` | `TEXT` | `INTEGER` | Returns number of elements in JSON array |
+| `JSON_OBJECT_LENGTH(json)` | `TEXT` | `INTEGER` | Returns number of key-value pairs in JSON object |
 | `JSON_STRIP_NULLS(json)` | `TEXT` | `TEXT` | Recursively removes all keys with `null` values |
 
 ### 6.5 String, Regex, and Cryptographic Functions
@@ -321,12 +388,13 @@ LIMIT 5;
 | `REGEXP(pattern, text)` | `TEXT, TEXT` | `INTEGER` | Regular expression match (`text REGEXP pattern`) |
 | `ILIKE(text, pattern)` | `TEXT, TEXT` | `INTEGER` | Case-insensitive pattern match with `%` and `_` |
 | `REVERSE(text)` | `TEXT` | `TEXT` | Reverses Unicode string |
-| `LEFT(text, n)` / `RIGHT(text, n)` | `TEXT, INT` | `TEXT` | First or last `n` characters |
+| `LEFT(text, n)` / `RIGHT(text, n)` | `TEXT, INT` | `TEXT` | Returns first or last `n` characters |
 | `SPLIT_PART(text, sep, pos)` | `TEXT, TEXT, INT` | `TEXT` | PostgreSQL-compatible string split (1-indexed) |
 | `REPEAT(text, count)` | `TEXT, INT` | `TEXT` | Repeats string `count` times |
 | `LPAD(text, len, pad)` | `TEXT, INT, TEXT` | `TEXT` | Left-pads string to specified length |
 | `RPAD(text, len, pad)` | `TEXT, INT, TEXT` | `TEXT` | Right-pads string to specified length |
 | `INITCAP(text)` | `TEXT` | `TEXT` | Capitalizes first letter of each word |
+| `CHAR_LENGTH(text)` | `TEXT` | `INTEGER` | Unicode character count (not raw byte count) |
 | `SHA256(text)` | `TEXT` | `TEXT` | Computes SHA-256 hash as hexadecimal string |
 | `ENCODE_HEX(blob)` | `BLOB` | `TEXT` | Encodes binary blob as hexadecimal string |
 
@@ -337,95 +405,83 @@ LIMIT 5;
 | `STRING_AGG(col, sep)` | `TEXT, TEXT` | `TEXT` | Concatenates column values with separator |
 | `JSON_AGG(col)` | `ANY` | `TEXT` | Aggregates column values into JSON array |
 | `JSON_OBJECT_AGG(k, v)` | `TEXT, ANY` | `TEXT` | Aggregates key-value pairs into JSON object |
+| `ARRAY_AGG(col)` | `ANY` | `TEXT` | Alias for `JSON_AGG` |
 | `BIT_AND(int_col)` | `INTEGER` | `INTEGER` | Bitwise AND across all rows |
 | `BIT_OR(int_col)` | `INTEGER` | `INTEGER` | Bitwise OR across all rows |
 | `BIT_XOR(int_col)` | `INTEGER` | `INTEGER` | Bitwise XOR across all rows |
-| `BOOL_AND(bool_col)` | `BOOLEAN` | `BOOLEAN` | Logical AND across all rows |
-| `BOOL_OR(bool_col)` | `BOOLEAN` | `BOOLEAN` | Logical OR across all rows |
-| `EVERY(bool_col)` | `BOOLEAN` | `BOOLEAN` | Alias for `BOOL_AND` |
+| `BOOL_AND(bool_col)` | `BOOLEAN` | `BOOLEAN` | Logical AND across all rows (TRUE if all true) |
+| `BOOL_OR(bool_col)` | `BOOLEAN` | `BOOLEAN` | Logical OR across all rows (TRUE if at least one true) |
+| `EVERY(bool_col)` | `BOOLEAN` | `BOOLEAN` | SQL-standard alias for `BOOL_AND` |
 
 ---
 
 ## 7. Command-Line Interface (CLI) Reference
 
 ```bash
-# Initialize a new database
+# Initialize a new database file
 novadb init app.novadb
 
-# Interactive SQL Shell (REPL Console)
+# Launch the interactive SQL shell (REPL console)
 novadb console app.novadb
 
-# Execute DDL/DML batches
-novadb exec app.novadb "CREATE TABLE users(id TEXT PRIMARY KEY, name TEXT);"
+# Execute DDL/DML batches directly
+novadb exec app.novadb "CREATE TABLE t(x INT); INSERT INTO t VALUES (1), (2);"
 novadb exec app.novadb --file schema.sql
 
-# Execute read query (returns JSON)
-novadb query app.novadb "SELECT * FROM users"
+# Execute read query (outputs structured JSON)
+novadb query app.novadb "SELECT * FROM t"
 
-# Bulk CSV Import
-novadb import app.novadb data.csv users
+# Bulk import CSV file into table
+novadb import app.novadb customers.csv customers
 
 # Export query results to CSV or JSON
-novadb export app.novadb "SELECT * FROM users" users_export.csv
-novadb export app.novadb "SELECT * FROM users" users_export.json
+novadb export app.novadb "SELECT * FROM customers" export.csv
+novadb export app.novadb "SELECT * FROM customers" export.json
 
-# Online Hot Backup
+# Hot online backup
 novadb backup app.novadb ./backups/app_backup.novadb
 
-# Database Integrity Check
+# Database integrity check
 novadb integrity app.novadb
 
-# WAL Checkpoint and Truncate
+# Checkpoint write-ahead log (WAL)
 novadb checkpoint app.novadb
 
-# Apply versioned migrations directory
+# Apply versioned SQL migrations directory
 novadb migrate app.novadb ./migrations
 
-# Start Server (HTTP REST + PostgreSQL Wire Gateway)
-novadb serve --listen 127.0.0.1:8787 --pg-listen 127.0.0.1:5432 --data-dir ./novadb-data
+# Start server daemon (HTTP REST + PostgreSQL Wire Gateway)
+novadb serve --listen 0.0.0.0:8787 --pg-listen 0.0.0.0:5432 --data-dir ./novadb-data
 ```
 
 ---
 
 ## 8. Embedded Rust API
 
-Add NovaDB to your `Cargo.toml`:
-```toml
-[dependencies]
-novadb-core = { path = "crates/novadb-core" }
-```
-
-### High-Concurrency Connection Pool Usage:
 ```rust
 use novadb_core::pool::NovaDbPool;
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
-    // Open a multi-reader connection pool (default 4 readers)
-    let pool = NovaDbPool::open(PathBuf::from("prod.novadb"), 8)?;
+    // Open a multi-reader pool backed by SQLite WAL mode
+    let pool = NovaDbPool::open(PathBuf::from("production.novadb"), 8)?;
 
-    // Execute writes (serialized safely with WAL)
+    // Execute atomic write batch
     pool.execute_batch(
-        "CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, title TEXT, created_at TEXT);
-         INSERT INTO items VALUES (uuid_v7(), 'Item 1', now_iso());"
+        "CREATE TABLE IF NOT EXISTS events (
+            id TEXT PRIMARY KEY, 
+            name TEXT NOT NULL, 
+            created_at TEXT NOT NULL DEFAULT (now_iso())
+         );
+         INSERT INTO events (id, name) VALUES (uuid_v7(), 'ServerStarted');"
     )?;
 
-    // Execute parallel non-blocking reads
-    let result = pool.query("SELECT id, title, created_at FROM items ORDER BY created_at DESC")?;
+    // Execute concurrent non-blocking read
+    let result = pool.query("SELECT id, name, created_at FROM events ORDER BY created_at DESC")?;
     for row in result.rows {
-        println!("Row: {:?}", row);
+        println!("Event: {:?}", row);
     }
 
     Ok(())
 }
 ```
-
----
-
-## 9. Security and Role-Based Access Control (RBAC)
-
-NovaDB contains built-in authentication and permission tables:
-* `_novadb_users`: Stores usernames, salted SHA-256 password hashes, active flags, and superuser indicators.
-* `_novadb_roles`: Named permission roles (`novadb_admin`, `novadb_readonly`, `novadb_readwrite`).
-* `_novadb_user_roles`: Maps users to roles.
-* `_novadb_grants`: Maps roles to granular table-level privileges (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `ALL`).
