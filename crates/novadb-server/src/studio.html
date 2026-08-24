@@ -1078,6 +1078,30 @@
       return h;
     }
 
+    function extractErrorMessage(err, fallback = "Operation failed") {
+      if (!err) return fallback;
+      if (typeof err === "string") return err;
+      if (err.error && typeof err.error === "object" && err.error.message) {
+        return err.error.message;
+      }
+      if (err.error && typeof err.error === "string") {
+        return err.error;
+      }
+      if (err.message) {
+        return err.message;
+      }
+      return fallback;
+    }
+
+    async function parseApiError(res, fallback = "Request failed") {
+      try {
+        const json = await res.json();
+        return extractErrorMessage(json, res.statusText || fallback);
+      } catch (e) {
+        return res.statusText || fallback;
+      }
+    }
+
     function saveAuthToken() {
       authToken = document.getElementById("auth-token-input").value.trim();
       logOps("Authentication token updated.");
@@ -1311,8 +1335,8 @@
           body: JSON.stringify({ sql })
         });
         if (!res.ok) {
-          const err = await res.json().catch(() => ({ message: res.statusText }));
-          throw new Error(err.message || res.statusText);
+          const errMsg = await parseApiError(res, "Query error");
+          throw new Error(errMsg);
         }
         const data = await res.json();
         const rowCount = data.rows ? data.rows.length : 0;
@@ -1325,7 +1349,7 @@
 
         renderGrid("grid-table-container", data.columns || [], data.rows || [], true);
       } catch (e) {
-        gridBox.innerHTML = `<div style="padding: 20px; color: var(--danger); font-family: var(--font-mono);">${escapeHtml(e.message)}</div>`;
+        gridBox.innerHTML = `<div style="padding: 20px; color: var(--danger); font-family: var(--font-mono); white-space: pre-wrap;">${escapeHtml(e.message)}</div>`;
       }
     }
 
@@ -1449,8 +1473,8 @@
           refreshActiveTable();
           logOps(`Added column '${cName}' to table '${activeSelectedTable}'.`);
         } else {
-          const err = await res.json();
-          alert("Add Column Error: " + (err.message || "Failed"));
+          const errMsg = await parseApiError(res, "Add Column Failed");
+          alert("Add Column Error:\n\n" + errMsg);
         }
       } catch (e) {
         alert(e.message);
@@ -1483,8 +1507,8 @@
           selectActiveTable(newName);
           logOps(`Renamed table '${old}' to '${newName}'.`);
         } else {
-          const err = await res.json();
-          alert("Rename Error: " + (err.message || "Failed"));
+          const errMsg = await parseApiError(res, "Rename Failed");
+          alert("Rename Error:\n\n" + errMsg);
         }
       } catch (e) {
         alert(e.message);
@@ -1504,6 +1528,9 @@
         if (res.ok) {
           loadGridData();
           logOps(`Truncated table '${activeSelectedTable}'.`);
+        } else {
+          const errMsg = await parseApiError(res, "Truncate Failed");
+          alert("Truncate Error:\n\n" + errMsg);
         }
       } catch (e) {
         alert(e.message);
@@ -1578,10 +1605,10 @@
             body: JSON.stringify({ sql: batchSql })
           });
           if (!resBatch.ok) {
-            const err = await resBatch.json().catch(() => ({ message: resBatch.statusText }));
+            const errMsg = await parseApiError(resBatch, "Batch error");
             const elapsed = (performance.now() - start).toFixed(1);
-            statText.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(err.message || resBatch.statusText)}</span> (${elapsed} ms)`;
-            document.getElementById("sql-results-table-box").innerHTML = `<div style="padding: 16px; color: var(--danger); font-family: var(--font-mono);">${escapeHtml(err.message || "Batch error")}</div>`;
+            statText.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(errMsg)}</span> (${elapsed} ms)`;
+            document.getElementById("sql-results-table-box").innerHTML = `<div style="padding: 16px; color: var(--danger); font-family: var(--font-mono); white-space: pre-wrap;">${escapeHtml(errMsg)}</div>`;
             return;
           }
 
@@ -1597,6 +1624,11 @@
             renderGrid("sql-results-table-box", data.columns, data.rows, false);
             statText.textContent = `Batch executed & Query returned: ${data.rows.length} row(s) in ${elapsed} ms`;
             loadSidebarTables();
+            return;
+          } else {
+            const errMsg = await parseApiError(resQuery, "Query error");
+            statText.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(errMsg)}</span> (${elapsed} ms)`;
+            document.getElementById("sql-results-table-box").innerHTML = `<div style="padding: 16px; color: var(--danger); font-family: var(--font-mono); white-space: pre-wrap;">${escapeHtml(errMsg)}</div>`;
             return;
           }
         } catch (err) {
@@ -1617,9 +1649,9 @@
         const elapsed = (performance.now() - start).toFixed(1);
 
         if (!res.ok) {
-          const err = await res.json().catch(() => ({ message: res.statusText }));
-          statText.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(err.message || res.statusText)}</span> (${elapsed} ms)`;
-          document.getElementById("sql-results-table-box").innerHTML = `<div style="padding: 16px; color: var(--danger); font-family: var(--font-mono);">${escapeHtml(err.message || "Execution error")}</div>`;
+          const errMsg = await parseApiError(res, "Execution error");
+          statText.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(errMsg)}</span> (${elapsed} ms)`;
+          document.getElementById("sql-results-table-box").innerHTML = `<div style="padding: 16px; color: var(--danger); font-family: var(--font-mono); white-space: pre-wrap;">${escapeHtml(errMsg)}</div>`;
           return;
         }
 
@@ -1761,8 +1793,8 @@
           closeModal("modal-insert-row");
           loadGridData();
         } else {
-          const err = await res.json();
-          alert("Insert Error: " + (err.message || "Failed"));
+          const errMsg = await parseApiError(res, "Insert Failed");
+          alert("Insert Error:\n\n" + errMsg);
         }
       } catch (e) {
         alert(e.message);
@@ -1819,8 +1851,8 @@
           closeModal("modal-edit-row");
           loadGridData();
         } else {
-          const err = await res.json();
-          alert("Update Error: " + (err.message || "Failed"));
+          const errMsg = await parseApiError(res, "Update Failed");
+          alert("Update Error:\n\n" + errMsg);
         }
       } catch (e) {
         alert(e.message);
@@ -1845,6 +1877,10 @@
           body: JSON.stringify({ sql })
         });
         if (res.ok) loadGridData();
+        else {
+          const errMsg = await parseApiError(res, "Delete Failed");
+          alert("Delete Error:\n\n" + errMsg);
+        }
       } catch (e) {
         alert(e.message);
       }
@@ -1862,6 +1898,9 @@
         if (res.ok) {
           activeSelectedTable = "";
           loadSidebarTables();
+        } else {
+          const errMsg = await parseApiError(res, "Drop Table Failed");
+          alert("Drop Table Error:\n\n" + errMsg);
         }
       } catch (e) {
         alert(e.message);
@@ -1939,8 +1978,8 @@
           loadSidebarTables();
           selectActiveTable(tName);
         } else {
-          const err = await res.json();
-          alert("Create Table Error: " + (err.message || "Failed"));
+          const errMsg = await parseApiError(res, "Create Table Failed");
+          alert("Create Table Error:\n\n" + errMsg);
         }
       } catch (e) {
         alert(e.message);
@@ -2046,11 +2085,12 @@
           logOps("SQL Script execution SUCCESS.");
           loadSidebarTables();
         } else {
-          const err = await res.json();
-          alert("SQL Error: " + (err.message || "Failed"));
+          const errMsg = await parseApiError(res, "SQL execution failed");
+          alert("SQL Execution Error:\n\n" + errMsg);
+          logOps("SQL Script FAILED: " + errMsg);
         }
       } catch (e) {
-        alert(e.message);
+        alert("Network Error: " + e.message);
       }
     }
 
@@ -2089,12 +2129,14 @@
           alert(`Imported ${inserts.length} rows successfully!`);
           document.getElementById("io-csv-content").value = "";
           loadSidebarTables();
+          loadGridData();
         } else {
-          const err = await res.json();
-          alert("Import Error: " + (err.message || "Failed"));
+          const errMsg = await parseApiError(res, "CSV import failed");
+          alert("CSV Import Error:\n\n" + errMsg);
+          logOps("CSV Import FAILED: " + errMsg);
         }
       } catch (e) {
-        alert(e.message);
+        alert("Network Error: " + e.message);
       }
     }
 
