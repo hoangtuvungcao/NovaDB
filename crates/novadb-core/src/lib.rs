@@ -123,7 +123,13 @@ struct TableSpec {
 impl NovaDb {
     /// Opens or creates a file-backed database.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::from_connection(Connection::open(path)?)
+        let p = path.as_ref();
+        if let Some(parent) = p.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+        Self::from_connection(Connection::open(p)?)
     }
 
     /// Opens a private in-memory database.

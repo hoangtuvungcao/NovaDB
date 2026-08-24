@@ -767,6 +767,15 @@ pub struct ServeArgs {
 }
 
 async fn serve(args: &ServeArgs) -> Result<()> {
+    if !args.data_dir.exists() {
+        std::fs::create_dir_all(&args.data_dir)?;
+    }
+    if let Some(parent) = args.database_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
     let config = novadb_server::ServerConfig {
         listen_addr: args.listen,
         database_path: args.database_path.clone(),
