@@ -673,6 +673,20 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_plus_str.replace_all(&normalized, " || ${1}").into_owned();
     }
 
+    // 7.5 T-SQL ISNULL, TRY_CAST, TRY_CONVERT, CONVERT
+    if let Ok(re_isnull) = regex::Regex::new(r"(?i)\bISNULL\s*\(") {
+        normalized = re_isnull.replace_all(&normalized, "ifnull(").into_owned();
+    }
+    if let Ok(re_try_cast) = regex::Regex::new(r"(?i)\bTRY_CAST\s*\(\s*([\s\S]*?)\s+AS\s+([a-zA-Z0-9_()]+)\s*\)") {
+        normalized = re_try_cast.replace_all(&normalized, "CAST(${1} AS ${2})").into_owned();
+    }
+    if let Ok(re_try_conv) = regex::Regex::new(r"(?i)\bTRY_CONVERT\s*\(\s*([a-zA-Z0-9_()]+)\s*,\s*((?:[^(),]+|\([^)]*\))+?)(?:\s*,\s*\d+)?\s*\)") {
+        normalized = re_try_conv.replace_all(&normalized, "CAST(${2} AS ${1})").into_owned();
+    }
+    if let Ok(re_conv) = regex::Regex::new(r"(?i)\bCONVERT\s*\(\s*([a-zA-Z0-9_()]+)\s*,\s*((?:[^(),]+|\([^)]*\))+?)(?:\s*,\s*\d+)?\s*\)") {
+        normalized = re_conv.replace_all(&normalized, "CAST(${2} AS ${1})").into_owned();
+    }
+
     // 8. T-SQL CAST(... AS NVARCHAR/VARCHAR/DECIMAL/DATE/BIGINT) -> CAST(... AS TEXT/REAL/INTEGER)
     if let Ok(re_cast_str) = regex::Regex::new(r"(?i)\bCAST\s*\(\s*(.*?)\s+AS\s+N?(?:VAR)?CHAR(?:\(\s*(?:\d+|MAX)\s*\))?\s*\)") {
         normalized = re_cast_str.replace_all(&normalized, "CAST(${1} AS TEXT)").into_owned();
@@ -859,19 +873,6 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
     // 28. T-SQL OPENJSON WITH
     if let Ok(re_openjson) = regex::Regex::new(r"(?i)\bFROM\s+OPENJSON\s*\([\s\S]*?\)\s+WITH\s*\([\s\S]*?\)") {
         normalized = re_openjson.replace_all(&normalized, "FROM (SELECT 1 AS ID, 'An' AS Name, 1000 AS Balance UNION ALL SELECT 2, 'Binh', 2000)").into_owned();
-    }
-
-    // 29. T-SQL TRY_CAST / TRY_CONVERT / CONVERT
-    if let Ok(re_try_cast) = regex::Regex::new(r"(?i)\bTRY_CAST\s*\(\s*([\s\S]*?)\s+AS\s+([a-zA-Z0-9_()]+)\s*\)") {
-        normalized = re_try_cast.replace_all(&normalized, "CAST(${1} AS ${2})").into_owned();
-    }
-    if let Ok(re_conv) = regex::Regex::new(r"(?i)\bCONVERT\s*\(\s*([a-zA-Z0-9_()]+)\s*,\s*([^,]+?)(?:,\s*\d+)?\s*\)") {
-        normalized = re_conv.replace_all(&normalized, "CAST(${2} AS ${1})").into_owned();
-    }
-
-    // 30. T-SQL ISNULL(a, b) -> ifnull(a, b)
-    if let Ok(re_isnull) = regex::Regex::new(r"(?i)\bISNULL\s*\(") {
-        normalized = re_isnull.replace_all(&normalized, "ifnull(").into_owned();
     }
 
     normalized

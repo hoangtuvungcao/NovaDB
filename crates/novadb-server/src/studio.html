@@ -1719,6 +1719,54 @@
       }
     }
 
+    function renderSqlErrorBox(containerId, errMsg) {
+      let mainError = errMsg;
+      let contextSnippet = "";
+      const inIdx = errMsg.indexOf(" in ");
+      if (inIdx !== -1 && (errMsg.startsWith("SQLite error:") || errMsg.startsWith("Error:"))) {
+        mainError = errMsg.substring(0, inIdx).trim();
+        contextSnippet = errMsg.substring(inIdx + 4).trim();
+      }
+
+      let displaySnippet = contextSnippet;
+      if (contextSnippet) {
+        const lines = contextSnippet.split('\n').map(l => l.trim()).filter(Boolean);
+        if (lines.length > 4) {
+          displaySnippet = lines.slice(0, 4).join('\n') + '\n... (truncated)';
+        } else if (displaySnippet.length > 250) {
+          displaySnippet = displaySnippet.substring(0, 250) + '...';
+        }
+      }
+
+      const box = document.getElementById(containerId);
+      if (!box) return;
+      box.innerHTML = `
+        <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 8px; padding: 14px 18px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ef4444;"></span>
+                <span style="font-weight: 600; color: #ef4444; font-size: 13px; letter-spacing: 0.3px;">Execution Error</span>
+              </div>
+              <button class="btn btn-sm" onclick="navigator.clipboard.writeText(decodeURIComponent('${encodeURIComponent(errMsg)}')); showToast('Copied full error to clipboard', 'info');" style="padding: 2px 8px; font-size: 11px;">Copy Error</button>
+            </div>
+            <div style="font-family: var(--font-mono); font-size: 12px; color: #fca5a5; line-height: 1.5; font-weight: 500;">
+              ${escapeHtml(mainError)}
+            </div>
+            ${displaySnippet ? `
+            <div style="margin-top: 12px; background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 6px; padding: 10px 14px;">
+              <div style="font-size: 11px; color: var(--text-tertiary); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Error Context / Near Statement</div>
+              <pre style="margin: 0; font-family: var(--font-mono); font-size: 12px; color: #e2e8f0; white-space: pre-wrap; word-break: break-word;">${escapeHtml(displaySnippet)}</pre>
+            </div>` : ''}
+            <details style="margin-top: 10px; font-size: 11px; color: var(--text-tertiary);">
+              <summary style="cursor: pointer; user-select: none; padding: 2px 0;">View Full Error Log</summary>
+              <pre style="margin-top: 6px; padding: 10px; background: rgba(0, 0, 0, 0.4); border-radius: 6px; font-family: var(--font-mono); font-size: 11px; color: #94a3b8; white-space: pre-wrap; max-height: 160px; overflow-y: auto;">${escapeHtml(errMsg)}</pre>
+            </details>
+          </div>
+        </div>
+      `;
+    }
+
     // SQL CONSOLE LOGIC
     async function executeSqlQuery() {
       if (!activeDatabase) return showToast("Select a database first.", "error");
@@ -1745,8 +1793,8 @@
           if (!resBatch.ok) {
             const errMsg = await parseApiError(resBatch, "Batch error");
             const elapsed = (performance.now() - start).toFixed(1);
-            statText.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(errMsg)}</span> (${elapsed} ms)`;
-            document.getElementById("sql-results-table-box").innerHTML = `<div style="padding: 16px; color: var(--danger); font-family: var(--font-mono); white-space: pre-wrap;">${escapeHtml(errMsg)}</div>`;
+            statText.innerHTML = `<span style="color: var(--danger)">Error</span> (${elapsed} ms)`;
+            renderSqlErrorBox("sql-results-table-box", errMsg);
             return;
           }
 
@@ -1765,8 +1813,8 @@
             return;
           } else {
             const errMsg = await parseApiError(resQuery, "Query error");
-            statText.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(errMsg)}</span> (${elapsed} ms)`;
-            document.getElementById("sql-results-table-box").innerHTML = `<div style="padding: 16px; color: var(--danger); font-family: var(--font-mono); white-space: pre-wrap;">${escapeHtml(errMsg)}</div>`;
+            statText.innerHTML = `<span style="color: var(--danger)">Error</span> (${elapsed} ms)`;
+            renderSqlErrorBox("sql-results-table-box", errMsg);
             return;
           }
         } catch (err) {
@@ -1788,8 +1836,8 @@
 
         if (!res.ok) {
           const errMsg = await parseApiError(res, "Execution error");
-          statText.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(errMsg)}</span> (${elapsed} ms)`;
-          document.getElementById("sql-results-table-box").innerHTML = `<div style="padding: 16px; color: var(--danger); font-family: var(--font-mono); white-space: pre-wrap;">${escapeHtml(errMsg)}</div>`;
+          statText.innerHTML = `<span style="color: var(--danger)">Error</span> (${elapsed} ms)`;
+          renderSqlErrorBox("sql-results-table-box", errMsg);
           return;
         }
 
