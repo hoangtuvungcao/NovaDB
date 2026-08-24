@@ -636,3 +636,75 @@ In SQL Server (T-SQL), row-by-row procedural loops (`WHILE` loops and `CURSOR`s)
       INSERT INTO audit_log (msg, ts) VALUES ('Inserted ' || NEW.name, now_iso());
   END;
   ```
+
+---
+
+### 9.5 Transparent SQL Server (T-SQL) & MySQL Script Transpiler
+
+NovaDB includes an embedded real-time SQL dialect transpiler that accepts raw SQL Server and MySQL scripts without manual modification:
+
+* **T-SQL `IDENTITY(1,1)`**: Automatically transpiled to `INTEGER PRIMARY KEY AUTOINCREMENT`.
+* **T-SQL Unicode Literals `N'...'`**: Automatically recognized as full UTF-8 Unicode strings (`N'Nguyễn Văn An'` -> `'Nguyễn Văn An'`).
+* **T-SQL Function Defaults**: `DEFAULT GETDATE()` and `DEFAULT SYSDATETIME()` are automatically converted to standard `DEFAULT (datetime('now'))`.
+* **MySQL `AUTO_INCREMENT`**: Automatically normalized to `AUTOINCREMENT`.
+* **Multi-Statement Script Execution**: Blocks containing `CREATE TABLE ...; INSERT INTO ...; SELECT ...;` automatically execute the schema/data batch and display the final query dataset directly in the grid.
+
+---
+
+## 10. Authentication, Security, and Production Deployment
+
+NovaDB provides dual-layer security tailored for local development and enterprise production environments:
+
+### 10.1 Development Mode vs Production Mode
+
+1. **Development Mode (Default)**:
+   ```bash
+   novadb serve --listen 127.0.0.1:8787 --pg-listen 127.0.0.1:5432 --data-dir ./novadb-data
+   ```
+   When started without a token, all local API endpoints and the Web Studio are accessible without authentication for frictionless developer workflows.
+
+2. **Production Mode (Strict Bearer Token Enforcement)**:
+   ```bash
+   novadb serve --listen 0.0.0.0:8787 --pg-listen 0.0.0.0:5432 --data-dir ./novadb-data --token <SECRET_TOKEN>
+   ```
+   * All REST endpoints (`/query`, `/execute`, `/databases`, `/schema`, `/maintenance`) strictly reject unauthenticated requests with `HTTP 401 Unauthorized`.
+   * Clients must supply the `Authorization: Bearer <SECRET_TOKEN>` HTTP header.
+   * Web Studio users must enter the token into the top-right **`Bearer Token`** field and click **`Save Token`**.
+
+### 10.2 PostgreSQL Wire Protocol Authentication
+
+For client connections via DBeaver, TablePlus, Navicat, or application drivers (Node.js `pg`, Python `psycopg2`, PHP `PDO_PGSQL`, Go `pgx`, C# `Npgsql`):
+
+```bash
+novadb serve --listen 0.0.0.0:8787 --pg-listen 0.0.0.0:5432 --data-dir ./novadb-data --pg-user admin --pg-password <SECURE_PASSWORD>
+```
+
+### 10.3 Role-Based Access Control (RBAC)
+
+| Role | Permissions | Use Case |
+|:---|:---|:---|
+| `ADMIN` | Full DDL (`CREATE`, `ALTER`, `DROP`), DML (`SELECT`, `INSERT`, `UPDATE`, `DELETE`), Backup, User Management | Database Administrators & Migrations |
+| `READ_WRITE` | DML operations (`SELECT`, `INSERT`, `UPDATE`, `DELETE`) on all user tables | Application Services & APIs |
+| `READ_ONLY` | Read-only access (`SELECT`) with writes/drops strictly blocked | Analytics, Reporting, BI Dashboards |
+
+---
+
+## 11. Enterprise Web Management Studio Guide
+
+The built-in Web Studio (`http://localhost:8787`) provides a high-contrast, zero-external-dependency database management suite:
+
+### 11.1 Table Explorer & Interactive Sub-Tabs
+* **Sidebar Tree & Instant Search**: Filter tables by name; clicking any table automatically switches to the Data Grid and loads records.
+* **`Data Grid` Sub-Tab**: Spreadsheet-style interactive viewer with customizable pagination (50, 100, 500 rows), live `WHERE` clause filtering, inline row editing, insertion, and deletion.
+* **`Structure & Columns` Sub-Tab**: View column details (CID, Name, Type, NOT NULL, DEFAULT, Primary Key).
+* **`SQL DDL Schema` Sub-Tab**: View the exact original `CREATE TABLE` DDL statement.
+
+### 11.2 SQL Console & REPL
+* Live SQL execution with execution timers.
+* Quick templates for `SELECT *`, `UUID v7 & Now`, `Recursive CTE`, `Window Functions`, `Vector Cosine`, and `JSON Patch`.
+* 1-click query result export to **CSV** and **JSON**.
+
+### 11.3 Import & Export Suite
+* **`.sql` Script Import**: Upload or paste `.sql` scripts to execute DDL and bulk data seeding.
+* **`.csv` File Import**: Upload CSV files with custom delimiters (comma, semicolon, tab).
+* **Full Database `.sql` Dump Export**: 1-click full database backup export containing all DDL schemas and table data.
