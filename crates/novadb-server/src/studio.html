@@ -1288,6 +1288,15 @@
       const target = document.getElementById(tabId);
       if (target) target.classList.add("active");
       if (el) el.classList.add("active");
+      if (tabId === "schema-panel") {
+        loadSchemaDesigner();
+      } else if (tabId === "table-panel") {
+        refreshActiveTable();
+      } else if (tabId === "rbac-panel") {
+        loadRbacUsers();
+      } else if (tabId === "ops-panel") {
+        loadBackups();
+      }
     }
 
     function switchTableSubTab(subviewId, el) {
@@ -2149,25 +2158,47 @@
         box.innerHTML = "";
 
         if (Array.isArray(data.tables) && data.tables.length > 0) {
-          data.tables.forEach(tbl => {
+          const tablePromises = data.tables.map(async (tbl) => {
+            try {
+              const infoRes = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/query", {
+                method: "POST",
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ sql: `PRAGMA table_info("${tbl.name.replace(/"/g, '""')}");` })
+              });
+              if (infoRes.ok) {
+                const infoData = await infoRes.json();
+                return { ...tbl, columns: infoData.rows || [] };
+              }
+            } catch (e) {}
+            return { ...tbl, columns: [] };
+          });
+
+          const tablesWithCols = await Promise.all(tablePromises);
+
+          tablesWithCols.forEach(tbl => {
             const card = document.createElement("div");
             card.className = "card";
+            card.style.minWidth = "280px";
+            card.style.marginBottom = "16px";
             let colsHtml = `<table class="data-grid"><thead><tr><th>Column</th><th>Type</th><th>PK</th></tr></thead><tbody>`;
-            if (Array.isArray(tbl.columns)) {
+            if (Array.isArray(tbl.columns) && tbl.columns.length > 0) {
               tbl.columns.forEach(c => {
+                const isPk = c.pk === 1 || c.pk === true;
                 colsHtml += `<tr>
-                  <td><b>${escapeHtml(c.name)}</b></td>
+                  <td><b>${escapeHtml(c.name || '')}</b></td>
                   <td><code>${escapeHtml(c.type || 'TEXT')}</code></td>
-                  <td>${c.pk ? '<span class="badge" style="background: var(--success-dim); color: var(--success);">PK</span>' : '-'}</td>
+                  <td>${isPk ? '<span class="badge" style="background: var(--success-dim); color: var(--success);">PK</span>' : '-'}</td>
                 </tr>`;
               });
+            } else {
+              colsHtml += `<tr><td colspan="3" style="text-align: center; color: var(--text-tertiary); font-size: 11px;">(No columns)</td></tr>`;
             }
             colsHtml += `</tbody></table>`;
 
             card.innerHTML = `
-              <div class="card-header">
+              <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
                 <span>Table: <code>${escapeHtml(tbl.name)}</code></span>
-                <button class="btn btn-sm" onclick="selectActiveTable('${escapeHtml(tbl.name)}'); switchMainTab('table-panel', document.querySelectorAll('.menu-item')[0]);">Open Grid</button>
+                <button class="btn btn-sm" onclick="selectActiveTable('${escapeHtml(tbl.name)}', true)">Open Grid</button>
               </div>
               ${colsHtml}
             `;
