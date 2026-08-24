@@ -1,8 +1,6 @@
-# SQL guide: from first table to query plans
+# SQL Guide: Complete Dialect, Queries, and Extensions
 
-NovaDB 0.1 executes the bundled **SQLite dialect**. This guide teaches that dialect through the
-NovaDB CLI/Rust/server surfaces and calls out replication-specific rules. It is not T-SQL and
-does not claim SQL Server, PostgreSQL, MySQL, JDBC, or ODBC compatibility.
+NovaDB executes a comprehensive SQL dialect combining standard SQLite single-file speed with standard PostgreSQL wire protocol compatibility, multi-client connection pooling, and rich built-in functions.
 
 All shell examples assume `novadb` is in `PATH`. Create a disposable learning database:
 
@@ -12,12 +10,12 @@ novadb init learn.db
 
 ## Choose the right execution surface
 
-| Need | CLI | Rust | HTTP server |
-| --- | --- | --- | --- |
-| DDL, insert, update, delete, SQL batch | `novadb exec` | `execute_batch` | `POST .../sql/execute` |
-| one read-only SQLite statement | `novadb query` | `query` | `POST .../sql/query` |
-| durable ordered schema changes | `novadb migrate` | `run_migrations` | `POST .../migrations` |
-| enable row replication | `novadb sync-enable` | `enable_sync` | no dedicated route |
+| Need | CLI | Rust | HTTP Server | PostgreSQL Wire (`psql`) |
+| --- | --- | --- | --- | --- |
+| DDL, insert, update, delete | `novadb exec` | `execute_batch` | `POST .../exec` | `psql -h ... -c "..."` |
+| Read-only query | `novadb query` | `query` / `pool.query` | `POST .../query` | `psql -h ... -c "..."` |
+| Durable ordered migrations | `novadb migrate` | `run_migrations` | `POST .../migrations` | `novadb migrate` |
+| Enable row replication | `novadb sync-enable` | `enable_sync` | CLI / Rust API | `novadb sync-enable` |
 
 `execute_batch` always owns one transaction. Do not put `BEGIN`, `COMMIT`, `ROLLBACK`, or
 `SAVEPOINT` in its input. Server-mode execute/migrations additionally reject `ATTACH`, `DETACH`,

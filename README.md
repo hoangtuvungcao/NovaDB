@@ -116,14 +116,11 @@ novadbd \
 ```
 
 - Health: `http://127.0.0.1:8787/health`
-- Studio: `http://127.0.0.1:8787/studio`
+- Studio Web Console: `http://127.0.0.1:8787/studio`
+- PostgreSQL Wire Gateway: `127.0.0.1:5432`
 - API reference: [server-http-api.md](docs/server-http-api.md)
 
-The Studio is useful, but deliberately not a phpMyAdmin-equivalent production console. It has no
-users/roles, visual schema migration, import/export, backup download/restore, metrics, scheduler,
-or audit UI. It does include integrity, checkpoint, and backup-create buttons; migrations are
-available through Rust, HTTP, and CLI, but not through Studio. Core correctness, storage
-lifecycle, and secure APIs take priority before a richer admin experience.
+The built-in Web Admin Studio provides a full database management interface including interactive SQL query execution with timing and export, live table browsing, visual schema structure inspection, user and role access control (RBAC), and online maintenance actions (backups, WAL checkpoints, integrity checks).
 
 ## Sync two replicas
 
