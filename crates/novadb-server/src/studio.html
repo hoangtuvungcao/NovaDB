@@ -1045,7 +1045,7 @@
         renderSidebarTableList(allTableList);
 
         if (allTableList.length > 0 && !activeSelectedTable) {
-          selectActiveTable(allTableList[0].name);
+          selectActiveTable(allTableList[0].name, false);
         }
       } catch (e) {
         console.error(e);
@@ -1070,18 +1070,26 @@
         const item = document.createElement("div");
         item.className = "table-nav-item" + (activeSelectedTable === tbl.name ? " active" : "");
         item.innerHTML = `<span><span class="table-tag">T</span>${escapeHtml(tbl.name)}</span>`;
-        item.onclick = () => selectActiveTable(tbl.name);
+        item.onclick = () => selectActiveTable(tbl.name, true);
         box.appendChild(item);
       });
     }
 
-    function selectActiveTable(tableName) {
+    function selectActiveTable(tableName, shouldSwitchTab = true) {
+      if (!tableName) return;
       activeSelectedTable = tableName;
       document.getElementById("active-table-name").textContent = tableName;
       document.getElementById("io-export-query").value = `SELECT * FROM "${tableName.replace(/"/g, '""')}";`;
+      
       document.querySelectorAll(".table-nav-item").forEach(el => {
-        el.classList.toggle("active", el.textContent.includes(tableName));
+        el.classList.toggle("active", el.textContent.trim().endsWith(tableName) || el.textContent.includes(tableName));
       });
+
+      if (shouldSwitchTab) {
+        const dataMenuBtn = document.querySelector('.menu-item[onclick*="tab-data"]');
+        switchMainTab("tab-data", dataMenuBtn);
+      }
+
       refreshActiveTable();
     }
 
@@ -1103,18 +1111,24 @@
       }
       sql += ` LIMIT ${limit};`;
 
+      const gridBox = document.getElementById("grid-table-container");
+      gridBox.innerHTML = '<div style="padding: 30px; text-align: center; color: var(--text-tertiary);">Loading table records...</div>';
+
       try {
         const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/query", {
           method: "POST",
           headers: getAuthHeaders(),
           body: JSON.stringify({ sql })
         });
-        if (!res.ok) throw new Error("Query failed");
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ message: res.statusText }));
+          throw new Error(err.message || res.statusText);
+        }
         const data = await res.json();
-        document.getElementById("active-table-rows-count").textContent = `${data.rows.length} rows`;
-        renderGrid("grid-table-container", data.columns, data.rows, true);
+        document.getElementById("active-table-rows-count").textContent = `${data.rows ? data.rows.length : 0} rows`;
+        renderGrid("grid-table-container", data.columns || [], data.rows || [], true);
       } catch (e) {
-        document.getElementById("grid-table-container").innerHTML = `<div style="padding: 20px; color: var(--danger); font-family: var(--font-mono);">${escapeHtml(e.message)}</div>`;
+        gridBox.innerHTML = `<div style="padding: 20px; color: var(--danger); font-family: var(--font-mono);">${escapeHtml(e.message)}</div>`;
       }
     }
 
