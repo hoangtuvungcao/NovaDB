@@ -1,0 +1,33 @@
+[package]
+name = "novadb-server"
+description = "Durable synchronization relay for NovaDB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+novadb-core = { path = "../novadb-core" }
+novadb-wire = { path = "../novadb-wire" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "novadbd"
+path = "src/bin/novadbd.rs"

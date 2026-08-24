@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>NovaDB Studio</title>
+  <style>
+    :root {
+      --bg: #08100e;
+      --panel: #0e1815;
+      --panel-2: #14211d;
+      --line: #263a33;
+      --text: #edf7f2;
+      --muted: #8ba59a;
+      --mint: #58e6aa;
+      --mint-2: #20b87d;
+      --amber: #ffc66d;
+      --red: #ff7d83;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .34);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 85% -10%, rgba(32, 184, 125, .15), transparent 34rem),
+        radial-gradient(circle at -10% 85%, rgba(88, 230, 170, .08), transparent 30rem),
+        var(--bg);
+    }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .shell { display: grid; grid-template-columns: 278px minmax(0, 1fr); min-height: 100vh; }
+    .sidebar {
+      padding: 28px 22px;
+      border-right: 1px solid var(--line);
+      background: rgba(8, 16, 14, .88);
+      backdrop-filter: blur(16px);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; }
+    .mark {
+      display: grid; place-items: center; width: 38px; height: 38px;
+      border: 1px solid rgba(88, 230, 170, .5); border-radius: 12px;
+      color: var(--mint); background: rgba(88, 230, 170, .08);
+      font: 800 19px/1 ui-monospace, monospace;
+      box-shadow: inset 0 0 25px rgba(88, 230, 170, .08);
+    }
+    .brand strong { display: block; letter-spacing: -.02em; }
+    .brand span { color: var(--muted); font-size: 12px; }
+    .label {
+      display: block; margin: 20px 0 8px; color: var(--muted);
+      font-size: 11px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase;
+    }
+    .field, select, .database-input {
+      width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 10px;
+      color: var(--text); background: var(--panel); padding: 0 12px; outline: none;
+    }
+    .field:focus, select:focus, .database-input:focus, textarea:focus {
+      border-color: var(--mint-2); box-shadow: 0 0 0 3px rgba(32, 184, 125, .12);
+    }
+    .hint { margin: 7px 2px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .row { display: flex; gap: 8px; }
+    .row > :first-child { min-width: 0; flex: 1; }
+    .btn {
+      min-height: 40px; border: 1px solid var(--line); border-radius: 10px;
+      padding: 0 14px; color: var(--text); background: var(--panel-2); font-weight: 700;
+      transition: transform .15s ease, border-color .15s ease, background .15s ease;
+    }
+    .btn:hover { transform: translateY(-1px); border-color: #3a554b; }
+    .btn:disabled { cursor: not-allowed; opacity: .45; transform: none; }
+    .btn-primary { border-color: var(--mint-2); color: #032d1e; background: var(--mint); }
+    .btn-primary:hover { background: #75f1be; border-color: #75f1be; }
+    .btn-compact { padding: 0 12px; }
+    .sidebar-footer { margin-top: 32px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .maintenance-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .maintenance-grid .btn { min-height: 36px; padding: 0 7px; font-size: 10px; }
+    .maintenance-status { min-height: 32px; margin: 8px 2px 0; color: var(--muted); font-size: 10px; line-height: 1.5; word-break: break-word; }
+    .security-note { display: flex; gap: 9px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .security-note b { color: var(--mint); }
+    main { min-width: 0; padding: 26px 30px 34px; }
+    .topbar { display: flex; justify-content: space-between; gap: 18px; align-items: center; margin-bottom: 22px; }
+    h1 { margin: 0; font-size: clamp(23px, 3vw, 34px); letter-spacing: -.04em; }
+    .subtitle { margin: 5px 0 0; color: var(--muted); font-size: 13px; }
+    .statuses { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .status {
+      display: flex; align-items: center; gap: 7px; border: 1px solid var(--line);
+      border-radius: 999px; padding: 7px 11px; color: var(--muted); background: rgba(14, 24, 21, .72);
+      font-size: 12px; font-weight: 700;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 3px rgba(255, 198, 109, .1); }
+    .status.online .dot { background: var(--mint); box-shadow: 0 0 0 3px rgba(88, 230, 170, .12); }
+    .status.error .dot { background: var(--red); box-shadow: 0 0 0 3px rgba(255, 125, 131, .12); }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 18px; align-items: start; }
+    .stack { display: grid; gap: 18px; min-width: 0; }
+    .card { border: 1px solid var(--line); border-radius: 15px; background: rgba(14, 24, 21, .86); box-shadow: var(--shadow); overflow: hidden; }
+    .card-head {
+      min-height: 53px; padding: 12px 16px; display: flex; align-items: center;
+      justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line);
+    }
+    .card-title { font-size: 13px; font-weight: 800; }
+    .card-meta { color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    textarea {
+      display: block; width: 100%; height: 235px; resize: vertical; border: 0; outline: 0;
+      padding: 19px; color: #d8f9e9; background: #09120f;
+      font: 14px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      tab-size: 2;
+    }
+    .actions { display: flex; gap: 9px; padding: 12px 14px; border-top: 1px solid var(--line); background: var(--panel); }
+    .shortcut { margin-left: auto; align-self: center; color: var(--muted); font-size: 11px; }
+    kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 2px 5px; background: var(--panel-2); }
+    .results { min-height: 240px; max-height: 480px; overflow: auto; }
+    .empty { min-height: 220px; display: grid; place-items: center; padding: 30px; color: var(--muted); text-align: center; }
+    .empty strong { display: block; color: #b8cec5; margin-bottom: 6px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { padding: 11px 13px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; white-space: pre-wrap; word-break: break-word; }
+    th { position: sticky; top: 0; z-index: 1; color: var(--mint); background: #101d19; font: 700 11px ui-monospace, monospace; }
+    td { color: #cde0d8; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    tr:hover td { background: rgba(88, 230, 170, .025); }
+    .schema { max-height: calc(100vh - 135px); overflow: auto; }
+    .schema-body { padding: 8px 13px 17px; }
+    .schema-group { margin-top: 15px; }
+    .schema-group-title { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; margin: 0 4px 7px; }
+    details { border: 1px solid transparent; border-radius: 9px; }
+    details[open] { border-color: var(--line); background: #0a1411; margin-bottom: 7px; }
+    summary { cursor: pointer; list-style: none; padding: 9px 10px; color: #d6e8e0; font: 12px ui-monospace, monospace; }
+    summary::-webkit-details-marker { display: none; }
+    summary::before { content: "›"; display: inline-block; color: var(--mint); margin-right: 8px; transition: transform .15s; }
+    details[open] summary::before { transform: rotate(90deg); }
+    .schema-sql { margin: 0; padding: 0 11px 11px 27px; color: var(--muted); white-space: pre-wrap; word-break: break-word; font: 10px/1.55 ui-monospace, monospace; }
+    .toast {
+      position: fixed; right: 24px; bottom: 24px; z-index: 20; max-width: 430px;
+      border: 1px solid var(--line); border-radius: 11px; padding: 12px 15px;
+      background: #16231f; color: var(--text); box-shadow: var(--shadow); font-size: 12px;
+      opacity: 0; transform: translateY(12px); pointer-events: none; transition: .2s ease;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.error { border-color: rgba(255, 125, 131, .45); color: #ffd4d6; }
+    @media (max-width: 980px) {
+      .shell { grid-template-columns: 230px minmax(0, 1fr); }
+      .workspace { grid-template-columns: 1fr; }
+      .schema { max-height: 420px; }
+    }
+    @media (max-width: 700px) {
+      .shell { display: block; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+      .brand { margin-bottom: 18px; }
+      .sidebar-footer { display: none; }
+      main { padding: 22px 14px; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .statuses { justify-content: flex-start; }
+      .shortcut { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="mark">N</div>
+        <div><strong>NovaDB Studio</strong><span>Local-first control room</span></div>
+      </div>
+
+      <label class="label" for="token">Access token</label>
+      <div class="row">
+        <input class="field" id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Bearer token">
+        <button class="btn btn-compact" id="connect" type="button">Connect</button>
+      </div>
+      <p class="hint">Held only in this page's memory. It is never saved by Studio.</p>
+
+      <label class="label" for="database">Database</label>
+      <select id="database" aria-label="Selected database">
+        <option value="">Connect to load databases</option>
+      </select>
+
+      <label class="label" for="new-database">Create database</label>
+      <div class="row">
+        <input class="database-input" id="new-database" autocomplete="off" maxlength="128" placeholder="project_alpha">
+        <button class="btn btn-primary btn-compact" id="create" type="button">Create</button>
+      </div>
+      <p class="hint">IDs begin with a letter or number and may contain <code>_</code> or <code>-</code>.</p>
+
+      <span class="label">Maintenance</span>
+      <div class="maintenance-grid">
+        <button class="btn" id="maintenance-integrity" type="button">Integrity</button>
+        <button class="btn" id="maintenance-checkpoint" type="button">Checkpoint</button>
+        <button class="btn" id="maintenance-backup" type="button">Backup</button>
+      </div>
+      <p class="maintenance-status" id="maintenance-status">Select a database to run maintenance.</p>
+
+      <div class="sidebar-footer">
+        <div class="security-note"><b>◆</b><span>SQL and admin APIs use the same optional bearer authentication as relay sync.</span></div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <h1>Database workspace</h1>
+          <p class="subtitle">Inspect schemas, explore data, and execute controlled migrations.</p>
+        </div>
+        <div class="statuses">
+          <div class="status" id="health-status"><span class="dot"></span><span>Server checking</span></div>
+          <div class="status" id="relay-status"><span class="dot"></span><span>Relay checking</span></div>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <div class="stack">
+          <section class="card">
+            <div class="card-head"><span class="card-title">SQL editor</span><span class="card-meta" id="editor-context">No database selected</span></div>
+            <textarea id="sql" spellcheck="false" aria-label="SQL editor">SELECT name, type
+FROM sqlite_schema
+WHERE name NOT GLOB '_novadb_*'
+ORDER BY type, name;</textarea>
+            <div class="actions">
+              <button class="btn btn-primary" id="run-query" type="button">Run query</button>
+              <button class="btn" id="run-execute" type="button">Execute</button>
+              <span class="shortcut"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> query</span>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><span class="card-title">Results</span><span class="card-meta" id="result-meta">Waiting</span></div>
+            <div class="results" id="results">
+              <div class="empty"><div><strong>Your results appear here</strong>Select a database and run a read-only query.</div></div>
+            </div>
+          </section>
+        </div>
+
+        <aside class="card schema">
+          <div class="card-head"><span class="card-title">Schema</span><button class="btn btn-compact" id="refresh-schema" type="button">Refresh</button></div>
+          <div class="schema-body" id="schema"><div class="empty"><div><strong>No schema loaded</strong>Select a database to inspect it.</div></div></div>
+        </aside>
+      </div>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    (() => {
+      "use strict";
+      const state = { token: "", database: "" };
+      const $ = (id) => document.getElementById(id);
+      const token = $("token");
+      const database = $("database");
+      const sql = $("sql");
+      let toastTimer;
+
+      token.addEventListener("input", () => { state.token = token.value; });
+
+      function notify(message, error = false) {
+        const element = $("toast");
+        element.textContent = message;
+        element.className = `toast show${error ? " error" : ""}`;
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { element.className = "toast"; }, 3600);
+      }
+
+      async function api(path, options = {}) {
+        const headers = new Headers(options.headers || {});
+        if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
+        if (options.body) headers.set("Content-Type", "application/json");
+        const response = await fetch(path, { ...options, headers });
+        const text = await response.text();
+        let body = null;
+        if (text) {
+          try { body = JSON.parse(text); } catch (_) { body = { error: { message: text } }; }
+        }
+        if (!response.ok) {
+          throw new Error(body?.error?.message || `Request failed (${response.status})`);
+        }
+        return body;
+      }
+
+      function setStatus(id, label, kind) {
+        const element = $(id);
+        element.className = `status ${kind || ""}`;
+        element.querySelector("span:last-child").textContent = label;
+      }
+
+      async function checkHealth() {
+        try {
+          const health = await api("/health");
+          setStatus("health-status", `Server ${health.version}`, "online");
+          setStatus("relay-status", "Relay ready", "online");
+        } catch (error) {
+          setStatus("health-status", "Server offline", "error");
+          setStatus("relay-status", "Relay unavailable", "error");
+        }
+      }
+
+      async function loadDatabases(selectId = state.database) {
+        try {
+          const result = await api("/v1/admin/databases");
+          database.replaceChildren();
+          const placeholder = document.createElement("option");
+          placeholder.value = "";
+          placeholder.textContent = result.databases.length ? "Select a database" : "No databases yet";
+          database.append(placeholder);
+          result.databases.forEach((item) => {
+            const option = document.createElement("option");
+            option.value = item.id;
+            option.textContent = `${item.id} · ${formatBytes(item.size_bytes)}`;
+            database.append(option);
+          });
+          if (selectId && result.databases.some((item) => item.id === selectId)) {
+            database.value = selectId;
+          }
+          state.database = database.value;
+          updateContext();
+          if (state.database) await loadSchema();
+          notify(`Connected · ${result.databases.length} database${result.databases.length === 1 ? "" : "s"}`);
+        } catch (error) {
+          notify(error.message, true);
+        }
+      }
+
+      async function createDatabase() {
+        const input = $("new-database");
+        const id = input.value.trim();
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) {
+          notify("Use a valid database ID: letters, numbers, _ or -", true);
+          return;
+        }
+        try {
+          await api(`/v1/admin/databases/${encodeURIComponent(id)}`, { method: "POST" });
+          input.value = "";
+          state.database = id;
+          await loadDatabases(id);
+          notify(`Database ${id} is ready`);
+        } catch (error) {
+          notify(error.message, true);
+        }
+      }
+
+      function updateContext() {
+        $("editor-context").textContent = state.database || "No database selected";
+      }
+
+      async function run(mode) {
+        if (!state.database) { notify("Select a database first", true); return; }
+        const statement = sql.value.trim();
+        if (!statement) { notify("Enter a SQL statement", true); return; }
+        const started = performance.now();
+        setBusy(true);
+        try {
+          const result = await api(
+            `/v1/databases/${encodeURIComponent(state.database)}/sql/${mode}`,
+            { method: "POST", body: JSON.stringify({ sql: statement }) }
+          );
+          const elapsed = Math.round(performance.now() - started);
+          if (mode === "query") {
+            renderResults(result);
+            $("result-meta").textContent = `${result.rows.length} row${result.rows.length === 1 ? "" : "s"} · ${elapsed} ms`;
+          } else {
+            renderMessage("Execution committed", "The SQL batch completed atomically.");
+            $("result-meta").textContent = `Success · ${elapsed} ms`;
+            await loadSchema();
+          }
+        } catch (error) {
+          renderMessage("Request failed", error.message);
+          $("result-meta").textContent = "Error";
+          notify(error.message, true);
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      function setBusy(busy) {
+        $("run-query").disabled = busy;
+        $("run-execute").disabled = busy;
+      }
+
+      function renderResults(result) {
+        const root = $("results");
+        root.replaceChildren();
+        if (!result.rows.length) {
+          renderMessage("Query complete", "No rows returned.");
+          return;
+        }
+        const table = document.createElement("table");
+        const head = document.createElement("thead");
+        const headerRow = document.createElement("tr");
+        result.columns.forEach((column) => {
+          const cell = document.createElement("th");
+          cell.textContent = column;
+          headerRow.append(cell);
+        });
+        head.append(headerRow);
+        const body = document.createElement("tbody");
+        result.rows.forEach((row) => {
+          const tableRow = document.createElement("tr");
+          result.columns.forEach((column) => {
+            const cell = document.createElement("td");
+            const value = row[column];
+            cell.textContent = value === null ? "NULL" : typeof value === "object" ? JSON.stringify(value) : String(value);
+            tableRow.append(cell);
+          });
+          body.append(tableRow);
+        });
+        table.append(head, body);
+        root.append(table);
+      }
+
+      function renderMessage(title, message) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "empty";
+        const content = document.createElement("div");
+        const heading = document.createElement("strong");
+        heading.textContent = title;
+        content.append(heading, document.createTextNode(message));
+        wrapper.append(content);
+        $("results").replaceChildren(wrapper);
+      }
+
+      async function loadSchema() {
+        if (!state.database) return;
+        try {
+          const result = await api(`/v1/databases/${encodeURIComponent(state.database)}/schema`);
+          renderSchema(result);
+        } catch (error) {
+          notify(error.message, true);
+        }
+      }
+
+      async function runMaintenance(action) {
+        if (!state.database) { notify("Select a database first", true); return; }
+        const button = $(`maintenance-${action}`);
+        button.disabled = true;
+        $("maintenance-status").textContent = `Running ${action}…`;
+        try {
+          const result = await api(
+            `/v1/databases/${encodeURIComponent(state.database)}/maintenance/${action}`,
+            { method: "POST" }
+          );
+          let status;
+          if (action === "integrity") {
+            status = result.ok ? "Integrity check: OK" : `Integrity issues: ${result.messages.join(" · ")}`;
+          } else if (action === "checkpoint") {
+            status = result.busy
+              ? "Checkpoint is busy; retry later"
+              : `Checkpoint complete · ${result.checkpointed_frames}/${result.log_frames} frames`;
+          } else {
+            status = `Backup ready · ${result.backup_id} · ${formatBytes(result.size_bytes)}`;
+          }
+          $("maintenance-status").textContent = status;
+          notify(status, action === "integrity" && !result.ok);
+        } catch (error) {
+          $("maintenance-status").textContent = error.message;
+          notify(error.message, true);
+        } finally {
+          button.disabled = false;
+        }
+      }
+
+      function renderSchema(schema) {
+        const root = $("schema");
+        root.replaceChildren();
+        const groups = [["Tables", schema.tables], ["Indexes", schema.indexes], ["Triggers", schema.triggers]];
+        groups.forEach(([title, items]) => {
+          const group = document.createElement("section");
+          group.className = "schema-group";
+          const heading = document.createElement("div");
+          heading.className = "schema-group-title";
+          const name = document.createElement("span");
+          name.textContent = title;
+          const count = document.createElement("span");
+          count.textContent = String(items.length);
+          heading.append(name, count);
+          group.append(heading);
+          items.forEach((item) => {
+            const details = document.createElement("details");
+            const summary = document.createElement("summary");
+            summary.textContent = item.name;
+            const definition = document.createElement("pre");
+            definition.className = "schema-sql";
+            definition.textContent = item.sql || `${title.slice(0, -1)} attached to ${item.table}`;
+            details.append(summary, definition);
+            group.append(details);
+          });
+          root.append(group);
+        });
+      }
+
+      function formatBytes(bytes) {
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / 1048576).toFixed(1)} MB`;
+      }
+
+      $("connect").addEventListener("click", () => loadDatabases());
+      $("create").addEventListener("click", createDatabase);
+      $("new-database").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") createDatabase();
+      });
+      database.addEventListener("change", () => {
+        state.database = database.value;
+        updateContext();
+        loadSchema();
+      });
+      $("run-query").addEventListener("click", () => run("query"));
+      $("run-execute").addEventListener("click", () => run("execute"));
+      $("refresh-schema").addEventListener("click", loadSchema);
+      $("maintenance-integrity").addEventListener("click", () => runMaintenance("integrity"));
+      $("maintenance-checkpoint").addEventListener("click", () => runMaintenance("checkpoint"));
+      $("maintenance-backup").addEventListener("click", () => runMaintenance("backup"));
+      sql.addEventListener("keydown", (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+          event.preventDefault();
+          run("query");
+        }
+      });
+
+      checkHealth();
+    })();
+  </script>
+</body>
+</html>

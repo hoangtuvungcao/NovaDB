@@ -1,0 +1,25 @@
+[package]
+name = "novadb-core"
+description = "Embedded local-first database engine for NovaDB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+rusqlite = { workspace = true, features = ["backup", "hooks"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10.9"
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

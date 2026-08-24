@@ -1,0 +1,714 @@
+openapi: 3.1.0
+info:
+  title: NovaDB HTTP API
+  version: 0.1.0
+  summary: Experimental managed SQLite-compatible databases and local-first sync relay
+  description: |
+    The relay log and managed database catalog are separate stores. All `/v1` operations use
+    the optional server-wide bearer token when one is configured. The public self-contained
+    Studio is served at `/studio` (and `/studio/`); its API requests still authenticate.
+servers:
+  - url: http://127.0.0.1:8787
+tags:
+  - name: System
+  - name: Studio
+  - name: Catalog
+  - name: SQL
+  - name: Maintenance
+  - name: Sync
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [System]
+      operationId: getHealth
+      summary: Return shallow process health and package version
+      security: []
+      responses:
+        "200":
+          description: The HTTP process is responding.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /studio:
+    get:
+      tags: [Studio]
+      operationId: getStudio
+      summary: Return the self-contained NovaDB Studio page
+      description: The page is public; `/v1` calls made by the page still require configured authentication.
+      security: []
+      responses:
+        "200":
+          description: Embedded operator/developer interface.
+          content:
+            text/html:
+              schema:
+                type: string
+  /studio/:
+    get:
+      tags: [Studio]
+      operationId: getStudioTrailingSlash
+      summary: Return the self-contained NovaDB Studio page
+      security: []
+      responses:
+        "200":
+          description: Embedded operator/developer interface.
+          content:
+            text/html:
+              schema:
+                type: string
+  /v1/admin/databases:
+    get:
+      tags: [Catalog]
+      operationId: listDatabases
+      summary: List safe managed `.novadb` files
+      responses:
+        "200":
+          description: Catalog entries ordered by database ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatabaseListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/admin/databases/{database}:
+    parameters:
+      - $ref: "#/components/parameters/DatabaseId"
+    post:
+      tags: [Catalog]
+      operationId: createDatabase
+      summary: Create a missing managed database or open an existing one
+      responses:
+        "200":
+          description: Current filesystem and process metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatabaseMetadata"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/databases/{database}/sql/query:
+    parameters:
+      - $ref: "#/components/parameters/DatabaseId"
+    post:
+      tags: [SQL]
+      operationId: queryDatabase
+      summary: Run exactly one SQLite read-only statement
+      description: |
+        SQLite/core determines read-only status. Read-only WITH, EXPLAIN, and PRAGMA forms are
+        accepted; a second statement or mutating statement is rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SqlRequest"
+      responses:
+        "200":
+          description: JSON-friendly labels and object rows.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/databases/{database}/sql/execute:
+    parameters:
+      - $ref: "#/components/parameters/DatabaseId"
+    post:
+      tags: [SQL]
+      operationId: executeDatabaseSql
+      summary: Execute a nonempty SQL batch atomically
+      description: |
+        ATTACH, DETACH, and VACUUM tokens outside strings, comments, and quoted identifiers are
+        rejected by server mode. Transaction control and direct protected-schema mutation are
+        rejected by the core.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SqlRequest"
+      responses:
+        "200":
+          description: The complete batch committed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecuteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/databases/{database}/schema:
+    parameters:
+      - $ref: "#/components/parameters/DatabaseId"
+    get:
+      tags: [SQL]
+      operationId: getDatabaseSchema
+      summary: List non-internal tables, indexes, and triggers
+      responses:
+        "200":
+          description: Schema objects excluding `_novadb_*` and `sqlite_*` names.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchemaResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/databases/{database}/maintenance/integrity:
+    parameters:
+      - $ref: "#/components/parameters/DatabaseId"
+    post:
+      tags: [Maintenance]
+      operationId: checkDatabaseIntegrity
+      summary: Run SQLite's full PRAGMA integrity_check
+      responses:
+        "200":
+          description: The check ran; inspect `ok` for the integrity result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/databases/{database}/maintenance/checkpoint:
+    parameters:
+      - $ref: "#/components/parameters/DatabaseId"
+    post:
+      tags: [Maintenance]
+      operationId: checkpointDatabaseWal
+      summary: Run PRAGMA wal_checkpoint(TRUNCATE)
+      responses:
+        "200":
+          description: SQLite checkpoint status and frame counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WalCheckpointReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/databases/{database}/maintenance/backup:
+    parameters:
+      - $ref: "#/components/parameters/DatabaseId"
+    post:
+      tags: [Maintenance]
+      operationId: backupDatabase
+      summary: Create a generated no-clobber online backup under `.backups`
+      responses:
+        "200":
+          description: Relative backup ID and completed file size.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/databases/{database}/migrations:
+    parameters:
+      - $ref: "#/components/parameters/DatabaseId"
+    post:
+      tags: [Maintenance]
+      operationId: migrateDatabase
+      summary: Verify and apply a complete immutable migration manifest
+      description: |
+        Exact replay is idempotent. Applied name/checksum changes, removed applied versions, or
+        new versions inserted before applied history are drift and return 409. All pending
+        migrations commit atomically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MigrationRequest"
+      responses:
+        "200":
+          description: Newly applied versions and count already verified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MigrationReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/databases/{database}/push:
+    parameters:
+      - $ref: "#/components/parameters/DatabaseId"
+    post:
+      tags: [Sync]
+      operationId: pushChanges
+      summary: Atomically append validated changes to the relay
+      description: |
+        The configured batch maximum defaults to 1000. Each canonical serialized change is
+        limited to 65,536 bytes. Identical IDs/content are duplicates; an ID reused with
+        different canonical content returns 409 and rolls back the batch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PushRequest"
+      responses:
+        "200":
+          description: Every change was accepted or identified as an identical duplicate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PushResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/databases/{database}/pull:
+    parameters:
+      - $ref: "#/components/parameters/DatabaseId"
+    get:
+      tags: [Sync]
+      operationId: pullChanges
+      summary: Return relay entries after a cursor
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: Last relay cursor durably applied by this replica.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          description: Page size; server default is 100 and configured maximum defaults to 1000.
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Entries ordered by increasing relay cursor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PullResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Optional instance-wide bearer token configured on `novadbd`.
+  parameters:
+    DatabaseId:
+      name: database
+      in: path
+      required: true
+      description: Relay namespace or managed database ID, depending on the route.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: "^[a-z0-9][a-z0-9_-]{0,127}$"
+  responses:
+    BadRequest:
+      description: Invalid ID, SQL, request values, change, or database operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Unauthorized:
+      description: A configured bearer token was missing or invalid.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+          example: Bearer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    NotFound:
+      description: The managed database does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Conflict:
+      description: Relay content conflict, migration drift, or no-clobber backup conflict.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    PayloadTooLarge:
+      description: A canonical change exceeded 65,536 bytes or the 4 MiB framework body limit was exceeded. Framework rejection shape may differ.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    InternalError:
+      description: The service could not complete an internal storage/catalog operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          example: ok
+        version:
+          type: string
+          example: 0.1.0
+    DatabaseMetadata:
+      type: object
+      additionalProperties: false
+      required: [id, size_bytes, modified_at_ms, open, device_id]
+      properties:
+        id:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        modified_at_ms:
+          type: [integer, "null"]
+          format: int64
+          minimum: 0
+        open:
+          type: boolean
+          description: Whether this server process currently caches an open handle.
+        device_id:
+          type: [string, "null"]
+    DatabaseListResponse:
+      type: object
+      additionalProperties: false
+      required: [databases]
+      properties:
+        databases:
+          type: array
+          items:
+            $ref: "#/components/schemas/DatabaseMetadata"
+    SqlRequest:
+      type: object
+      additionalProperties: false
+      required: [sql]
+      properties:
+        sql:
+          type: string
+          minLength: 1
+          maxLength: 262144
+          description: The server enforces byte length; OpenAPI maxLength counts code points.
+    ExecuteResponse:
+      type: object
+      additionalProperties: false
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+    QueryResult:
+      type: object
+      additionalProperties: false
+      required: [columns, rows]
+      properties:
+        columns:
+          type: array
+          items:
+            type: string
+        rows:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    SchemaObject:
+      type: object
+      additionalProperties: false
+      required: [name, table, sql]
+      properties:
+        name:
+          type: string
+        table:
+          type: string
+        sql:
+          type: [string, "null"]
+    SchemaResponse:
+      type: object
+      additionalProperties: false
+      required: [tables, indexes, triggers]
+      properties:
+        tables:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaObject"
+        indexes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaObject"
+        triggers:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaObject"
+    IntegrityReport:
+      type: object
+      additionalProperties: false
+      required: [ok, messages]
+      properties:
+        ok:
+          type: boolean
+          description: True only for SQLite's single canonical `ok` result.
+        messages:
+          type: array
+          items:
+            type: string
+    WalCheckpointReport:
+      type: object
+      additionalProperties: false
+      required: [busy, log_frames, checkpointed_frames]
+      properties:
+        busy:
+          type: boolean
+        log_frames:
+          type: integer
+          format: int64
+        checkpointed_frames:
+          type: integer
+          format: int64
+    BackupReport:
+      type: object
+      additionalProperties: false
+      required: [backup_id, size_bytes]
+      properties:
+        backup_id:
+          type: string
+          pattern: "^\\.backups/[a-z0-9][a-z0-9_-]{0,127}-[0-9]+-[0-9a-f-]+\\.novadb$"
+          description: Server-generated path relative to the canonical data directory.
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+    Migration:
+      type: object
+      additionalProperties: false
+      required: [version, name, sql]
+      properties:
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: Nonblank; the server limit is 512 bytes, while maxLength counts code points.
+        sql:
+          type: string
+          minLength: 1
+          maxLength: 262144
+          description: Nonblank and at most 262,144 bytes; managed execute token restrictions apply.
+    MigrationRequest:
+      type: object
+      additionalProperties: false
+      required: [migrations]
+      properties:
+        migrations:
+          type: array
+          maxItems: 1000
+          description: Complete manifest, strictly increasing by positive version.
+          items:
+            $ref: "#/components/schemas/Migration"
+    MigrationReport:
+      type: object
+      additionalProperties: false
+      required: [applied_versions, already_applied]
+      properties:
+        applied_versions:
+          type: array
+          items:
+            type: integer
+            format: int64
+            minimum: 1
+        already_applied:
+          type: integer
+          minimum: 0
+    ChangeOperation:
+      type: string
+      enum: [upsert, delete]
+    Change:
+      type: object
+      additionalProperties: false
+      required: [seq, change_id, table, row_id, operation, payload, hlc, device_id, created_at_ms]
+      properties:
+        seq:
+          type: integer
+          format: int64
+          minimum: 1
+        change_id:
+          type: string
+          minLength: 1
+          description: Nonblank and at most 512 bytes on the wire.
+        table:
+          type: string
+          pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+        row_id:
+          type: string
+          pattern: "^(i|r|t|b):"
+          description: Canonical type-prefixed SQLite primary-key value.
+        operation:
+          $ref: "#/components/schemas/ChangeOperation"
+        payload:
+          type: object
+          additionalProperties: true
+          description: Exact full-row image, required for upsert and delete in v1.
+        hlc:
+          type: string
+          pattern: "^[0-9a-f]{16}-[0-9a-f]{8}$"
+        device_id:
+          type: string
+          minLength: 1
+          description: Nonblank and at most 512 bytes on the wire.
+        created_at_ms:
+          type: integer
+          format: int64
+          minimum: 0
+    PushRequest:
+      type: object
+      additionalProperties: false
+      required: [changes]
+      properties:
+        changes:
+          type: array
+          minItems: 1
+          description: Configured maximum defaults to 1000.
+          items:
+            $ref: "#/components/schemas/Change"
+    PushResponse:
+      type: object
+      additionalProperties: false
+      required: [accepted, duplicates, cursor]
+      properties:
+        accepted:
+          type: integer
+          minimum: 0
+        duplicates:
+          type: integer
+          minimum: 0
+        cursor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Relay snapshot cursor; not the caller's pull continuation.
+    RelayChange:
+      type: object
+      additionalProperties: false
+      required: [cursor, change]
+      properties:
+        cursor:
+          type: integer
+          format: int64
+          minimum: 1
+        change:
+          $ref: "#/components/schemas/Change"
+    PullResponse:
+      type: object
+      additionalProperties: false
+      required: [changes, cursor, has_more]
+      properties:
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RelayChange"
+        cursor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Last returned cursor, or requested `after` for an empty page.
+        has_more:
+          type: boolean
+    ErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [bad_request, unauthorized, not_found, conflict, payload_too_large, internal_error]
+        message:
+          type: string
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorBody"

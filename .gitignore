@@ -1,0 +1,30 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Editors
+.idea/
+.vscode/
+*.iml
+.project
+.settings/
+
+# NovaDB runtime
+*.novadb
+*.novadb-wal
+*.novadb-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+state/
+
+# Docker
+dist/
