@@ -381,11 +381,11 @@ LIMIT 5;
 | `JSON_OBJECT_LENGTH(json)` | `TEXT` | `INTEGER` | Returns number of key-value pairs in JSON object |
 | `JSON_STRIP_NULLS(json)` | `TEXT` | `TEXT` | Recursively removes all keys with `null` values |
 
-### 6.5 String, Regex, and Cryptographic Functions
+### 6.5 String, Pattern, and Regex Functions
 
 | Function | Arguments | Returns | Description |
 |---|---|---|---|
-| `REGEXP(pattern, text)` | `TEXT, TEXT` | `INTEGER` | Regular expression match (`text REGEXP pattern`) |
+| `REGEXP(pattern, text)` | `TEXT, TEXT` | `INTEGER` | Full PCRE/Unicode regular expression matching (`text REGEXP pattern`) |
 | `ILIKE(text, pattern)` | `TEXT, TEXT` | `INTEGER` | Case-insensitive pattern match with `%` and `_` |
 | `REVERSE(text)` | `TEXT` | `TEXT` | Reverses Unicode string |
 | `LEFT(text, n)` / `RIGHT(text, n)` | `TEXT, INT` | `TEXT` | Returns first or last `n` characters |
@@ -395,10 +395,46 @@ LIMIT 5;
 | `RPAD(text, len, pad)` | `TEXT, INT, TEXT` | `TEXT` | Right-pads string to specified length |
 | `INITCAP(text)` | `TEXT` | `TEXT` | Capitalizes first letter of each word |
 | `CHAR_LENGTH(text)` | `TEXT` | `INTEGER` | Unicode character count (not raw byte count) |
-| `SHA256(text)` | `TEXT` | `TEXT` | Computes SHA-256 hash as hexadecimal string |
-| `ENCODE_HEX(blob)` | `BLOB` | `TEXT` | Encodes binary blob as hexadecimal string |
 
-### 6.6 Extended Aggregations
+### 6.6 Mathematical, Trigonometric, and Geospatial Functions
+
+| Function | Arguments | Returns | Description |
+|---|---|---|---|
+| `PI()` | None | `REAL` | Mathematical constant Pi (`3.141592653589793`) |
+| `POWER(x, y)` / `POW(x, y)` | `REAL, REAL` | `REAL` | Raises `x` to the power of `y` |
+| `SQRT(x)` | `REAL` | `REAL` | Square root of non-negative number |
+| `CBRT(x)` | `REAL` | `REAL` | Cube root of number |
+| `EXP(x)` | `REAL` | `REAL` | Natural exponential $e^x$ |
+| `LN(x)` | `REAL` | `REAL` | Natural logarithm $\ln(x)$ |
+| `LOG10(x)` | `REAL` | `REAL` | Base-10 logarithm |
+| `LOG2(x)` | `REAL` | `REAL` | Base-2 logarithm |
+| `SIN(x)`, `COS(x)`, `TAN(x)` | `REAL` | `REAL` | Standard trigonometric functions (radians) |
+| `ASIN(x)`, `ACOS(x)`, `ATAN(x)` | `REAL` | `REAL` | Inverse trigonometric functions |
+| `ATAN2(y, x)` | `REAL, REAL` | `REAL` | Arc tangent of two variables |
+| `DEGREES(rad)` / `RADIANS(deg)` | `REAL` | `REAL` | Conversion between degrees and radians |
+| `FLOOR(x)` / `CEIL(x)` / `CEILING(x)` | `REAL` | `REAL` | Floor and ceiling integer rounding |
+| `TRUNC(x)` | `REAL` | `REAL` | Truncates decimal digits toward zero |
+| `SIGN(x)` | `REAL` | `INTEGER` | Returns `1` if positive, `-1` if negative, `0` if zero |
+| `MOD(x, y)` | `INT, INT` | `INTEGER` | Modulo operation ($x \pmod y$) |
+| `GEO_HAVERSINE_DISTANCE(lat1, lon1, lat2, lon2)` | `4 x REAL` | `REAL` | Great-circle distance between coordinates in **meters** |
+| `GEO_DISTANCE_KM(lat1, lon1, lat2, lon2)` | `4 x REAL` | `REAL` | Great-circle distance between coordinates in **kilometers** |
+
+### 6.7 Cryptography, Hashing, Encoding, and Randomness
+
+| Function | Arguments | Returns | Description |
+|---|---|---|---|
+| `SHA256(data)` | `TEXT/BLOB` | `TEXT` | Cryptographic SHA-256 hash (hex string) |
+| `SHA512(data)` | `TEXT/BLOB` | `TEXT` | Cryptographic SHA-512 hash (hex string) |
+| `MD5(data)` | `TEXT/BLOB` | `TEXT` | MD5 hash (hex string) |
+| `SHA1(data)` | `TEXT/BLOB` | `TEXT` | SHA-1 hash (hex string) |
+| `HMAC_SHA256(key, msg)` | `TEXT, TEXT` | `TEXT` | HMAC-SHA256 keyed signature (hex string) |
+| `BASE64_ENCODE(data)` | `TEXT/BLOB` | `TEXT` | Encodes binary/text to Base64 format |
+| `BASE64_DECODE(b64_str)` | `TEXT` | `TEXT/BLOB` | Decodes Base64 string to original payload |
+| `HEX_ENCODE(blob)` | `BLOB` | `TEXT` | Encodes binary blob to hex string |
+| `HEX_DECODE(hex_str)` | `TEXT` | `BLOB` | Decodes hex string to binary byte blob |
+| `RANDOM_STRING(len)` | `INTEGER` | `TEXT` | Generates cryptographically strong random string |
+
+### 6.8 Extended Aggregations
 
 | Function | Arguments | Returns | Description |
 |---|---|---|---|

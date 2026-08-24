@@ -5,8 +5,10 @@
 //! processing, and extended aggregation.
 
 pub mod aggregate_functions;
+pub mod crypto_functions;
 pub mod datetime_functions;
 pub mod json_functions;
+pub mod math_functions;
 pub mod string_functions;
 pub mod uuid_functions;
 pub mod vector_functions;
@@ -23,5 +25,7 @@ pub fn register_all(connection: &Connection) -> Result<()> {
     json_functions::register(connection)?;
     aggregate_functions::register(connection)?;
     vector_functions::register(connection)?;
+    math_functions::register(connection)?;
+    crypto_functions::register(connection)?;
     Ok(())
 }
