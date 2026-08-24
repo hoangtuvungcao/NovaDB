@@ -406,7 +406,10 @@ pub(crate) fn normalize_sql_dialect(sql: &str) -> String {
         normalized = re_set.replace_all(&normalized, "").into_owned();
     }
 
-    // 0a. Strip / Comment SQL Server CREATE DATABASE, USE, and DB_ID check blocks
+    // 0a. Strip / Comment SQL Server CREATE DATABASE, USE, DB_ID check, and TRANSACTION blocks
+    if let Ok(re_tx) = regex::Regex::new(r"(?i)\b(?:BEGIN\s+(?:TRANSACTION|TRAN|WORK)|COMMIT\s+(?:TRANSACTION|TRAN|WORK)|ROLLBACK\s+(?:TRANSACTION|TRAN|WORK)(?:\s+[a-zA-Z0-9_#$]+)?|SAVE\s+(?:TRANSACTION|TRAN)\s+[a-zA-Z0-9_#$]+)\s*;?") {
+        normalized = re_tx.replace_all(&normalized, "-- tx control\n").into_owned();
+    }
     if let Ok(re_dbid) = regex::Regex::new(r"(?i)\bIF\s+DB_ID\s*\([^)]*\)\s+IS\s+NULL\s+BEGIN[\s\S]*?END;?") {
         normalized = re_dbid.replace_all(&normalized, "-- DB_ID check\n").into_owned();
     }
