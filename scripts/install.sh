@@ -124,14 +124,14 @@ fi
 
 success "NovaDB binaries successfully installed to ${INSTALL_DIR}/novadb and ${INSTALL_DIR}/novadbd"
 
-# 5. Setup systemd service on Linux if systemd exists
-if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1 && [ -d "/etc/systemd/system" ]; then
+# 5. Setup systemd service on Linux if running as root
+if [ "$OS" = "linux" ] && [ "$(id -u)" -eq 0 ] && command -v systemctl >/dev/null 2>&1 && [ -d "/etc/systemd/system" ]; then
     SERVICE_FILE="/etc/systemd/system/novadb.service"
     info "Setting up systemd service at ${SERVICE_FILE}..."
-    cat <<EOF | $USE_SUDO tee "$SERVICE_FILE" >/dev/null
+    cat <<EOF | tee "$SERVICE_FILE" >/dev/null
 [Unit]
 Description=NovaDB Server and PostgreSQL Wire Protocol Gateway
-Documentation=https://novadb.dev
+Documentation=https://hoangtuvungcao.github.io/NovaDB
 After=network.target
 
 [Service]
@@ -164,5 +164,5 @@ echo "  ${BOLD}Connect via PostgreSQL tools:${RESET}"
 echo "    psql -h 127.0.0.1 -p 5432 -d default"
 echo ""
 echo "  ${BOLD}Documentation:${RESET}"
-echo "    Visit https://novadb.dev or see /docs/ in repository."
+echo "    Visit https://hoangtuvungcao.github.io/NovaDB or see /docs/ in repository."
 echo ""
