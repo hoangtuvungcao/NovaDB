@@ -9,12 +9,12 @@
 <p align="center">
   <a href="https://github.com/hoangtuvungcao/NovaDB/releases"><img src="https://img.shields.io/badge/release-v0.1.0-blue.svg?style=flat-square" alt="Release"></a>
   <a href="https://github.com/hoangtuvungcao/NovaDB"><img src="https://img.shields.io/badge/build-passing-brightgreen.svg?style=flat-square" alt="Build"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg?style=flat-square" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green.svg?style=flat-square" alt="License"></a>
   <a href="docs/MANUAL.md"><img src="https://img.shields.io/badge/docs-complete-informational.svg?style=flat-square" alt="Documentation"></a>
   <a href="https://github.com/hoangtuvungcao/NovaDB"><img src="https://img.shields.io/badge/compatibility-SQL_Server_2025-blueviolet.svg?style=flat-square" alt="SQL Server 2025"></a>
 </p>
 
-NovaDB is an ultra-fast, embeddable and client-server SQL database engine written in Rust. It combines SQLite's durability and zero-configuration embeddability with a native **PostgreSQL Wire Protocol v3 gateway (Port 5432)**, **HTTP REST Administration API (Port 8787)**, built-in **Web Admin Studio**, deterministic **Last-Writer-Wins (LWW) Local-First Replication**, multi-client connection pooling (`NovaDbPool`), built-in **Vector Search for AI**, 40+ extended functions (JSON RFC 7396, UUID v7 monotonic, ISO 8601 UTC, cryptographic hashes), and enterprise **Role-Based Access Control (RBAC)**.
+NovaDB is a local-first SQLite-powered database platform in Rust with native **PostgreSQL Wire Protocol v3 connectivity (Port 5432)**, a comprehensive **T-SQL compatibility layer**, deterministic **Last-Writer-Wins (LWW) local-first synchronization**, built-in **AI Vector search functions**, 40+ extended SQL functions (JSON RFC 7396, UUID v7, crypto hashes), and an embedded **Web Admin Studio (Port 8787)**.
 
 Official Repository: https://github.com/hoangtuvungcao/NovaDB
 
@@ -22,8 +22,8 @@ Official Repository: https://github.com/hoangtuvungcao/NovaDB
 
 ## Documentation Hub
 
-* [MANUAL.md](docs/MANUAL.md): Complete Database Reference Manual (SQL Dialect, DDL, DML, DQL, Joins, CTEs, Window functions, Vector AI search, SQL Server 2025 transpiler, Built-in functions, Rust API).
-* [API.md](docs/API.md): API & Network Protocol Specification (PostgreSQL Wire Protocol v3 gateway, HTTP REST API, Sync Relay protocol).
+* [MANUAL.md](docs/MANUAL.md): Complete Database Reference Manual (SQL Dialect, DDL, DML, DQL, Joins, CTEs, Window functions, Vector AI search, T-SQL transpiler, Built-in functions, Rust API).
+* [API.md](docs/API.md): API & Network Protocol Specification (PostgreSQL Wire Protocol v3 gateway, Extended Query Protocol, HTTP REST API, Sync Relay protocol).
 * [CLIENTS.md](docs/CLIENTS.md): Multi-Language Client Integration Guide (Python, Node.js/TypeScript, PHP, Go, C#, Java, Rust, Ruby, C/C++, cURL).
 * [DEPLOYMENT.md](docs/DEPLOYMENT.md): Production Operations & Deployment Guide (Installation, Systemd daemon, Docker Compose, Hot backups, Disaster recovery, Performance tuning).
 
@@ -32,18 +32,17 @@ Official Repository: https://github.com/hoangtuvungcao/NovaDB
 ## Key Capabilities
 
 ### 1. Dual-Protocol Network Access
-* **Port 5432 (PostgreSQL Wire Protocol v3)**: Connect directly with standard SQL tools (`psql`, DBeaver, DataGrip, TablePlus, pgAdmin) and native database drivers without custom client libraries.
+* **Port 5432 (PostgreSQL Wire Protocol v3)**: Connect directly with standard SQL tools (`psql`, DBeaver, DataGrip, TablePlus, pgAdmin) and native drivers supporting Simple Query and Extended Query (Parse, Bind, Execute, Sync) protocols.
 * **Port 8787 (HTTP REST Admin & Web Studio)**: JSON query execution, batch DDL execution, schema inspection, database backups, integrity verification, and web management console.
 
 ### 2. Multi-Client Concurrency (`NovaDbPool`)
 * Backed by SQLite WAL mode with non-blocking parallel reads across worker threads.
 * 64MB memory page cache, in-memory temporary tables/CTEs (`temp_store = MEMORY`), and 256MB memory-mapped I/O (`mmap_size = 268435456`).
 
-### 3. Microsoft SQL Server (T-SQL) Compatibility Engine
-* Automatic transpilation for SQL Server 2008 through SQL Server 2025 (17.x, Compatibility Level 170).
-* Procedural routines (`CREATE PROCEDURE`, `CREATE FUNCTION`, `CREATE TRIGGER`, `BEGIN TRY ... END TRY`, `BEGIN CATCH ... END CATCH`).
-* Query constructs: `TOP (N) [PERCENT] [WITH TIES]`, `CROSS APPLY` / `OUTER APPLY`, `GENERATE_SERIES`, `MERGE INTO`, `PIVOT` / `UNPIVOT`, `STRING_SPLIT`, `OPENJSON WITH (...)`.
-* Spatial, XML, and Graph tables: `geometry::Point`, `STDistance`, `STContains`, `xml.value()`, `xml.nodes()`, `hierarchyid`, `AS NODE`, `AS EDGE`, `MATCH(A-(E)->B)`.
+### 3. T-SQL / SQL Server Compatibility Layer
+* **Direct Transpilation**: `TOP (N) [PERCENT] [WITH TIES]`, `CROSS APPLY` / `OUTER APPLY`, `GENERATE_SERIES`, `MERGE INTO`, `PIVOT` / `UNPIVOT`, `STRING_SPLIT`, `OPENJSON WITH (...)`, `DATETIME2(7)`, `UNIQUEIDENTIFIER`, `MONEY`.
+* **Syntax Tolerance & Migration Ingestion**: Procedural blocks (`CREATE PROCEDURE`, `CREATE FUNCTION`, `CREATE TRIGGER`, `TRY ... CATCH`) are safely parsed and preserved in metadata registry to allow legacy migration scripts to run cleanly.
+* **Spatial & Graph Helpers**: `geometry::Point`, `STDistance`, `STContains`, `AS NODE`, `AS EDGE`, `MATCH(A-(E)->B)`.
 
 ### 4. Built-in Vector Search & AI Embeddings
 * `VECTOR_COSINE_DISTANCE(v1, v2)`, `VECTOR_COSINE_SIMILARITY(v1, v2)`.
@@ -362,4 +361,4 @@ Features available in Web Studio (`http://127.0.0.1:8787/studio`):
 
 ## License
 
-NovaDB is open-source software licensed under the MIT License.
+NovaDB is open-source software licensed under the Apache-2.0 License.

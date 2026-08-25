@@ -69,11 +69,9 @@ roadmap items and are **not** available in the current release.
 
 ### Known limitations
 
-- Not recommended for critical production data without independent qualification.
+- Experimental project for local-first, edge, and developer applications; not recommended for critical mission-critical financial data without independent testing.
 - Whole-row LWW only; no per-column merge policies or CRDTs.
-- No schema replication, compaction, or snapshot/bootstrap protocol.
-- Single optional instance-wide token; no per-database auth, roles, or RLS.
-- No built-in TLS; reverse proxy required.
-- Rust embedded API only; no Swift, Kotlin, TypeScript, or Python bindings.
-- No PostgreSQL wire protocol or standard SQL driver interface.
-- No vector index or wrapped FTS.
+- No automatic schema replication, compaction, or cluster bootstrap protocol.
+- No built-in native TLS; reverse proxy (NGINX, Caddy) or VPN recommended for public network exposure.
+- Vector functions use exact sequential compute (no ANN index like HNSW/IVF).
+- T-SQL compatibility focuses on procedural parsing and commonly used syntax transformations rather than full native SQL Server engine execution.
