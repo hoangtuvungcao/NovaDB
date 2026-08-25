@@ -1,6 +1,18 @@
-# NovaDB
+<p align="center">
+  <img src="assets/novadb_banner.jpg" alt="NovaDB Banner" width="100%" />
+</p>
 
-**High-Performance, Local-First SQL Database, Sync Engine & PostgreSQL Wire Gateway.**
+<p align="center">
+  <b>High-Performance, Local-First SQL Database, Sync Engine & PostgreSQL Wire Gateway</b>
+</p>
+
+<p align="center">
+  <a href="https://github.com/hoangtuvungcao/NovaDB/releases"><img src="https://img.shields.io/badge/release-v0.1.0-blue.svg?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/hoangtuvungcao/NovaDB"><img src="https://img.shields.io/badge/build-passing-brightgreen.svg?style=flat-square" alt="Build"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg?style=flat-square" alt="License"></a>
+  <a href="docs/MANUAL.md"><img src="https://img.shields.io/badge/docs-complete-informational.svg?style=flat-square" alt="Documentation"></a>
+  <a href="https://github.com/hoangtuvungcao/NovaDB"><img src="https://img.shields.io/badge/compatibility-SQL_Server_2025-blueviolet.svg?style=flat-square" alt="SQL Server 2025"></a>
+</p>
 
 NovaDB is an ultra-fast, embeddable and client-server SQL database engine written in Rust. It combines SQLite's durability and zero-configuration embeddability with a native **PostgreSQL Wire Protocol v3 gateway (Port 5432)**, **HTTP REST Administration API (Port 8787)**, built-in **Web Admin Studio**, deterministic **Last-Writer-Wins (LWW) Local-First Replication**, multi-client connection pooling (`NovaDbPool`), built-in **Vector Search for AI**, 40+ extended functions (JSON RFC 7396, UUID v7 monotonic, ISO 8601 UTC, cryptographic hashes), and enterprise **Role-Based Access Control (RBAC)**.
 
