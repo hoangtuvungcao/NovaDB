@@ -499,7 +499,10 @@ impl PgSession {
 
         if let Some(sql) = query {
             let upper = sql.trim().to_uppercase();
-            if upper.starts_with("SELECT") || upper.starts_with("WITH") || upper.starts_with("VALUES") {
+            if upper.starts_with("SELECT")
+                || upper.starts_with("WITH")
+                || upper.starts_with("VALUES")
+            {
                 if let Ok(result) = self.database.query(&sql) {
                     let columns: Vec<ColumnDescription> = result
                         .columns
@@ -760,7 +763,12 @@ fn substitute_pg_params(sql: &str, params: &[Option<Vec<u8>>]) -> String {
             None => "NULL".to_string(),
             Some(bytes) => {
                 if let Ok(s) = std::str::from_utf8(bytes) {
-                    if !s.is_empty() && (s.starts_with('+') || s.starts_with('-') || s.chars().next().unwrap().is_ascii_digit()) && s.parse::<f64>().is_ok() {
+                    if !s.is_empty()
+                        && (s.starts_with('+')
+                            || s.starts_with('-')
+                            || s.chars().next().unwrap().is_ascii_digit())
+                        && s.parse::<f64>().is_ok()
+                    {
                         s.to_string()
                     } else {
                         format!("'{}'", s.replace('\'', "''"))

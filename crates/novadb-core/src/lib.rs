@@ -203,17 +203,13 @@ impl NovaDb {
     /// Commits an active explicit transaction on this connection.
     pub fn commit_transaction(&self) -> Result<()> {
         let connection = self.inner.connection.lock();
-        connection
-            .execute_batch("COMMIT;")
-            .map_err(Error::from)
+        connection.execute_batch("COMMIT;").map_err(Error::from)
     }
 
     /// Rolls back an active explicit transaction on this connection.
     pub fn rollback_transaction(&self) -> Result<()> {
         let connection = self.inner.connection.lock();
-        connection
-            .execute_batch("ROLLBACK;")
-            .map_err(Error::from)
+        connection.execute_batch("ROLLBACK;").map_err(Error::from)
     }
 
     /// Executes SQL statements directly within the current connection context (supporting active transactions).
@@ -2449,18 +2445,26 @@ fn normalize_single_batch(sql: &str) -> String {
     }
 
     // 24. T-SQL XML methods (@XML.value, P.value, @XML.exist, @XML.modify, @XML.query)
-    if let Ok(re_xml_val) = regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.value\s*\([\s\S]*?\)") {
+    if let Ok(re_xml_val) =
+        regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.value\s*\([\s\S]*?\)")
+    {
         normalized = re_xml_val.replace_all(&normalized, "'Nova'").into_owned();
     }
-    if let Ok(re_xml_ex) = regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.exist\s*\([\s\S]*?\)") {
+    if let Ok(re_xml_ex) =
+        regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.exist\s*\([\s\S]*?\)")
+    {
         normalized = re_xml_ex.replace_all(&normalized, "1").into_owned();
     }
-    if let Ok(re_xml_query) = regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.query\s*\([\s\S]*?\)") {
+    if let Ok(re_xml_query) =
+        regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.query\s*\([\s\S]*?\)")
+    {
         normalized = re_xml_query
             .replace_all(&normalized, "'<item>Nova</item>'")
             .into_owned();
     }
-    if let Ok(re_xml_mod) = regex::Regex::new(r"(?is)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.modify\s*\([\s\S]*?\);?") {
+    if let Ok(re_xml_mod) =
+        regex::Regex::new(r"(?is)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.modify\s*\([\s\S]*?\);?")
+    {
         normalized = re_xml_mod
             .replace_all(&normalized, "-- xml.modify\n")
             .into_owned();
@@ -2474,7 +2478,9 @@ fn normalize_single_batch(sql: &str) -> String {
     }
 
     // 26. T-SQL STRING_SPLIT (Dynamic Recursive CTE splitting)
-    if let Ok(re_str_split) = regex::Regex::new(r"(?is)\bFROM\s+STRING_SPLIT\s*\(\s*('[^']*'|[a-zA-Z0-9_#$.]+)\s*,\s*('[^']*'|[a-zA-Z0-9_#$.]+)\s*\)(?:\s*(?:AS\s+)?([a-zA-Z0-9_#$]+))?") {
+    if let Ok(re_str_split) = regex::Regex::new(
+        r"(?is)\bFROM\s+STRING_SPLIT\s*\(\s*('[^']*'|[a-zA-Z0-9_#$.]+)\s*,\s*('[^']*'|[a-zA-Z0-9_#$.]+)\s*\)(?:\s*(?:AS\s+)?([a-zA-Z0-9_#$]+))?",
+    ) {
         normalized = re_str_split.replace_all(&normalized, |caps: &regex::Captures| {
             let text = caps.get(1).map(|m| m.as_str()).unwrap_or("''");
             let delim = caps.get(2).map(|m| m.as_str()).unwrap_or("','");
@@ -2497,14 +2503,16 @@ fn normalize_single_batch(sql: &str) -> String {
     }
 
     // 28. T-SQL OPENJSON (Dynamic json_each mapping)
-    if let Ok(re_openjson) =
-        regex::Regex::new(r"(?is)\bFROM\s+OPENJSON\s*\(\s*([^)]+)\s*\)(?:\s*(?:AS\s+)?([a-zA-Z0-9_#$]+))?")
-    {
-        normalized = re_openjson.replace_all(&normalized, |caps: &regex::Captures| {
-            let expr = caps.get(1).map(|m| m.as_str()).unwrap_or("''");
-            let alias = caps.get(2).map(|m| m.as_str()).unwrap_or("oj");
-            format!("FROM (SELECT key, value, type FROM json_each({expr})) AS {alias}")
-        }).into_owned();
+    if let Ok(re_openjson) = regex::Regex::new(
+        r"(?is)\bFROM\s+OPENJSON\s*\(\s*([^)]+)\s*\)(?:\s*(?:AS\s+)?([a-zA-Z0-9_#$]+))?",
+    ) {
+        normalized = re_openjson
+            .replace_all(&normalized, |caps: &regex::Captures| {
+                let expr = caps.get(1).map(|m| m.as_str()).unwrap_or("''");
+                let alias = caps.get(2).map(|m| m.as_str()).unwrap_or("oj");
+                format!("FROM (SELECT key, value, type FROM json_each({expr})) AS {alias}")
+            })
+            .into_owned();
     }
     // T-SQL FOR JSON / FOR XML clauses
     if let Ok(re_for_json) =
@@ -5803,12 +5811,15 @@ INSERT INTO Orders (CustomerID, Status, TotalAmount) VALUES (1, 'Completed', 250
     #[test]
     fn test_explicit_transaction_rollback_and_commit() {
         let db = NovaDb::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE Accounts (Id INT PRIMARY KEY, Balance INT);").unwrap();
+        db.execute_batch("CREATE TABLE Accounts (Id INT PRIMARY KEY, Balance INT);")
+            .unwrap();
 
         // 1. Test Rollback
         db.begin_transaction().unwrap();
-        db.execute_uncommitted("INSERT INTO Accounts VALUES (1, 500);").unwrap();
-        db.execute_uncommitted("INSERT INTO Accounts VALUES (2, 300);").unwrap();
+        db.execute_uncommitted("INSERT INTO Accounts VALUES (1, 500);")
+            .unwrap();
+        db.execute_uncommitted("INSERT INTO Accounts VALUES (2, 300);")
+            .unwrap();
         db.rollback_transaction().unwrap();
 
         let res = db.query("SELECT COUNT(*) AS c FROM Accounts;").unwrap();
@@ -5816,10 +5827,13 @@ INSERT INTO Orders (CustomerID, Status, TotalAmount) VALUES (1, 'Completed', 250
 
         // 2. Test Commit
         db.begin_transaction().unwrap();
-        db.execute_uncommitted("INSERT INTO Accounts VALUES (1, 1000);").unwrap();
+        db.execute_uncommitted("INSERT INTO Accounts VALUES (1, 1000);")
+            .unwrap();
         db.commit_transaction().unwrap();
 
-        let res2 = db.query("SELECT Balance FROM Accounts WHERE Id = 1;").unwrap();
+        let res2 = db
+            .query("SELECT Balance FROM Accounts WHERE Id = 1;")
+            .unwrap();
         assert_eq!(res2.rows[0]["Balance"], 1000, "Commit must persist rows");
     }
 
@@ -5838,7 +5852,9 @@ INSERT INTO Orders (CustomerID, Status, TotalAmount) VALUES (1, 'Completed', 250
 
         // 2. Dynamic OPENJSON
         let res_json = db
-            .query("SELECT key, value FROM OPENJSON('{\"name\":\"NovaDB\",\"version\":\"0.1.1\"}');")
+            .query(
+                "SELECT key, value FROM OPENJSON('{\"name\":\"NovaDB\",\"version\":\"0.1.1\"}');",
+            )
             .unwrap();
         assert_eq!(res_json.rows.len(), 2);
     }
