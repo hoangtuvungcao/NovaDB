@@ -1275,6 +1275,10 @@
       const select = document.getElementById("db-select");
       activeDatabase = select.value;
       document.getElementById("current-db-label").textContent = activeDatabase || "(None)";
+      activeSelectedTable = null;
+      allTableList = [];
+      document.getElementById("sidebar-tables-scroll").innerHTML = '<div style="padding: 8px 10px; color: var(--text-tertiary); font-size: 11px;">Loading tables...</div>';
+      document.getElementById("tables-count-badge").textContent = "0";
       if (activeDatabase) {
         loadSidebarTables();
         loadSchemaDesigner();
@@ -1310,28 +1314,40 @@
 
     async function loadSidebarTables() {
       if (!activeDatabase) return;
+      const targetDb = activeDatabase;
       try {
-        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/schema", {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(targetDb) + "/schema", {
           headers: getAuthHeaders()
         });
         if (!res.ok) return;
+        if (targetDb !== activeDatabase) return;
         const data = await res.json();
         allTableList = Array.isArray(data.tables) ? data.tables : [];
         document.getElementById("tables-count-badge").textContent = allTableList.length;
 
         const ioSelect = document.getElementById("io-target-table");
-        ioSelect.innerHTML = "";
-        allTableList.forEach(t => {
-          const opt = document.createElement("option");
-          opt.value = t.name;
-          opt.textContent = t.name;
-          ioSelect.appendChild(opt);
-        });
+        if (ioSelect) {
+          ioSelect.innerHTML = "";
+          allTableList.forEach(t => {
+            const opt = document.createElement("option");
+            opt.value = t.name;
+            opt.textContent = t.name;
+            ioSelect.appendChild(opt);
+          });
+        }
 
         renderSidebarTableList(allTableList);
 
-        if (allTableList.length > 0 && !activeSelectedTable) {
-          selectActiveTable(allTableList[0].name, false);
+        if (allTableList.length > 0) {
+          if (!activeSelectedTable || !allTableList.some(t => t.name === activeSelectedTable)) {
+            selectActiveTable(allTableList[0].name, false);
+          }
+        } else {
+          activeSelectedTable = null;
+          document.getElementById("active-table-name").textContent = "(No Table)";
+          document.getElementById("grid-table-container").innerHTML = '<div style="padding: 30px; text-align: center; color: var(--text-tertiary);">No tables found in this database.</div>';
+          document.getElementById("active-table-rows-count").textContent = "0 total rows";
+          document.getElementById("grid-page-label").textContent = "Page 0 of 0 (0 rows)";
         }
       } catch (e) {
         console.error(e);
@@ -1767,6 +1783,21 @@
       `;
     }
 
+    function renderSqlSuccessBox(containerId, msg) {
+      const box = document.getElementById(containerId);
+      if (!box) return;
+      box.innerHTML = `
+        <div style="padding: 16px;">
+          <div style="background: rgba(34, 197, 94, 0.08); border: 1px solid rgba(34, 197, 94, 0.25); border-radius: 8px; padding: 14px 18px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #22c55e;"></span>
+              <span style="font-weight: 600; color: #22c55e; font-size: 13px;">${escapeHtml(msg)}</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     // SQL CONSOLE LOGIC
     async function executeSqlQuery() {
       if (!activeDatabase) return showToast("Select a database first.", "error");
@@ -1778,38 +1809,22 @@
       statText.textContent = "Executing statement...";
       const start = performance.now();
 
-      const statements = sql.split(/;\s*(?=(?:[^']*'[^']*')*[^']*$)/).map(s => s.trim()).filter(s => s.length > 0);
-      const lastStmt = statements[statements.length - 1] || "";
-      const hasFinalSelect = statements.length > 1 && /^\s*(SELECT|WITH|EXPLAIN|PRAGMA|VALUES)/i.test(lastStmt);
+      // Check if it's a single pure read-only query
+      const isPureSelect = /^\s*(SELECT|WITH|EXPLAIN|PRAGMA|VALUES)\b/i.test(sql) && !/\bGO\b/i.test(sql) && (!sql.includes(';') || sql.trim().endsWith(';') && sql.indexOf(';') === sql.trim().length - 1);
 
-      if (hasFinalSelect) {
+      if (isPureSelect) {
         try {
-          const batchSql = statements.slice(0, -1).join(";\n") + ";";
-          const resBatch = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
-            method: "POST",
-            headers: getAuthHeaders(),
-            body: JSON.stringify({ sql: batchSql })
-          });
-          if (!resBatch.ok) {
-            const errMsg = await parseApiError(resBatch, "Batch error");
-            const elapsed = (performance.now() - start).toFixed(1);
-            statText.innerHTML = `<span style="color: var(--danger)">Error</span> (${elapsed} ms)`;
-            renderSqlErrorBox("sql-results-table-box", errMsg);
-            return;
-          }
-
           const resQuery = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/query", {
             method: "POST",
             headers: getAuthHeaders(),
-            body: JSON.stringify({ sql: lastStmt })
+            body: JSON.stringify({ sql })
           });
           const elapsed = (performance.now() - start).toFixed(1);
           if (resQuery.ok) {
             const data = await resQuery.json();
             lastQueryData = data;
             renderGrid("sql-results-table-box", data.columns, data.rows, false);
-            statText.textContent = `Batch executed & Query returned: ${data.rows.length} row(s) in ${elapsed} ms`;
-            loadSidebarTables();
+            statText.textContent = `Query executed: ${data.rows.length} row(s) returned in ${elapsed} ms`;
             return;
           } else {
             const errMsg = await parseApiError(resQuery, "Query error");
@@ -1823,15 +1838,19 @@
         }
       }
 
-      const isQuery = /^\s*(SELECT|WITH|EXPLAIN|PRAGMA|VALUES)/i.test(sql);
-      const endpoint = isQuery ? "/query" : "/execute";
+      // Otherwise execute via execute_batch endpoint
+      const timerInterval = setInterval(() => {
+        const currentElapsed = ((performance.now() - start) / 1000).toFixed(1);
+        statText.textContent = `Executing batch (${currentElapsed}s)...`;
+      }, 200);
 
       try {
-        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + endpoint, {
+        const res = await fetch("/v1/admin/databases/" + encodeURIComponent(activeDatabase) + "/execute", {
           method: "POST",
           headers: getAuthHeaders(),
           body: JSON.stringify({ sql })
         });
+        clearInterval(timerInterval);
         const elapsed = (performance.now() - start).toFixed(1);
 
         if (!res.ok) {
@@ -1841,17 +1860,11 @@
           return;
         }
 
-        const data = await res.json();
-        if (isQuery && data.columns && data.rows) {
-          lastQueryData = data;
-          renderGrid("sql-results-table-box", data.columns, data.rows, false);
-          statText.textContent = `Query executed: ${data.rows.length} row(s) returned in ${elapsed} ms`;
-        } else {
-          statText.textContent = `Statement executed successfully in ${elapsed} ms`;
-          document.getElementById("sql-results-table-box").innerHTML = `<div style="padding: 16px; color: var(--success);">Statement executed successfully.</div>`;
-          loadSidebarTables();
-        }
+        statText.textContent = `Batch executed successfully in ${elapsed} ms`;
+        renderSqlSuccessBox("sql-results-table-box", `Batch execution completed successfully in ${elapsed} ms.`);
+        loadSidebarTables();
       } catch (err) {
+        clearInterval(timerInterval);
         statText.innerHTML = `<span style="color: var(--danger)">Network Error: ${escapeHtml(err.message)}</span>`;
       }
     }
@@ -1910,7 +1923,9 @@
     function clearSqlEditor() { document.getElementById("sql-query-editor").value = ""; }
 
     function exportQueryResults(format) {
-      if (!lastQueryData.rows || lastQueryData.rows.length === 0) return showToast("No query results to export.", "error");
+      if (!lastQueryData.rows || lastQueryData.rows.length === 0) {
+        return showToast("No query results to export. Run a SELECT query first, or use Data Grid / [I/O] tab to export table data.", "info");
+      }
       if (format === 'json') {
         const blob = new Blob([JSON.stringify(lastQueryData.rows, null, 2)], { type: "application/json" });
         downloadBlob(blob, "query_results.json");

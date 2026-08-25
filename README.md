@@ -50,7 +50,11 @@ All documentation is consolidated into four canonical manuals:
 - Interactive terminal console: `novadb console myapp.novadb` with ASCII box tables and execution timers.
 - Web Admin Studio on `http://127.0.0.1:8787/studio` for visual query execution, table browsing, schema inspection, and online maintenance.
 
-### 7. Local-First Synchronization & Hot Backups
+### 7. Microsoft SQL Server (T-SQL) Compatibility Engine
+- Automatic transpilation for SQL Server 2008 through SQL Server 2025 (17.x, Compatibility Level 170).
+- Supports procedural routines (`CREATE PROCEDURE`, `FUNCTION`, `TRIGGER`), `TOP (N) [PERCENT]`, `CROSS APPLY` / `OUTER APPLY`, `GENERATE_SERIES`, `MERGE`, `PIVOT`, `STRING_SPLIT`, `OPENJSON`, XML methods, Spatial/Geometry (`geometry::Point`, `STDistance`), and Graph tables (`AS NODE`, `AS EDGE`, `MATCH`).
+
+### 8. Local-First Synchronization & Hot Backups
 - Hybrid Logical Clock (HLC) tracking and deterministic Last-Writer-Wins (LWW) conflict resolution.
 - Online hot backups, database integrity checks, and write-ahead log checkpoints.
 
@@ -88,10 +92,14 @@ SELECT uuid_v7() as id, now_iso() as created_at, 'NovaDB' as name;
 
 ---
 
-## Universal Linux / macOS Installer
+## Repository and Documentation
+
+Official GitHub Repository: https://github.com/hoangtuvungcao/NovaDB
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vantrong/new_sql/master/scripts/install.sh | bash
+git clone https://github.com/hoangtuvungcao/NovaDB.git
+cd NovaDB
+cargo build --release
 ```
 
 See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for systemd service and Docker Compose configuration.

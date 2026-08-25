@@ -191,6 +191,45 @@ pub fn register(connection: &Connection) -> Result<()> {
         },
     )?;
 
+    // DATEPART(part, iso_text) — T-SQL alias for date_part
+    connection.create_scalar_function(
+        "datepart",
+        2,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let part: String = ctx.get(0)?;
+            let text: String = ctx.get(1)?;
+            let ms = match parse_iso8601_to_epoch_ms(&text) {
+                Some(ms) => ms,
+                None => return Ok(None),
+            };
+
+            let secs = ms / 1_000;
+            let days = secs / 86_400;
+            let time_secs = secs % 86_400;
+            let (year, month, day) = days_to_ymd(days);
+
+            let result = match part.to_lowercase().as_str() {
+                "year" | "yy" | "yyyy" => year as i64,
+                "quarter" | "qq" | "q" => ((month as i64 - 1) / 3) + 1,
+                "month" | "mm" | "m" => month as i64,
+                "day" | "dd" | "d" => day as i64,
+                "hour" | "hh" => time_secs / 3_600,
+                "minute" | "mi" | "n" => (time_secs % 3_600) / 60,
+                "second" | "ss" | "s" => time_secs % 60,
+                "millisecond" | "ms" => ms % 1_000,
+                "dayofweek" | "dw" => (days + 4) % 7,
+                "dayofyear" | "dy" => day_of_year(year as i32, month as u32, day as u32) as i64,
+                "week" | "wk" | "ww" => {
+                    let doy = day_of_year(year as i32, month as u32, day as u32) as i64;
+                    (doy - 1) / 7 + 1
+                }
+                _ => return Ok(None),
+            };
+            Ok(Some(result))
+        },
+    )?;
+
     // DATE_TRUNC(part, iso_text) — Truncate to specified precision
     connection.create_scalar_function(
         "date_trunc",
@@ -426,6 +465,35 @@ pub fn register(connection: &Connection) -> Result<()> {
             "productlevel" => Ok("RTM".to_string()),
             "edition" => Ok("Enterprise Edition: Core-based (64-bit)".to_string()),
             _ => Ok("NovaDB Enterprise".to_string()),
+        }
+    })?;
+
+    // DATETRUNC(part, datetime) -> truncated datetime string
+    connection.create_scalar_function("datetrunc", 2, FunctionFlags::SQLITE_UTF8, |ctx| {
+        let part: String = ctx.get(0)?;
+        let text: String = ctx.get(1)?;
+        if let Some(ms) = parse_iso8601_to_epoch_ms(&text) {
+            let secs = ms / 1_000;
+            let days = secs / 86_400;
+            let (y, m, d) = days_to_ymd(days);
+            let day_secs = (secs % 86_400) as u32;
+            let h = day_secs / 3600;
+            let mi = (day_secs % 3600) / 60;
+            let result = match part.to_lowercase().as_str() {
+                "year" | "yy" | "yyyy" => format!("{y:04}-01-01 00:00:00.000"),
+                "quarter" | "qq" | "q" => {
+                    let qm = ((m - 1) / 3) * 3 + 1;
+                    format!("{y:04}-{qm:02}-01 00:00:00.000")
+                }
+                "month" | "mm" | "m" => format!("{y:04}-{m:02}-01 00:00:00.000"),
+                "day" | "dd" | "d" => format!("{y:04}-{m:02}-{d:02} 00:00:00.000"),
+                "hour" | "hh" => format!("{y:04}-{m:02}-{d:02} {h:02}:00:00.000"),
+                "minute" | "mi" | "n" => format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:00.000"),
+                _ => format!("{y:04}-{m:02}-{d:02} 00:00:00.000"),
+            };
+            Ok(Some(result))
+        } else {
+            Ok(None)
         }
     })?;
 

@@ -747,3 +747,59 @@ The built-in Web Studio (`http://localhost:8787`) provides a high-contrast, zero
 * **Database Cloning**: 1-click clone of the active database into a new isolated database instance.
 * **Integrity Scan**: Full B-Tree verification and page pointer health scan.
 * **WAL Checkpoint**: Commit and truncate write-ahead logs.
+
+---
+
+## 12. Microsoft SQL Server (T-SQL) Compatibility Layer
+
+NovaDB includes an enterprise-grade T-SQL transpilation and compatibility engine supporting SQL Server 2008 through SQL Server 2025 (17.x, Compatibility Level 170).
+
+### 12.1 Supported Compatibility Levels
+* **SQL Server 2025 (Level 170)**: Vector calculations, JSON enhancements, fuzzy string preview functions, `GENERATE_SERIES`, `APPROX_PERCENTILE_CONT`, `APPROX_COUNT_DISTINCT`.
+* **SQL Server 2022 (Level 160)**: `DATE_BUCKET`, `DATETRUNC`, `GREATEST`, `LEAST`, `STRING_SPLIT` with `enable_ordinal`, `IS [NOT] DISTINCT FROM`, window frames.
+* **SQL Server 2019 (Level 150)**: Graph table enhancements, `APPROX_COUNT_DISTINCT`, utf8 string enhancements.
+* **SQL Server 2017 (Level 140)**: `STRING_AGG`, `TRIM`, `TRANSLATE`, graph tables (`NODE`, `EDGE`, `MATCH`).
+* **SQL Server 2016 (Level 130)**: System-versioned temporal tables, `OPENJSON`, `JSON_VALUE`, `JSON_QUERY`, `JSON_MODIFY`, Row-Level Security (`SECURITY POLICY`, `SESSION_CONTEXT`), Dynamic Data Masking, `COMPRESS` / `DECOMPRESS`, `DATEDIFF_BIG`.
+* **SQL Server 2012 - 2014 (Levels 110 - 120)**: `TRY_CAST`, `TRY_CONVERT`, `TRY_PARSE`, `IIF`, `CHOOSE`, `CONCAT_WS`, `EOMONTH`, `PERCENTILE_CONT`, `PERCENTILE_DISC`, `CUME_DIST`, `PERCENT_RANK`, `OFFSET ... FETCH NEXT ... ROWS ONLY`, `CREATE SEQUENCE`.
+
+### 12.2 T-SQL Dialect Transpilation Reference
+
+#### Data Types
+| T-SQL Data Type | NovaDB Storage Engine Target |
+|---|---|
+| `NVARCHAR(MAX)` / `VARCHAR(MAX)` / `TEXT` / `NTEXT` | `TEXT` |
+| `VARBINARY(MAX)` / `IMAGE` / `BINARY(N)` | `BLOB` |
+| `DATETIME` / `DATETIME2` / `SMALLDATETIME` / `DATETIMEOFFSET` | `TEXT` (ISO 8601 UTC) |
+| `BIT` | `INTEGER` (`0` or `1`) |
+| `TINYINT` / `SMALLINT` / `INT` / `BIGINT` | `INTEGER` |
+| `DECIMAL(P,S)` / `NUMERIC(P,S)` / `MONEY` / `SMALLMONEY` | `REAL` / `DECIMAL` |
+| `UNIQUEIDENTIFIER` | `TEXT` (RFC 4122 / 9562 UUID) |
+| `ROWVERSION` / `TIMESTAMP` | `BLOB DEFAULT (randomblob(8))` |
+
+#### Procedural & Routine Blocks
+* `CREATE PROCEDURE` / `CREATE PROC`
+* `CREATE FUNCTION` (Scalar, Multi-statement Table-Valued, Inline TVF)
+* `CREATE TRIGGER`
+* Supports nested `CASE ... WHEN ... THEN ... ELSE ... END`, `BEGIN TRY ... END TRY`, `BEGIN CATCH ... END CATCH`, `BEGIN ... END`, `RAISERROR(...)`.
+
+#### Query Constructs & Expressions
+* **`TOP (N) [PERCENT] [WITH TIES]`**: Transpiled to `LIMIT N` / `LIMIT (SELECT ceil(COUNT(*) * P / 100))`.
+* **`CROSS APPLY` / `OUTER APPLY`**:
+  * Inlined scalar calculations: `CROSS APPLY (SELECT <expr> AS <col>) Alias` -> inlined into `SELECT` / `WHERE`.
+  * Correlated subqueries: `CROSS APPLY (SELECT ... FROM ...)` -> inlined scalar subquery expressions.
+  * Table-valued functions: `CROSS APPLY STRING_SPLIT(...)` or `OPENJSON(...)` -> relational subqueries.
+* **`GENERATE_SERIES(start, stop[, step])`**: Supported in `FROM`, `JOIN`, and `INSERT ... SELECT` using recursive CTE subqueries.
+* **`PIVOT` / `UNPIVOT`**: Transpiled to `SUM(CASE WHEN ...)` / `UNION ALL` relational mappings.
+* **`MERGE INTO <table> USING <source> ON <condition>`**: Transpiled to upsert semantics (`INSERT ... ON CONFLICT DO UPDATE`).
+* **Table & Query Hints**: `WITH (NOLOCK, READPAST, INDEX(...), NOEXPAND, FORCESEEK)`, `OPTION (RECOMPILE, MAXDOP 1, MAXRECURSION 100)`.
+* **String Operators**: String concatenation with `+` (`'A' + 'B'`) transpiled to SQLite string concatenation `||` (`'A' || 'B'`).
+
+#### XML and Spatial Methods
+* **XML Data Methods**: `xml_col.value('xpath', 'type')`, `xml_col.nodes('xpath')`, `xml_col.exist('xpath')`, `xml_col.query('xpath')`, `xml_col.modify('expr')`.
+* **Spatial & Geometry Methods**: `geometry::Point(x, y, srid)`, `spatial_col.STDistance(other)`, `spatial_col.STContains(other)`.
+* **HierarchyID Methods**: `hierarchyid::GetRoot()`, `hierarchyid::Parse(str)`, `hid_col.ToString()`, `hid_col.GetLevel()`, `hid_col.IsDescendantOf(parent)`.
+
+#### Built-in System Metadata Functions
+* `@@VERSION`, `SERVERPROPERTY('ProductVersion')`, `SERVERPROPERTY('Edition')`, `DATABASEPROPERTYEX(DB_NAME(), 'CompatibilityLevel')`.
+* `DB_NAME()`, `DB_ID()`, `OBJECT_ID('table')`, `SCHEMA_ID('schema')`, `@@SPID`, `@@TRANCOUNT`, `XACT_STATE()`.
+* `SESSION_CONTEXT(N'key')`, `EXEC sys.sp_set_session_context @key=..., @value=...`.
