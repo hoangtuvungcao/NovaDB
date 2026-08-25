@@ -2234,6 +2234,9 @@ fn configure_connection(connection: &Connection) -> Result<()> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
+    connection.pragma_update(None, "temp_store", "MEMORY")?;
+    connection.pragma_update(None, "cache_size", -64000)?;
+    connection.pragma_update(None, "mmap_size", 268435456)?;
     connection.pragma_update(None, "recursive_triggers", "ON")?;
     connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     connection.set_db_config(DbConfig::SQLITE_DBCONFIG_WRITABLE_SCHEMA, false)?;
