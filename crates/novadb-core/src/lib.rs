@@ -219,10 +219,7 @@ impl NovaDb {
     /// Executes SQL statements directly within the current connection context (supporting active transactions).
     pub fn execute_uncommitted(&self, sql: &str) -> Result<()> {
         let connection = self.inner.connection.lock();
-        let normalized = normalize_sql_dialect(sql);
-        connection
-            .execute_batch(&normalized)
-            .map_err(Error::from)
+        execute_guarded_sql_conn(&connection, sql)
     }
 
     /// Executes a read-only SQL query and returns JSON object rows.
@@ -2970,6 +2967,27 @@ fn normalize_single_batch(sql: &str) -> String {
     }
 
     normalized
+}
+
+pub(crate) fn execute_guarded_sql_conn(connection: &Connection, sql: &str) -> Result<()> {
+    let normalized = normalize_sql_dialect(sql);
+    let trusted_sync_triggers = trusted_sync_trigger_names(connection)?;
+    let protected_schema_seen = Arc::new(AtomicBool::new(false));
+    let protected_schema_flag = Arc::clone(&protected_schema_seen);
+    connection.authorizer(Some(move |context: AuthContext<'_>| {
+        if is_protected_schema_action(context, &trusted_sync_triggers) {
+            protected_schema_flag.store(true, Ordering::Release);
+            Authorization::Deny
+        } else {
+            Authorization::Allow
+        }
+    }))?;
+    let execution = connection.execute_batch(&normalized);
+    let _ = connection.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    if protected_schema_seen.load(Ordering::Acquire) {
+        return Err(Error::ProtectedSchemaChangeNotAllowed);
+    }
+    execution.map_err(Error::from)
 }
 
 pub(crate) fn execute_guarded_sql(transaction: &Transaction<'_>, sql: &str) -> Result<()> {

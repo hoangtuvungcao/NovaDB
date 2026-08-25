@@ -53,7 +53,8 @@ pub struct PgConfig {
 
 /// Shared server state accessible by all sessions.
 pub struct ServerState {
-    pub database: NovaDb,
+    pub database_path: String,
+    pub default_database: NovaDb,
     pub username: Option<String>,
     pub password: Option<String>,
 }
@@ -67,7 +68,8 @@ pub async fn serve_pg(database: NovaDb, config: PgConfig) -> Result<(), std::io:
     info!(listen = %config.listen_addr, "PostgreSQL wire protocol server started");
 
     let state = Arc::new(ServerState {
-        database,
+        database_path: config.database_path,
+        default_database: database,
         username: config.username,
         password: config.password,
     });

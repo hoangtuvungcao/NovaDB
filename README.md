@@ -7,8 +7,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/hoangtuvungcao/NovaDB/releases"><img src="https://img.shields.io/badge/release-v0.1.0-blue.svg?style=flat-square" alt="Release"></a>
-  <a href="https://github.com/hoangtuvungcao/NovaDB"><img src="https://img.shields.io/badge/build-passing-brightgreen.svg?style=flat-square" alt="Build"></a>
+  <a href="https://github.com/hoangtuvungcao/NovaDB/releases"><img src="https://img.shields.io/badge/release-v0.1.1-blue.svg?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/hoangtuvungcao/NovaDB/actions/workflows/ci.yml"><img src="https://github.com/hoangtuvungcao/NovaDB/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green.svg?style=flat-square" alt="License"></a>
   <a href="docs/MANUAL.md"><img src="https://img.shields.io/badge/docs-complete-informational.svg?style=flat-square" alt="Documentation"></a>
   <a href="https://github.com/hoangtuvungcao/NovaDB"><img src="https://img.shields.io/badge/compatibility-SQL_Server_2025-blueviolet.svg?style=flat-square" alt="SQL Server 2025"></a>
@@ -311,7 +311,7 @@ irm https://raw.githubusercontent.com/hoangtuvungcao/NovaDB/master/scripts/insta
 
 #### Option C: Direct Pre-Built Binary Download
 Download standalone zero-dependency executables directly from [GitHub Releases](https://github.com/hoangtuvungcao/NovaDB/releases/latest):
-* **Linux x86_64 / ARM64**: `novadb-linux-x86_64.tar.gz` / `novadb-linux-aarch64.tar.gz`
+* **Linux x86_64**: `novadb-linux-x86_64.tar.gz`
 * **Windows x86_64**: `novadb-windows-x86_64.zip` (extract and run `novadb.exe`)
 * **macOS (Apple Silicon / Intel)**: `novadb-macos-aarch64.tar.gz` / `novadb-macos-x86_64.tar.gz`
 

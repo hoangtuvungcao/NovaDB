@@ -19,6 +19,7 @@ use std::collections::HashMap;
 pub struct PgSession {
     codec: PgCodec,
     state: Arc<ServerState>,
+    database: novadb_core::NovaDb,
     database_name: String,
     in_transaction: bool,
     prepared_statements: HashMap<String, String>,
@@ -27,9 +28,19 @@ pub struct PgSession {
 
 impl PgSession {
     pub fn new(stream: TcpStream, state: Arc<ServerState>) -> Self {
+        let database = if !state.database_path.is_empty()
+            && std::path::Path::new(&state.database_path).exists()
+        {
+            novadb_core::NovaDb::open(&state.database_path)
+                .unwrap_or_else(|_| state.default_database.clone())
+        } else {
+            state.default_database.clone()
+        };
+
         Self {
             codec: PgCodec::new(stream),
             state,
+            database,
             database_name: String::new(),
             in_transaction: false,
             prepared_statements: HashMap::new(),
@@ -43,6 +54,18 @@ impl PgSession {
         self.handle_startup().await?;
 
         // Phase 2: Message loop
+        let res = self.message_loop().await;
+
+        // Auto-rollback if connection terminated during an active transaction
+        if self.in_transaction {
+            let _ = self.database.rollback_transaction();
+            self.in_transaction = false;
+        }
+
+        res
+    }
+
+    async fn message_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
             let msg = match self.codec.read_message().await? {
                 Some(msg) => msg,
@@ -224,7 +247,7 @@ impl PgSession {
         // Handle transaction control
         let upper = sql.to_uppercase();
         if upper == "BEGIN" || upper == "START TRANSACTION" {
-            let res = self.state.database.begin_transaction();
+            let res = self.database.begin_transaction();
             if let Err(e) = res {
                 self.send_error("ERROR", "25000", &e.to_string()).await?;
                 return Ok(());
@@ -239,7 +262,7 @@ impl PgSession {
             return Ok(());
         }
         if upper == "COMMIT" || upper == "END" {
-            let res = self.state.database.commit_transaction();
+            let res = self.database.commit_transaction();
             self.in_transaction = false;
             if let Err(e) = res {
                 self.send_error("ERROR", "25000", &e.to_string()).await?;
@@ -254,7 +277,7 @@ impl PgSession {
             return Ok(());
         }
         if upper == "ROLLBACK" {
-            let res = self.state.database.rollback_transaction();
+            let res = self.database.rollback_transaction();
             self.in_transaction = false;
             if let Err(e) = res {
                 self.send_error("ERROR", "25000", &e.to_string()).await?;
@@ -279,7 +302,7 @@ impl PgSession {
             || upper.starts_with("TABLE");
 
         if is_query {
-            match self.state.database.query(sql) {
+            match self.database.query(sql) {
                 Ok(result) => {
                     // Send RowDescription
                     let columns: Vec<ColumnDescription> = result
@@ -334,9 +357,9 @@ impl PgSession {
         } else {
             // Execute as a write command
             let exec_result = if self.in_transaction {
-                self.state.database.execute_uncommitted(sql)
+                self.database.execute_uncommitted(sql)
             } else {
-                self.state.database.execute_batch(sql)
+                self.database.execute_batch(sql)
             };
             match exec_result {
                 Ok(()) => {
@@ -422,7 +445,7 @@ impl PgSession {
         if let Some(sql) = query {
             let upper = sql.trim().to_uppercase();
             if upper.starts_with("SELECT") || upper.starts_with("WITH") || upper.starts_with("VALUES") {
-                if let Ok(result) = self.state.database.query(&sql) {
+                if let Ok(result) = self.database.query(&sql) {
                     let columns: Vec<ColumnDescription> = result
                         .columns
                         .iter()
@@ -485,7 +508,7 @@ impl PgSession {
             || upper.starts_with("TABLE");
 
         if is_query {
-            match self.state.database.query(sql) {
+            match self.database.query(sql) {
                 Ok(result) => {
                     let columns: Vec<ColumnDescription> = result
                         .columns
@@ -536,9 +559,9 @@ impl PgSession {
             }
         } else {
             let exec_result = if self.in_transaction {
-                self.state.database.execute_uncommitted(sql)
+                self.database.execute_uncommitted(sql)
             } else {
-                self.state.database.execute_batch(sql)
+                self.database.execute_batch(sql)
             };
             match exec_result {
                 Ok(_) => {
@@ -642,4 +665,13 @@ fn substitute_pg_params(sql: &str, params: &[Option<Vec<u8>>]) -> String {
         }
     }
     result
+}
+
+impl Drop for PgSession {
+    fn drop(&mut self) {
+        if self.in_transaction {
+            let _ = self.database.rollback_transaction();
+            self.in_transaction = false;
+        }
+    }
 }
