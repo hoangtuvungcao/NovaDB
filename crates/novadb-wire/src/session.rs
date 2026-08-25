@@ -15,13 +15,31 @@ use crate::type_map;
 
 use std::collections::HashMap;
 
+/// PostgreSQL transaction state for ReadyForQuery status reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionState {
+    Idle,
+    InTransaction,
+    FailedTransaction,
+}
+
+impl TransactionState {
+    pub fn status_byte(self) -> u8 {
+        match self {
+            Self::Idle => b'I',
+            Self::InTransaction => b'T',
+            Self::FailedTransaction => b'E',
+        }
+    }
+}
+
 /// A single client session handling the PostgreSQL wire protocol.
 pub struct PgSession {
     codec: PgCodec,
     state: Arc<ServerState>,
     database: novadb_core::NovaDb,
     database_name: String,
-    in_transaction: bool,
+    tx_state: TransactionState,
     prepared_statements: HashMap<String, String>,
     portals: HashMap<String, (String, Vec<Option<Vec<u8>>>)>,
 }
@@ -42,7 +60,7 @@ impl PgSession {
             state,
             database,
             database_name: String::new(),
-            in_transaction: false,
+            tx_state: TransactionState::Idle,
             prepared_statements: HashMap::new(),
             portals: HashMap::new(),
         }
@@ -57,9 +75,9 @@ impl PgSession {
         let res = self.message_loop().await;
 
         // Auto-rollback if connection terminated during an active transaction
-        if self.in_transaction {
+        if self.tx_state != TransactionState::Idle {
             let _ = self.database.rollback_transaction();
-            self.in_transaction = false;
+            self.tx_state = TransactionState::Idle;
         }
 
         res
@@ -100,7 +118,7 @@ impl PgSession {
                     self.handle_execute(&portal, max_rows).await?;
                 }
                 FrontendMessage::Sync => {
-                    let status = if self.in_transaction { b'T' } else { b'I' };
+                    let status = self.tx_state.status_byte();
                     self.codec
                         .write_message(&BackendMessage::ReadyForQuery { status });
                     self.codec.flush().await?;
@@ -246,13 +264,29 @@ impl PgSession {
 
         // Handle transaction control
         let upper = sql.to_uppercase();
+        if self.tx_state == TransactionState::FailedTransaction
+            && upper != "ROLLBACK"
+            && upper != "COMMIT"
+        {
+            self.send_error(
+                "ERROR",
+                "25P02",
+                "current transaction is aborted, commands ignored until end of transaction block",
+            )
+            .await?;
+            self.codec
+                .write_message(&BackendMessage::ReadyForQuery { status: b'E' });
+            self.codec.flush().await?;
+            return Ok(());
+        }
+
         if upper == "BEGIN" || upper == "START TRANSACTION" {
             let res = self.database.begin_transaction();
             if let Err(e) = res {
                 self.send_error("ERROR", "25000", &e.to_string()).await?;
                 return Ok(());
             }
-            self.in_transaction = true;
+            self.tx_state = TransactionState::InTransaction;
             self.codec.write_message(&BackendMessage::CommandComplete {
                 tag: "BEGIN".into(),
             });
@@ -263,7 +297,7 @@ impl PgSession {
         }
         if upper == "COMMIT" || upper == "END" {
             let res = self.database.commit_transaction();
-            self.in_transaction = false;
+            self.tx_state = TransactionState::Idle;
             if let Err(e) = res {
                 self.send_error("ERROR", "25000", &e.to_string()).await?;
                 return Ok(());
@@ -278,7 +312,7 @@ impl PgSession {
         }
         if upper == "ROLLBACK" {
             let res = self.database.rollback_transaction();
-            self.in_transaction = false;
+            self.tx_state = TransactionState::Idle;
             if let Err(e) = res {
                 self.send_error("ERROR", "25000", &e.to_string()).await?;
                 return Ok(());
@@ -347,6 +381,9 @@ impl PgSession {
                     });
                 }
                 Err(e) => {
+                    if self.tx_state == TransactionState::InTransaction {
+                        self.tx_state = TransactionState::FailedTransaction;
+                    }
                     self.codec.write_message(&BackendMessage::ErrorResponse {
                         severity: "ERROR".into(),
                         code: "42601".into(),
@@ -356,7 +393,7 @@ impl PgSession {
             }
         } else {
             // Execute as a write command
-            let exec_result = if self.in_transaction {
+            let exec_result = if self.tx_state == TransactionState::InTransaction {
                 self.database.execute_uncommitted(sql)
             } else {
                 self.database.execute_batch(sql)
@@ -382,6 +419,9 @@ impl PgSession {
                         .write_message(&BackendMessage::CommandComplete { tag });
                 }
                 Err(e) => {
+                    if self.tx_state == TransactionState::InTransaction {
+                        self.tx_state = TransactionState::FailedTransaction;
+                    }
                     self.codec.write_message(&BackendMessage::ErrorResponse {
                         severity: "ERROR".into(),
                         code: "42601".into(),
@@ -391,7 +431,7 @@ impl PgSession {
             }
         }
 
-        let status = if self.in_transaction { b'T' } else { b'I' };
+        let status = self.tx_state.status_byte();
         self.codec
             .write_message(&BackendMessage::ReadyForQuery { status });
         self.codec.flush().await?;
@@ -499,6 +539,59 @@ impl PgSession {
         }
 
         let upper = sql.to_uppercase();
+        if self.tx_state == TransactionState::FailedTransaction
+            && upper != "ROLLBACK"
+            && upper != "COMMIT"
+        {
+            self.send_error(
+                "ERROR",
+                "25P02",
+                "current transaction is aborted, commands ignored until end of transaction block",
+            )
+            .await?;
+            return Ok(());
+        }
+
+        if upper == "BEGIN" || upper == "START TRANSACTION" {
+            let res = self.database.begin_transaction();
+            if let Err(e) = res {
+                self.send_error("ERROR", "25000", &e.to_string()).await?;
+                return Ok(());
+            }
+            self.tx_state = TransactionState::InTransaction;
+            self.codec.write_message(&BackendMessage::CommandComplete {
+                tag: "BEGIN".into(),
+            });
+            self.codec.flush().await?;
+            return Ok(());
+        }
+        if upper == "COMMIT" || upper == "END" {
+            let res = self.database.commit_transaction();
+            self.tx_state = TransactionState::Idle;
+            if let Err(e) = res {
+                self.send_error("ERROR", "25000", &e.to_string()).await?;
+                return Ok(());
+            }
+            self.codec.write_message(&BackendMessage::CommandComplete {
+                tag: "COMMIT".into(),
+            });
+            self.codec.flush().await?;
+            return Ok(());
+        }
+        if upper == "ROLLBACK" {
+            let res = self.database.rollback_transaction();
+            self.tx_state = TransactionState::Idle;
+            if let Err(e) = res {
+                self.send_error("ERROR", "25000", &e.to_string()).await?;
+                return Ok(());
+            }
+            self.codec.write_message(&BackendMessage::CommandComplete {
+                tag: "ROLLBACK".into(),
+            });
+            self.codec.flush().await?;
+            return Ok(());
+        }
+
         let is_query = upper.starts_with("SELECT")
             || upper.starts_with("EXPLAIN")
             || upper.starts_with("PRAGMA")
@@ -550,6 +643,9 @@ impl PgSession {
                     });
                 }
                 Err(e) => {
+                    if self.tx_state == TransactionState::InTransaction {
+                        self.tx_state = TransactionState::FailedTransaction;
+                    }
                     self.codec.write_message(&BackendMessage::ErrorResponse {
                         severity: "ERROR".into(),
                         code: "42601".into(),
@@ -558,7 +654,7 @@ impl PgSession {
                 }
             }
         } else {
-            let exec_result = if self.in_transaction {
+            let exec_result = if self.tx_state == TransactionState::InTransaction {
                 self.database.execute_uncommitted(sql)
             } else {
                 self.database.execute_batch(sql)
@@ -584,6 +680,9 @@ impl PgSession {
                         .write_message(&BackendMessage::CommandComplete { tag });
                 }
                 Err(e) => {
+                    if self.tx_state == TransactionState::InTransaction {
+                        self.tx_state = TransactionState::FailedTransaction;
+                    }
                     self.codec.write_message(&BackendMessage::ErrorResponse {
                         severity: "ERROR".into(),
                         code: "42601".into(),
@@ -669,9 +768,9 @@ fn substitute_pg_params(sql: &str, params: &[Option<Vec<u8>>]) -> String {
 
 impl Drop for PgSession {
     fn drop(&mut self) {
-        if self.in_transaction {
+        if self.tx_state != TransactionState::Idle {
             let _ = self.database.rollback_transaction();
-            self.in_transaction = false;
+            self.tx_state = TransactionState::Idle;
         }
     }
 }

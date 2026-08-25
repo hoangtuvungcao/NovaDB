@@ -2473,14 +2473,14 @@ fn normalize_single_batch(sql: &str) -> String {
             .into_owned();
     }
 
-    // 26. T-SQL STRING_SPLIT
-    if let Ok(re_str_split_sel) = regex::Regex::new(
-        r"(?is)\bSELECT\s+([^;]+?)\s+FROM\s+STRING_SPLIT\s*\([^;]+?\)(?:\s*(?:AS\s+)?[a-zA-Z0-9_#$]+)?\s*;?",
-    ) {
-        normalized = re_str_split_sel.replace_all(&normalized, "SELECT 'SQL Server' AS value, 1 AS ordinal UNION ALL SELECT 'NovaDB', 2 UNION ALL SELECT 'PostgreSQL', 3 UNION ALL SELECT 'SQLite', 4;").into_owned();
-    }
-    if let Ok(re_str_split) = regex::Regex::new(r"(?is)\bFROM\s+STRING_SPLIT\s*\([\s\S]*?\)") {
-        normalized = re_str_split.replace_all(&normalized, "FROM (SELECT 'SQL Server' AS value, 1 AS ordinal UNION ALL SELECT 'NovaDB', 2 UNION ALL SELECT 'PostgreSQL', 3 UNION ALL SELECT 'SQLite', 4)").into_owned();
+    // 26. T-SQL STRING_SPLIT (Dynamic Recursive CTE splitting)
+    if let Ok(re_str_split) = regex::Regex::new(r"(?is)\bFROM\s+STRING_SPLIT\s*\(\s*('[^']*'|[a-zA-Z0-9_#$.]+)\s*,\s*('[^']*'|[a-zA-Z0-9_#$.]+)\s*\)(?:\s*(?:AS\s+)?([a-zA-Z0-9_#$]+))?") {
+        normalized = re_str_split.replace_all(&normalized, |caps: &regex::Captures| {
+            let text = caps.get(1).map(|m| m.as_str()).unwrap_or("''");
+            let delim = caps.get(2).map(|m| m.as_str()).unwrap_or("','");
+            let alias = caps.get(3).map(|m| m.as_str()).unwrap_or("split_tbl");
+            format!("FROM (WITH RECURSIVE split(value, rest) AS (SELECT '', {text} || {delim} UNION ALL SELECT substr(rest, 1, instr(rest, {delim}) - 1), substr(rest, instr(rest, {delim}) + 1) FROM split WHERE rest != '') SELECT value FROM split WHERE value != '') AS {alias}")
+        }).into_owned();
     }
 
     // 27. T-SQL GENERATE_SERIES (2 or 3 args)
@@ -2496,11 +2496,15 @@ fn normalize_single_batch(sql: &str) -> String {
         }).into_owned();
     }
 
-    // 28. T-SQL OPENJSON (both with and without WITH)
+    // 28. T-SQL OPENJSON (Dynamic json_each mapping)
     if let Ok(re_openjson) =
-        regex::Regex::new(r"(?is)\bOPENJSON\s*\([\s\S]*?\)(?:\s+WITH\s*\((?:[^()]|\([^()]*\))*\))?")
+        regex::Regex::new(r"(?is)\bFROM\s+OPENJSON\s*\(\s*([^)]+)\s*\)(?:\s*(?:AS\s+)?([a-zA-Z0-9_#$]+))?")
     {
-        normalized = re_openjson.replace_all(&normalized, "(SELECT 'Nova' AS CustomerName, 'Nova' AS Name, 1 AS Id, 1 AS CustomerID, '[]' AS Orders, 100 AS OrderID, 100.0 AS Amount, '[]' AS Items, 1 AS ProductID, 2 AS Quantity, 'key' AS [key], 'value' AS [value], 1 AS [type]) AS oj").into_owned();
+        normalized = re_openjson.replace_all(&normalized, |caps: &regex::Captures| {
+            let expr = caps.get(1).map(|m| m.as_str()).unwrap_or("''");
+            let alias = caps.get(2).map(|m| m.as_str()).unwrap_or("oj");
+            format!("FROM (SELECT key, value, type FROM json_each({expr})) AS {alias}")
+        }).into_owned();
     }
     // T-SQL FOR JSON / FOR XML clauses
     if let Ok(re_for_json) =
@@ -5817,5 +5821,25 @@ INSERT INTO Orders (CustomerID, Status, TotalAmount) VALUES (1, 'Completed', 250
 
         let res2 = db.query("SELECT Balance FROM Accounts WHERE Id = 1;").unwrap();
         assert_eq!(res2.rows[0]["Balance"], 1000, "Commit must persist rows");
+    }
+
+    #[test]
+    fn test_dynamic_string_split_and_openjson() {
+        let db = NovaDb::open_in_memory().unwrap();
+
+        // 1. Dynamic STRING_SPLIT
+        let res = db
+            .query("SELECT value FROM STRING_SPLIT('apple,banana,cherry', ',');")
+            .unwrap();
+        assert_eq!(res.rows.len(), 3);
+        assert_eq!(res.rows[0]["value"], "apple");
+        assert_eq!(res.rows[1]["value"], "banana");
+        assert_eq!(res.rows[2]["value"], "cherry");
+
+        // 2. Dynamic OPENJSON
+        let res_json = db
+            .query("SELECT key, value FROM OPENJSON('{\"name\":\"NovaDB\",\"version\":\"0.1.1\"}');")
+            .unwrap();
+        assert_eq!(res_json.rows.len(), 2);
     }
 }
