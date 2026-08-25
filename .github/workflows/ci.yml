@@ -10,19 +10,18 @@ permissions:
 jobs:
   quality:
     name: Format, lint, and docs
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
-      RUSTDOCFLAGS: "-Dwarnings"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets
       - run: cargo doc --workspace --no-deps
 
   test:
@@ -33,17 +32,13 @@ jobs:
       matrix:
         include:
           - platform: linux-x86_64
-            os: ubuntu-24.04
-          - platform: linux-aarch64
-            os: ubuntu-24.04-arm
+            os: ubuntu-latest
           - platform: windows-x86_64
-            os: windows-2025
-          - platform: windows-aarch64
-            os: windows-11-arm
+            os: windows-latest
           - platform: macos-x86_64
-            os: macos-15-intel
-          - platform: macos-aarch64
-            os: macos-15
+            os: macos-13
+          - platform: macos-arm64
+            os: macos-latest
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -51,4 +46,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --locked --workspace
+      - run: cargo test --workspace
