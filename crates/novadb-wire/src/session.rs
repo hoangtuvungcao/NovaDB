@@ -224,6 +224,11 @@ impl PgSession {
         // Handle transaction control
         let upper = sql.to_uppercase();
         if upper == "BEGIN" || upper == "START TRANSACTION" {
+            let res = self.state.database.begin_transaction();
+            if let Err(e) = res {
+                self.send_error("ERROR", "25000", &e.to_string()).await?;
+                return Ok(());
+            }
             self.in_transaction = true;
             self.codec.write_message(&BackendMessage::CommandComplete {
                 tag: "BEGIN".into(),
@@ -234,7 +239,12 @@ impl PgSession {
             return Ok(());
         }
         if upper == "COMMIT" || upper == "END" {
+            let res = self.state.database.commit_transaction();
             self.in_transaction = false;
+            if let Err(e) = res {
+                self.send_error("ERROR", "25000", &e.to_string()).await?;
+                return Ok(());
+            }
             self.codec.write_message(&BackendMessage::CommandComplete {
                 tag: "COMMIT".into(),
             });
@@ -244,7 +254,12 @@ impl PgSession {
             return Ok(());
         }
         if upper == "ROLLBACK" {
+            let res = self.state.database.rollback_transaction();
             self.in_transaction = false;
+            if let Err(e) = res {
+                self.send_error("ERROR", "25000", &e.to_string()).await?;
+                return Ok(());
+            }
             self.codec.write_message(&BackendMessage::CommandComplete {
                 tag: "ROLLBACK".into(),
             });
@@ -318,7 +333,12 @@ impl PgSession {
             }
         } else {
             // Execute as a write command
-            match self.state.database.execute_batch(sql) {
+            let exec_result = if self.in_transaction {
+                self.state.database.execute_uncommitted(sql)
+            } else {
+                self.state.database.execute_batch(sql)
+            };
+            match exec_result {
                 Ok(()) => {
                     let tag = if upper.starts_with("INSERT") {
                         "INSERT 0 1".into()
@@ -515,7 +535,12 @@ impl PgSession {
                 }
             }
         } else {
-            match self.state.database.execute_batch(sql) {
+            let exec_result = if self.in_transaction {
+                self.state.database.execute_uncommitted(sql)
+            } else {
+                self.state.database.execute_batch(sql)
+            };
+            match exec_result {
                 Ok(_) => {
                     let tag = if upper.starts_with("INSERT") {
                         "INSERT 0 1".into()

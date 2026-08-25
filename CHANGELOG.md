@@ -59,7 +59,7 @@ roadmap items and are **not** available in the current release.
 
 ### Tooling and infrastructure
 
-- Six-target native CI/release matrix (Linux/Windows/macOS × x86-64/ARM64).
+- Four-target native CI/release matrix (Linux x86_64, Windows x86_64, macOS x86_64, macOS Apple Silicon ARM64).
 - Checksum archives with `SHA256SUMS` and GitHub release automation.
 - Source-aware Unix and PowerShell installers.
 - Nonroot server container definition with Docker Compose health checks.

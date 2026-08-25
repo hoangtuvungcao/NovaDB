@@ -192,6 +192,39 @@ impl NovaDb {
         Ok(())
     }
 
+    /// Begins an explicit transaction on this connection.
+    pub fn begin_transaction(&self) -> Result<()> {
+        let connection = self.inner.connection.lock();
+        connection
+            .execute_batch("BEGIN IMMEDIATE;")
+            .map_err(Error::from)
+    }
+
+    /// Commits an active explicit transaction on this connection.
+    pub fn commit_transaction(&self) -> Result<()> {
+        let connection = self.inner.connection.lock();
+        connection
+            .execute_batch("COMMIT;")
+            .map_err(Error::from)
+    }
+
+    /// Rolls back an active explicit transaction on this connection.
+    pub fn rollback_transaction(&self) -> Result<()> {
+        let connection = self.inner.connection.lock();
+        connection
+            .execute_batch("ROLLBACK;")
+            .map_err(Error::from)
+    }
+
+    /// Executes SQL statements directly within the current connection context (supporting active transactions).
+    pub fn execute_uncommitted(&self, sql: &str) -> Result<()> {
+        let connection = self.inner.connection.lock();
+        let normalized = normalize_sql_dialect(sql);
+        connection
+            .execute_batch(&normalized)
+            .map_err(Error::from)
+    }
+
     /// Executes a read-only SQL query and returns JSON object rows.
     ///
     /// Duplicate result labels overwrite earlier values in the row object; use
@@ -5743,5 +5776,28 @@ INSERT INTO Orders (CustomerID, Status, TotalAmount) VALUES (1, 'Completed', 250
                 &p_norm[..p_norm.len().min(2000)]
             );
         }
+    }
+
+    #[test]
+    fn test_explicit_transaction_rollback_and_commit() {
+        let db = NovaDb::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE Accounts (Id INT PRIMARY KEY, Balance INT);").unwrap();
+
+        // 1. Test Rollback
+        db.begin_transaction().unwrap();
+        db.execute_uncommitted("INSERT INTO Accounts VALUES (1, 500);").unwrap();
+        db.execute_uncommitted("INSERT INTO Accounts VALUES (2, 300);").unwrap();
+        db.rollback_transaction().unwrap();
+
+        let res = db.query("SELECT COUNT(*) AS c FROM Accounts;").unwrap();
+        assert_eq!(res.rows[0]["c"], 0, "Rollback must remove uncommitted rows");
+
+        // 2. Test Commit
+        db.begin_transaction().unwrap();
+        db.execute_uncommitted("INSERT INTO Accounts VALUES (1, 1000);").unwrap();
+        db.commit_transaction().unwrap();
+
+        let res2 = db.query("SELECT Balance FROM Accounts WHERE Id = 1;").unwrap();
+        assert_eq!(res2.rows[0]["Balance"], 1000, "Commit must persist rows");
     }
 }
