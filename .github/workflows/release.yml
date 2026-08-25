@@ -90,6 +90,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF_NAME:-v0.1.0}"
+          tag="${GITHUB_REF_NAME}"
+          if [ "$tag" = "master" ] || [ -z "$tag" ]; then
+            tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+          fi
+          echo "Uploading to release: ${tag}"
           gh release upload "${tag}" dist/* --clobber || gh release create "${tag}" dist/* --title "NovaDB ${tag}" --generate-notes
 

@@ -79,9 +79,15 @@ pub async fn serve_pg(database: NovaDb, config: PgConfig) -> Result<(), std::io:
         let state = Arc::clone(&state);
         tokio::spawn(async move {
             info!(%peer, "new PostgreSQL client connection");
-            let mut session = PgSession::new(stream, state);
-            if let Err(e) = session.run().await {
-                error!(%peer, error = %e, "session error");
+            match PgSession::try_new(stream, state) {
+                Ok(mut session) => {
+                    if let Err(e) = session.run().await {
+                        error!(%peer, error = %e, "session error");
+                    }
+                }
+                Err(e) => {
+                    error!(%peer, error = %e, "failed to allocate dedicated session connection; rejecting connection");
+                }
             }
             info!(%peer, "PostgreSQL client disconnected");
         });

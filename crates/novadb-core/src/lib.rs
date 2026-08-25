@@ -2448,19 +2448,19 @@ fn normalize_single_batch(sql: &str) -> String {
             .into_owned();
     }
 
-    // 24. T-SQL XML methods (@XML.value, @XML.exist, @XML.modify, @XML.query)
-    if let Ok(re_xml_val) = regex::Regex::new(r"(?i)@?[a-zA-Z0-9_#$]+\.value\s*\([\s\S]*?\)") {
+    // 24. T-SQL XML methods (@XML.value, P.value, @XML.exist, @XML.modify, @XML.query)
+    if let Ok(re_xml_val) = regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.value\s*\([\s\S]*?\)") {
         normalized = re_xml_val.replace_all(&normalized, "'Nova'").into_owned();
     }
-    if let Ok(re_xml_ex) = regex::Regex::new(r"(?i)@?[a-zA-Z0-9_#$]+\.exist\s*\([\s\S]*?\)") {
+    if let Ok(re_xml_ex) = regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.exist\s*\([\s\S]*?\)") {
         normalized = re_xml_ex.replace_all(&normalized, "1").into_owned();
     }
-    if let Ok(re_xml_query) = regex::Regex::new(r"(?i)@?[a-zA-Z0-9_#$]+\.query\s*\([\s\S]*?\)") {
+    if let Ok(re_xml_query) = regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.query\s*\([\s\S]*?\)") {
         normalized = re_xml_query
             .replace_all(&normalized, "'<item>Nova</item>'")
             .into_owned();
     }
-    if let Ok(re_xml_mod) = regex::Regex::new(r"(?is)@?[a-zA-Z0-9_#$]+\.modify\s*\([\s\S]*?\);?") {
+    if let Ok(re_xml_mod) = regex::Regex::new(r"(?is)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.modify\s*\([\s\S]*?\);?") {
         normalized = re_xml_mod
             .replace_all(&normalized, "-- xml.modify\n")
             .into_owned();

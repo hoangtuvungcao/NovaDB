@@ -45,16 +45,31 @@ pub struct PgSession {
 }
 
 impl PgSession {
+    pub fn try_new(stream: TcpStream, state: Arc<ServerState>) -> Result<Self, novadb_core::Error> {
+        let database = if !state.database_path.is_empty() {
+            novadb_core::NovaDb::open(&state.database_path)?
+        } else {
+            state.default_database.clone()
+        };
+
+        Ok(Self {
+            codec: PgCodec::new(stream),
+            state,
+            database,
+            database_name: String::new(),
+            tx_state: TransactionState::Idle,
+            prepared_statements: HashMap::new(),
+            portals: HashMap::new(),
+        })
+    }
+
     pub fn new(stream: TcpStream, state: Arc<ServerState>) -> Self {
-        let database = if !state.database_path.is_empty()
-            && std::path::Path::new(&state.database_path).exists()
-        {
+        let database = if !state.database_path.is_empty() {
             novadb_core::NovaDb::open(&state.database_path)
                 .unwrap_or_else(|_| state.default_database.clone())
         } else {
             state.default_database.clone()
         };
-
         Self {
             codec: PgCodec::new(stream),
             state,
