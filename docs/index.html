@@ -369,30 +369,54 @@
       <section id="quickstart">
         <div class="head">
           <p class="kicker">Quick Start</p>
-          <h2>Up and running in seconds</h2>
-          <p>Build from source using Rust toolchain and start the unified multi-protocol server.</p>
+          <h2>Get Started in 10 Seconds</h2>
+          <p>Choose your preferred installation method: pre-built binaries, one-line installer script, or build from source.</p>
         </div>
+
+        <div class="grid" style="margin-bottom: 20px;">
+          <div class="card">
+            <h3>1. One-Line Installer</h3>
+            <p>Automatically downloads and installs the latest pre-compiled binary for your system architecture without requiring Rust or build tools.</p>
+          </div>
+          <div class="card">
+            <h3>2. Direct Binary Download</h3>
+            <p>Single standalone executable for Windows, Linux, and macOS. Unzip and run immediately with zero external dependencies.</p>
+          </div>
+          <div class="card">
+            <h3>3. Docker Container</h3>
+            <p>Run NovaDB in an isolated container with both HTTP REST (8787) and PostgreSQL Wire (5432) ports exposed.</p>
+          </div>
+        </div>
+
         <div class="codebox">
           <div class="codebar">
-            <span>Terminal (Bash)</span>
-            <button class="copy-btn" onclick="copyCode('code-quickstart')">Copy</button>
+            <span>Option A: 1-Line Automated Installer (Linux &amp; macOS)</span>
+            <button class="copy-btn" onclick="copyCode('code-install-sh')">Copy</button>
           </div>
-          <pre id="code-quickstart"># 1. Clone repository and build release binaries
-git clone https://github.com/hoangtuvungcao/NovaDB.git
-cd NovaDB
-cargo build --release
+          <pre id="code-install-sh">curl -fsSL https://raw.githubusercontent.com/hoangtuvungcao/NovaDB/master/scripts/install.sh | bash</pre>
+        </div>
 
-# 2. Start unified server daemon (HTTP 8787 + PostgreSQL Wire 5432)
-./target/release/novadb serve \
-  --listen 127.0.0.1:8787 \
-  --pg-listen 127.0.0.1:5432 \
-  --data-dir ./novadb-data
+        <div class="codebox">
+          <div class="codebar">
+            <span>Option B: Windows 1-Line Installer (PowerShell)</span>
+            <button class="copy-btn" onclick="copyCode('code-install-ps1')">Copy</button>
+          </div>
+          <pre id="code-install-ps1">irm https://raw.githubusercontent.com/hoangtuvungcao/NovaDB/master/scripts/install.ps1 | iex</pre>
+        </div>
 
-# 3. Connect via psql
-psql -h 127.0.0.1 -p 5432 -U admin -d default
+        <div class="codebox">
+          <div class="codebar">
+            <span>Option C: Launch Server &amp; Connect</span>
+            <button class="copy-btn" onclick="copyCode('code-run')">Copy</button>
+          </div>
+          <pre id="code-run"># 1. Start NovaDB server daemon
+novadb serve --listen 127.0.0.1:8787 --pg-listen 127.0.0.1:5432 --data-dir ./novadb-data
 
-# 4. Open Web Admin Studio in browser
-# http://127.0.0.1:8787/studio</pre>
+# 2. Open Web Admin Studio in your browser:
+# http://127.0.0.1:8787/studio
+
+# 3. Or connect via psql or GUI (DBeaver, DataGrip, TablePlus):
+psql -h 127.0.0.1 -p 5432 -U admin -d default</pre>
         </div>
       </section>
 

@@ -298,41 +298,58 @@ curl -X POST http://127.0.0.1:8787/v1/admin/databases/default/integrity
 
 ## Quick Start Guide
 
-### 1. Build from Source
+### 1. Installation Options
+
+#### Option A: One-Line Installer (Recommended for Linux & macOS)
+```bash
+curl -fsSL https://raw.githubusercontent.com/hoangtuvungcao/NovaDB/master/scripts/install.sh | bash
+```
+
+#### Option B: Windows PowerShell One-Line Installer
+```powershell
+irm https://raw.githubusercontent.com/hoangtuvungcao/NovaDB/master/scripts/install.ps1 | iex
+```
+
+#### Option C: Direct Pre-Built Binary Download
+Download standalone zero-dependency executables directly from [GitHub Releases](https://github.com/hoangtuvungcao/NovaDB/releases/latest):
+* **Linux x86_64 / ARM64**: `novadb-linux-x86_64.tar.gz` / `novadb-linux-aarch64.tar.gz`
+* **Windows x86_64**: `novadb-windows-x86_64.zip` (extract and run `novadb.exe`)
+* **macOS (Apple Silicon / Intel)**: `novadb-macos-aarch64.tar.gz` / `novadb-macos-x86_64.tar.gz`
+
+#### Option D: Build from Source (Rust 1.85+)
 ```bash
 git clone https://github.com/hoangtuvungcao/NovaDB.git
 cd NovaDB
 cargo build --release
-cargo test --workspace
 ```
 
-Binaries:
-* `target/release/novadb` (CLI & Server Daemon)
-* `target/release/novadbd` (Dedicated Background Service)
+---
 
-### 2. Interactive Terminal Console (REPL)
+### 2. Launch Server Daemon (HTTP REST 8787 + PostgreSQL Wire 5432)
 ```bash
-# Initialize local database file
-./target/release/novadb init myapp.novadb
-
-# Launch interactive SQL shell with ASCII box tables
-./target/release/novadb console myapp.novadb
-```
-
-### 3. Start Multi-Client Server (HTTP + PostgreSQL Wire)
-```bash
-./target/release/novadb serve \
+novadb serve \
   --listen 127.0.0.1:8787 \
   --pg-listen 127.0.0.1:5432 \
   --data-dir ./novadb-data
 ```
 
-### 4. Web Admin Studio
-Open your browser and navigate to:
+### 3. Open Web Admin Studio in Browser
+Navigate to:
 ```
 http://127.0.0.1:8787/studio
 ```
-Features available in Web Studio:
+
+### 4. Interactive Terminal Console (REPL)
+```bash
+# Initialize local database file
+novadb init myapp.novadb
+
+# Launch interactive SQL shell with ASCII box tables
+novadb console myapp.novadb
+```
+
+### 5. Web Admin Studio
+Features available in Web Studio (`http://127.0.0.1:8787/studio`):
 * **Table Explorer & Grid**: Live spreadsheet data grid with sorting, pagination, WHERE filters, row edit, add column, rename table, truncate, drop, and export.
 * **SQL Query Console**: Multi-statement script execution, live execution timer, recent query history, SQL formatting, syntax snippets, and CSV/JSON query export.
 * **Schema Designer**: Visual table schema inspection and column definitions.
