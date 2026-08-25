@@ -62,11 +62,7 @@ pub fn list_roles(connection: &Connection) -> Result<Vec<Role>> {
 }
 
 /// Grant a role to a user.
-pub fn grant_role(
-    connection: &Connection,
-    username: &str,
-    role_name: &str,
-) -> Result<()> {
+pub fn grant_role(connection: &Connection, username: &str, role_name: &str) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO _novadb_user_roles (username, role_name) VALUES (?1, ?2)",
         params![username, role_name],
@@ -75,11 +71,7 @@ pub fn grant_role(
 }
 
 /// Revoke a role from a user.
-pub fn revoke_role(
-    connection: &Connection,
-    username: &str,
-    role_name: &str,
-) -> Result<bool> {
+pub fn revoke_role(connection: &Connection, username: &str, role_name: &str) -> Result<bool> {
     let deleted = connection.execute(
         "DELETE FROM _novadb_user_roles WHERE username = ?1 AND role_name = ?2",
         params![username, role_name],

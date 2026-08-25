@@ -2,8 +2,8 @@
 //!
 //! Provides `UUID_V4()`, `UUID_V7()`, and `UUID_NIL()` scalar functions.
 
-use rusqlite::functions::FunctionFlags;
 use rusqlite::Connection;
+use rusqlite::functions::FunctionFlags;
 use uuid::Uuid;
 
 use crate::Result;
@@ -11,18 +11,12 @@ use crate::Result;
 /// Registers UUID functions on the connection.
 pub fn register(connection: &Connection) -> Result<()> {
     // UUID_V4() — Generate a random UUID v4
-    connection.create_scalar_function(
-        "uuid_v4",
-        0,
-        FunctionFlags::SQLITE_UTF8,
-        |_ctx| Ok(Uuid::new_v4().to_string()),
-    )?;
-    connection.create_scalar_function(
-        "newid",
-        0,
-        FunctionFlags::SQLITE_UTF8,
-        |_ctx| Ok(Uuid::new_v4().to_string()),
-    )?;
+    connection.create_scalar_function("uuid_v4", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        Ok(Uuid::new_v4().to_string())
+    })?;
+    connection.create_scalar_function("newid", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        Ok(Uuid::new_v4().to_string())
+    })?;
     connection.create_scalar_function(
         "gen_random_uuid",
         0,
@@ -32,36 +26,31 @@ pub fn register(connection: &Connection) -> Result<()> {
 
     // UUID_V7() — Generate a time-ordered UUID v7
     static SEQ: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
-    connection.create_scalar_function(
-        "uuid_v7",
-        0,
-        FunctionFlags::SQLITE_UTF8,
-        |_ctx| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
-            let ms = now.as_millis() as u64;
-            let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let random = Uuid::new_v4();
-            let random_bytes = random.as_bytes();
-            let mut bytes = [0u8; 16];
-            // Put 48-bit timestamp in first 6 bytes
-            bytes[0] = (ms >> 40) as u8;
-            bytes[1] = (ms >> 32) as u8;
-            bytes[2] = (ms >> 24) as u8;
-            bytes[3] = (ms >> 16) as u8;
-            bytes[4] = (ms >> 8) as u8;
-            bytes[5] = ms as u8;
-            // Version 7 nibble + 12-bit monotonic sequence counter
-            bytes[6] = 0x70 | ((seq >> 8) as u8 & 0x0F);
-            bytes[7] = seq as u8;
-            // Variant 10xx + random
-            bytes[8] = 0x80 | (random_bytes[8] & 0x3F);
-            // Rest is random
-            bytes[9..].copy_from_slice(&random_bytes[9..]);
-            Ok(Uuid::from_bytes(bytes).to_string())
-        },
-    )?;
+    connection.create_scalar_function("uuid_v7", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let ms = now.as_millis() as u64;
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let random = Uuid::new_v4();
+        let random_bytes = random.as_bytes();
+        let mut bytes = [0u8; 16];
+        // Put 48-bit timestamp in first 6 bytes
+        bytes[0] = (ms >> 40) as u8;
+        bytes[1] = (ms >> 32) as u8;
+        bytes[2] = (ms >> 24) as u8;
+        bytes[3] = (ms >> 16) as u8;
+        bytes[4] = (ms >> 8) as u8;
+        bytes[5] = ms as u8;
+        // Version 7 nibble + 12-bit monotonic sequence counter
+        bytes[6] = 0x70 | ((seq >> 8) as u8 & 0x0F);
+        bytes[7] = seq as u8;
+        // Variant 10xx + random
+        bytes[8] = 0x80 | (random_bytes[8] & 0x3F);
+        // Rest is random
+        bytes[9..].copy_from_slice(&random_bytes[9..]);
+        Ok(Uuid::from_bytes(bytes).to_string())
+    })?;
 
     // UUID_NIL() — Return the nil UUID
     connection.create_scalar_function(

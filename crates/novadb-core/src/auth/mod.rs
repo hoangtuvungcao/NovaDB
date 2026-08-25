@@ -2,8 +2,8 @@
 //!
 //! Provides user management, role-based access control, and password hashing.
 
-pub mod users;
 pub mod roles;
+pub mod users;
 
 use rusqlite::Connection;
 

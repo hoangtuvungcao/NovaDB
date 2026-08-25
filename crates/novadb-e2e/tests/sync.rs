@@ -96,9 +96,7 @@ fn delete_tombstone_propagates_between_replicas() {
     let relay = RelayStore::open_in_memory().expect("open relay");
 
     source
-        .execute_batch(
-            "INSERT INTO notes(id, title, body) VALUES ('d1', 'delete me', 'soon');",
-        )
+        .execute_batch("INSERT INTO notes(id, title, body) VALUES ('d1', 'delete me', 'soon');")
         .expect("insert");
     source
         .execute_batch("DELETE FROM notes WHERE id = 'd1';")
@@ -272,19 +270,11 @@ fn update_convergence_last_writer_wins() {
     let fresh1 = notes_database();
     let fresh2 = notes_database();
 
-    fresh1
-        .apply_changes(&changes_a)
-        .expect("apply A to fresh1");
-    fresh1
-        .apply_changes(&changes_b)
-        .expect("apply B to fresh1");
+    fresh1.apply_changes(&changes_a).expect("apply A to fresh1");
+    fresh1.apply_changes(&changes_b).expect("apply B to fresh1");
 
-    fresh2
-        .apply_changes(&changes_b)
-        .expect("apply B to fresh2");
-    fresh2
-        .apply_changes(&changes_a)
-        .expect("apply A to fresh2");
+    fresh2.apply_changes(&changes_b).expect("apply B to fresh2");
+    fresh2.apply_changes(&changes_a).expect("apply A to fresh2");
 
     let result1 = fresh1
         .query("SELECT title FROM notes WHERE id = 'shared'")
@@ -292,7 +282,10 @@ fn update_convergence_last_writer_wins() {
     let result2 = fresh2
         .query("SELECT title FROM notes WHERE id = 'shared'")
         .expect("fresh2 query");
-    assert_eq!(result1, result2, "LWW must converge regardless of apply order");
+    assert_eq!(
+        result1, result2,
+        "LWW must converge regardless of apply order"
+    );
 }
 
 #[test]

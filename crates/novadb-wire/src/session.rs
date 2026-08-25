@@ -8,10 +8,10 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
+use crate::ServerState;
 use crate::codec::PgCodec;
 use crate::messages::{BackendMessage, ColumnDescription, FrontendMessage};
 use crate::type_map;
-use crate::ServerState;
 
 /// A single client session handling the PostgreSQL wire protocol.
 pub struct PgSession {
@@ -59,8 +59,7 @@ impl PgSession {
                 }
                 FrontendMessage::Bind { .. } => {
                     // For now, just acknowledge bind
-                    self.codec
-                        .write_message(&BackendMessage::BindComplete);
+                    self.codec.write_message(&BackendMessage::BindComplete);
                     self.codec.flush().await?;
                 }
                 FrontendMessage::Describe { .. } => {
@@ -81,8 +80,7 @@ impl PgSession {
                     self.codec.flush().await?;
                 }
                 FrontendMessage::Close { .. } => {
-                    self.codec
-                        .write_message(&BackendMessage::CloseComplete);
+                    self.codec.write_message(&BackendMessage::CloseComplete);
                     self.codec.flush().await?;
                 }
                 FrontendMessage::Flush => {
@@ -133,12 +131,16 @@ impl PgSession {
                     if let (Some(expected_user), Some(expected_pass)) =
                         (&self.state.username, &self.state.password)
                     {
-                        let client_user =
-                            params.get("user").map(String::as_str).unwrap_or("");
+                        let client_user = params.get("user").map(String::as_str).unwrap_or("");
                         if client_user != expected_user {
-                            self.send_error("FATAL", "28P01", &format!(
-                                "password authentication failed for user \"{client_user}\""
-                            )).await?;
+                            self.send_error(
+                                "FATAL",
+                                "28P01",
+                                &format!(
+                                    "password authentication failed for user \"{client_user}\""
+                                ),
+                            )
+                            .await?;
                             return Err("auth failed".into());
                         }
 
@@ -171,8 +173,7 @@ impl PgSession {
                     }
 
                     // Authentication OK
-                    self.codec
-                        .write_message(&BackendMessage::AuthenticationOk);
+                    self.codec.write_message(&BackendMessage::AuthenticationOk);
 
                     // Send server parameters
                     self.send_parameter("server_version", "16.0 (NovaDB)").await;
@@ -185,11 +186,10 @@ impl PgSession {
                         .await;
 
                     // Backend key data
-                    self.codec
-                        .write_message(&BackendMessage::BackendKeyData {
-                            process_id: std::process::id() as i32,
-                            secret_key: 0,
-                        });
+                    self.codec.write_message(&BackendMessage::BackendKeyData {
+                        process_id: std::process::id() as i32,
+                        secret_key: 0,
+                    });
 
                     // Ready for query
                     self.codec
@@ -207,10 +207,7 @@ impl PgSession {
     }
 
     /// Handle a simple query message.
-    async fn handle_simple_query(
-        &mut self,
-        sql: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_simple_query(&mut self, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
         let sql = sql.trim().trim_end_matches(';').trim();
 
         if sql.is_empty() {
@@ -292,16 +289,17 @@ impl PgSession {
                             .columns
                             .iter()
                             .map(|col| {
-                                row.get(col).map(|v| match v {
-                                    serde_json::Value::Null => None,
-                                    serde_json::Value::String(s) => {
-                                        Some(s.as_bytes().to_vec())
-                                    }
-                                    other => Some(other.to_string().into_bytes()),
-                                }).unwrap_or(None)
+                                row.get(col)
+                                    .map(|v| match v {
+                                        serde_json::Value::Null => None,
+                                        serde_json::Value::String(s) => Some(s.as_bytes().to_vec()),
+                                        other => Some(other.to_string().into_bytes()),
+                                    })
+                                    .unwrap_or(None)
                             })
                             .collect();
-                        self.codec.write_message(&BackendMessage::DataRow { values });
+                        self.codec
+                            .write_message(&BackendMessage::DataRow { values });
                     }
 
                     self.codec.write_message(&BackendMessage::CommandComplete {
@@ -362,8 +360,7 @@ impl PgSession {
         _query: &str,
         _param_types: &[i32],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.codec
-            .write_message(&BackendMessage::ParseComplete);
+        self.codec.write_message(&BackendMessage::ParseComplete);
         self.codec.flush().await?;
         Ok(())
     }
@@ -386,10 +383,9 @@ impl PgSession {
 
     /// Send a parameter status message.
     async fn send_parameter(&mut self, name: &str, value: &str) {
-        self.codec
-            .write_message(&BackendMessage::ParameterStatus {
-                name: name.into(),
-                value: value.into(),
-            });
+        self.codec.write_message(&BackendMessage::ParameterStatus {
+            name: name.into(),
+            value: value.into(),
+        });
     }
 }

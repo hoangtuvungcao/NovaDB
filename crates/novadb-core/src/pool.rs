@@ -104,8 +104,8 @@ impl NovaDbPool {
     ///
     /// Readers are selected round-robin to distribute load.
     pub fn query(&self, sql: &str) -> Result<QueryResult> {
-        let idx = self.inner.reader_index.fetch_add(1, Ordering::Relaxed)
-            % self.inner.read_pool_size;
+        let idx =
+            self.inner.reader_index.fetch_add(1, Ordering::Relaxed) % self.inner.read_pool_size;
         let reader = self.inner.readers[idx].lock();
         reader.query(sql)
     }
@@ -140,7 +140,10 @@ impl NovaDbPool {
     }
 
     /// Run migrations using the writer connection.
-    pub fn run_migrations(&self, migrations: &[crate::Migration]) -> Result<crate::MigrationReport> {
+    pub fn run_migrations(
+        &self,
+        migrations: &[crate::Migration],
+    ) -> Result<crate::MigrationReport> {
         let writer = self.inner.writer.lock();
         writer.run_migrations(migrations)
     }
@@ -152,11 +155,7 @@ impl NovaDbPool {
     }
 
     /// Get changes after a cursor using the writer connection.
-    pub fn changes_after(
-        &self,
-        after: i64,
-        limit: usize,
-    ) -> Result<Vec<crate::Change>> {
+    pub fn changes_after(&self, after: i64, limit: usize) -> Result<Vec<crate::Change>> {
         let writer = self.inner.writer.lock();
         writer.changes_after(after, limit)
     }
@@ -233,9 +232,8 @@ mod tests {
     fn pool_write_is_serialized() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("serial_write.db");
-        let pool = Arc::new(
-            NovaDbPool::open(PoolConfig::new(&path).with_read_pool_size(2)).unwrap(),
-        );
+        let pool =
+            Arc::new(NovaDbPool::open(PoolConfig::new(&path).with_read_pool_size(2)).unwrap());
 
         pool.execute_batch(
             "CREATE TABLE counter(id INTEGER PRIMARY KEY, n INTEGER DEFAULT 0);
@@ -295,9 +293,7 @@ mod tests {
             .unwrap();
 
         // pool2 should see the table via its reader
-        let result = pool2
-            .query("SELECT COUNT(*) as cnt FROM t")
-            .unwrap();
+        let result = pool2.query("SELECT COUNT(*) as cnt FROM t").unwrap();
         assert_eq!(result.rows.len(), 1);
     }
 }

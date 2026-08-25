@@ -4,8 +4,8 @@
 //! `BIT_OR()`, `BIT_XOR()`, `EVERY()`, `BOOL_AND()`, `BOOL_OR()`, and
 //! `ARRAY_AGG()`.
 
-use rusqlite::functions::{Aggregate, FunctionFlags};
 use rusqlite::Connection;
+use rusqlite::functions::{Aggregate, FunctionFlags};
 use serde_json::Value;
 
 use crate::Result;
@@ -13,20 +13,10 @@ use crate::Result;
 /// Registers aggregate functions on the connection.
 pub fn register(connection: &Connection) -> Result<()> {
     // STRING_AGG(value, separator) — Concatenate strings with separator
-    connection.create_aggregate_function(
-        "string_agg",
-        2,
-        FunctionFlags::SQLITE_UTF8,
-        StringAgg,
-    )?;
+    connection.create_aggregate_function("string_agg", 2, FunctionFlags::SQLITE_UTF8, StringAgg)?;
 
     // JSON_AGG(value) — Aggregate values into a JSON array
-    connection.create_aggregate_function(
-        "json_agg",
-        1,
-        FunctionFlags::SQLITE_UTF8,
-        JsonAgg,
-    )?;
+    connection.create_aggregate_function("json_agg", 1, FunctionFlags::SQLITE_UTF8, JsonAgg)?;
 
     // JSON_OBJECT_AGG(key, value) — Aggregate key-value pairs into JSON object
     connection.create_aggregate_function(
@@ -37,58 +27,23 @@ pub fn register(connection: &Connection) -> Result<()> {
     )?;
 
     // ARRAY_AGG(value) — Aggregate values into JSON array (alias for json_agg)
-    connection.create_aggregate_function(
-        "array_agg",
-        1,
-        FunctionFlags::SQLITE_UTF8,
-        JsonAgg,
-    )?;
+    connection.create_aggregate_function("array_agg", 1, FunctionFlags::SQLITE_UTF8, JsonAgg)?;
 
     // BIT_AND(integer) — Bitwise AND aggregate
-    connection.create_aggregate_function(
-        "bit_and",
-        1,
-        FunctionFlags::SQLITE_UTF8,
-        BitAnd,
-    )?;
+    connection.create_aggregate_function("bit_and", 1, FunctionFlags::SQLITE_UTF8, BitAnd)?;
 
     // BIT_OR(integer) — Bitwise OR aggregate
-    connection.create_aggregate_function(
-        "bit_or",
-        1,
-        FunctionFlags::SQLITE_UTF8,
-        BitOr,
-    )?;
+    connection.create_aggregate_function("bit_or", 1, FunctionFlags::SQLITE_UTF8, BitOr)?;
 
     // BIT_XOR(integer) — Bitwise XOR aggregate
-    connection.create_aggregate_function(
-        "bit_xor",
-        1,
-        FunctionFlags::SQLITE_UTF8,
-        BitXor,
-    )?;
+    connection.create_aggregate_function("bit_xor", 1, FunctionFlags::SQLITE_UTF8, BitXor)?;
 
     // BOOL_AND(boolean) / EVERY(boolean) — Logical AND aggregate
-    connection.create_aggregate_function(
-        "bool_and",
-        1,
-        FunctionFlags::SQLITE_UTF8,
-        BoolAnd,
-    )?;
-    connection.create_aggregate_function(
-        "every",
-        1,
-        FunctionFlags::SQLITE_UTF8,
-        BoolAnd,
-    )?;
+    connection.create_aggregate_function("bool_and", 1, FunctionFlags::SQLITE_UTF8, BoolAnd)?;
+    connection.create_aggregate_function("every", 1, FunctionFlags::SQLITE_UTF8, BoolAnd)?;
 
     // BOOL_OR(boolean) — Logical OR aggregate
-    connection.create_aggregate_function(
-        "bool_or",
-        1,
-        FunctionFlags::SQLITE_UTF8,
-        BoolOr,
-    )?;
+    connection.create_aggregate_function("bool_or", 1, FunctionFlags::SQLITE_UTF8, BoolOr)?;
 
     Ok(())
 }
@@ -98,7 +53,10 @@ pub fn register(connection: &Connection) -> Result<()> {
 struct StringAgg;
 
 impl Aggregate<(Vec<String>, Option<String>), Option<String>> for StringAgg {
-    fn init(&self, _ctx: &mut rusqlite::functions::Context<'_>) -> rusqlite::Result<(Vec<String>, Option<String>)> {
+    fn init(
+        &self,
+        _ctx: &mut rusqlite::functions::Context<'_>,
+    ) -> rusqlite::Result<(Vec<String>, Option<String>)> {
         Ok((Vec::new(), None))
     }
 
@@ -156,9 +114,10 @@ impl Aggregate<Vec<Value>, Option<String>> for JsonAgg {
                 // Try to parse as JSON first
                 serde_json::from_str(&s).unwrap_or_else(|_| Value::String(s.into_owned()))
             }
-            rusqlite::types::ValueRef::Blob(b) => {
-                Value::String(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b))
-            }
+            rusqlite::types::ValueRef::Blob(b) => Value::String(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                b,
+            )),
         };
         acc.push(value);
         Ok(())
@@ -416,11 +375,9 @@ mod tests {
     fn json_agg_creates_array() {
         let conn = setup();
         let result: String = conn
-            .query_row(
-                "SELECT json_agg(value) FROM test_data",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT json_agg(value) FROM test_data", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed.len(), 3);
@@ -447,23 +404,17 @@ mod tests {
         let conn = setup();
         // 10 & 20 & 30 = 0 (in binary: 01010 & 10100 & 11110)
         let result: i64 = conn
-            .query_row("SELECT bit_and(value) FROM test_data", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT bit_and(value) FROM test_data", [], |row| row.get(0))
             .unwrap();
         assert_eq!(result, 10 & 20 & 30);
 
         let result: i64 = conn
-            .query_row("SELECT bit_or(value) FROM test_data", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT bit_or(value) FROM test_data", [], |row| row.get(0))
             .unwrap();
         assert_eq!(result, 10 | 20 | 30);
 
         let result: i64 = conn
-            .query_row("SELECT bit_xor(value) FROM test_data", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT bit_xor(value) FROM test_data", [], |row| row.get(0))
             .unwrap();
         assert_eq!(result, 10 ^ 20 ^ 30);
     }
@@ -473,9 +424,7 @@ mod tests {
         let conn = setup();
         // All flags: 1, 1, 0 → false
         let result: bool = conn
-            .query_row("SELECT bool_and(flag) FROM test_data", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT bool_and(flag) FROM test_data", [], |row| row.get(0))
             .unwrap();
         assert!(!result);
 
@@ -494,9 +443,7 @@ mod tests {
     fn bool_or_works() {
         let conn = setup();
         let result: bool = conn
-            .query_row("SELECT bool_or(flag) FROM test_data", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT bool_or(flag) FROM test_data", [], |row| row.get(0))
             .unwrap();
         assert!(result); // At least one is true
     }
@@ -505,11 +452,9 @@ mod tests {
     fn array_agg_is_json_agg_alias() {
         let conn = setup();
         let result: String = conn
-            .query_row(
-                "SELECT array_agg(name) FROM test_data",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT array_agg(name) FROM test_data", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed.len(), 3);

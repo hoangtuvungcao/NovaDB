@@ -6,9 +6,9 @@
 //! Supports both JSON float arrays `"[0.1, 0.2, 0.3]"` and packed 32-bit/64-bit
 //! float binary BLOBs.
 
+use rusqlite::Connection;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::types::ValueRef;
-use rusqlite::Connection;
 
 use crate::Result;
 

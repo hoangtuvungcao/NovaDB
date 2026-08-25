@@ -86,14 +86,21 @@ fn main() -> novadb_core::Result<()> {
          VALUES ('n3', 'Subscribed', 'Caught live', 3);",
     )?;
     if let Ok(live_change) = receiver.try_recv() {
-        println!("\nLive change: {} {}", live_change.table, live_change.row_id);
+        println!(
+            "\nLive change: {} {}",
+            live_change.table, live_change.row_id
+        );
     }
 
     // --- 8. Integrity check --------------------------------------------------
     let integrity = db.integrity_check()?;
     println!(
         "\nIntegrity: {}",
-        if integrity.ok { "OK" } else { "PROBLEMS DETECTED" }
+        if integrity.ok {
+            "OK"
+        } else {
+            "PROBLEMS DETECTED"
+        }
     );
 
     // --- 9. Backup -----------------------------------------------------------

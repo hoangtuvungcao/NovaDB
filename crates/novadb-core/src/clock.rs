@@ -224,16 +224,13 @@ mod tests {
             "0000000000000001",
             "-00000001",
             "0000000000000001-",
-            "000000000000000g-00000001",   // non-hex
-            "0000000000000001-0000000g",   // non-hex
-            "00000000000000001-00000001",  // too long physical
-            "0000000000000001-000000001",  // too long counter
+            "000000000000000g-00000001",  // non-hex
+            "0000000000000001-0000000g",  // non-hex
+            "00000000000000001-00000001", // too long physical
+            "0000000000000001-000000001", // too long counter
         ];
         for input in invalids {
-            assert!(
-                parse_timestamp(input).is_err(),
-                "should reject: {input:?}"
-            );
+            assert!(parse_timestamp(input).is_err(), "should reject: {input:?}");
         }
     }
 
@@ -243,4 +240,3 @@ mod tests {
         assert_eq!(ts.len(), 25); // 16 + '-' + 8
     }
 }
-

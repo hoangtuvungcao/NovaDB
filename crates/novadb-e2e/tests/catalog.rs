@@ -46,10 +46,7 @@ fn catalog_backup_produces_valid_database() {
     assert!(report.size_bytes > 0);
 
     // Open the backup and verify data
-    let backup_path = directory
-        .path()
-        .join("data")
-        .join(&report.backup_id);
+    let backup_path = directory.path().join("data").join(&report.backup_id);
     let backup = NovaDb::open(backup_path).expect("open backup");
     let result = backup
         .query("SELECT value FROM items WHERE id = 1")

@@ -5,131 +5,101 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::functions::FunctionFlags;
 use rusqlite::Connection;
+use rusqlite::functions::FunctionFlags;
 
 use crate::Result;
 
 /// Registers date/time functions on the connection.
 pub fn register(connection: &Connection) -> Result<()> {
     // NOW_MS() — Current Unix timestamp in milliseconds
-    connection.create_scalar_function(
-        "now_ms",
-        0,
-        FunctionFlags::SQLITE_UTF8,
-        |_ctx| {
-            Ok(SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0))
-        },
-    )?;
+    connection.create_scalar_function("now_ms", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        Ok(SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0))
+    })?;
 
     // NOW_US() — Current Unix timestamp in microseconds
-    connection.create_scalar_function(
-        "now_us",
-        0,
-        FunctionFlags::SQLITE_UTF8,
-        |_ctx| {
-            Ok(SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_micros() as i64)
-                .unwrap_or(0))
-        },
-    )?;
+    connection.create_scalar_function("now_us", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        Ok(SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or(0))
+    })?;
 
     // NOW_ISO() — Current time as ISO 8601 string (UTC)
-    connection.create_scalar_function(
-        "now_iso",
-        0,
-        FunctionFlags::SQLITE_UTF8,
-        |_ctx| {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default();
-            let secs = now.as_secs();
-            let millis = now.subsec_millis();
+    connection.create_scalar_function("now_iso", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs();
+        let millis = now.subsec_millis();
 
-            // Calculate date components from epoch
-            let days = secs / 86_400;
-            let time_secs = secs % 86_400;
-            let hours = time_secs / 3_600;
-            let minutes = (time_secs % 3_600) / 60;
-            let seconds = time_secs % 60;
+        // Calculate date components from epoch
+        let days = secs / 86_400;
+        let time_secs = secs % 86_400;
+        let hours = time_secs / 3_600;
+        let minutes = (time_secs % 3_600) / 60;
+        let seconds = time_secs % 60;
 
-            // Days to Y-M-D (civil calendar from Unix epoch)
-            let (year, month, day) = days_to_ymd(days as i64);
+        // Days to Y-M-D (civil calendar from Unix epoch)
+        let (year, month, day) = days_to_ymd(days as i64);
 
-            Ok(format!(
-                "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
-            ))
-        },
-    )?;
+        Ok(format!(
+            "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
+        ))
+    })?;
 
     // GETDATE(), SYSDATETIME(), NOW() — SQL Server / MySQL aliases
-    connection.create_scalar_function(
-        "getdate",
-        0,
-        FunctionFlags::SQLITE_UTF8,
-        |_ctx| {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default();
-            let secs = now.as_secs();
-            let millis = now.subsec_millis();
-            let days = secs / 86_400;
-            let time_secs = secs % 86_400;
-            let hours = time_secs / 3_600;
-            let minutes = (time_secs % 3_600) / 60;
-            let seconds = time_secs % 60;
-            let (year, month, day) = days_to_ymd(days as i64);
-            Ok(format!(
-                "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
-            ))
-        },
-    )?;
-    connection.create_scalar_function(
-        "sysdatetime",
-        0,
-        FunctionFlags::SQLITE_UTF8,
-        |_ctx| {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default();
-            let secs = now.as_secs();
-            let millis = now.subsec_millis();
-            let days = secs / 86_400;
-            let time_secs = secs % 86_400;
-            let hours = time_secs / 3_600;
-            let minutes = (time_secs % 3_600) / 60;
-            let seconds = time_secs % 60;
-            let (year, month, day) = days_to_ymd(days as i64);
-            Ok(format!(
-                "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
-            ))
-        },
-    )?;
-    connection.create_scalar_function(
-        "now",
-        0,
-        FunctionFlags::SQLITE_UTF8,
-        |_ctx| {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default();
-            let secs = now.as_secs();
-            let millis = now.subsec_millis();
-            let days = secs / 86_400;
-            let time_secs = secs % 86_400;
-            let hours = time_secs / 3_600;
-            let minutes = (time_secs % 3_600) / 60;
-            let seconds = time_secs % 60;
-            let (year, month, day) = days_to_ymd(days as i64);
-            Ok(format!(
-                "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
-            ))
-        },
-    )?;
+    connection.create_scalar_function("getdate", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs();
+        let millis = now.subsec_millis();
+        let days = secs / 86_400;
+        let time_secs = secs % 86_400;
+        let hours = time_secs / 3_600;
+        let minutes = (time_secs % 3_600) / 60;
+        let seconds = time_secs % 60;
+        let (year, month, day) = days_to_ymd(days as i64);
+        Ok(format!(
+            "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
+        ))
+    })?;
+    connection.create_scalar_function("sysdatetime", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs();
+        let millis = now.subsec_millis();
+        let days = secs / 86_400;
+        let time_secs = secs % 86_400;
+        let hours = time_secs / 3_600;
+        let minutes = (time_secs % 3_600) / 60;
+        let seconds = time_secs % 60;
+        let (year, month, day) = days_to_ymd(days as i64);
+        Ok(format!(
+            "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
+        ))
+    })?;
+    connection.create_scalar_function("now", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs();
+        let millis = now.subsec_millis();
+        let days = secs / 86_400;
+        let time_secs = secs % 86_400;
+        let hours = time_secs / 3_600;
+        let minutes = (time_secs % 3_600) / 60;
+        let seconds = time_secs % 60;
+        let (year, month, day) = days_to_ymd(days as i64);
+        Ok(format!(
+            "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
+        ))
+    })?;
 
     // EPOCH_MS(iso_text) — Convert ISO 8601 string to Unix ms
     connection.create_scalar_function(
@@ -249,12 +219,8 @@ pub fn register(connection: &Connection) -> Result<()> {
             let (year, month, _day) = days_to_ymd(days);
 
             let truncated_ms = match part.to_lowercase().as_str() {
-                "year" => {
-                    ymd_to_days(year as i32, 1, 1) * 86_400_000
-                }
-                "month" => {
-                    ymd_to_days(year as i32, month as u32, 1) * 86_400_000
-                }
+                "year" => ymd_to_days(year as i32, 1, 1) * 86_400_000,
+                "month" => ymd_to_days(year as i32, month as u32, 1) * 86_400_000,
                 "day" => days * 86_400_000,
                 "hour" => {
                     let hours = time_secs / 3_600;
@@ -423,34 +389,55 @@ pub fn register(connection: &Connection) -> Result<()> {
     )?;
 
     // SYSDATETIMEOFFSET() -> string
-    connection.create_scalar_function("sysdatetimeoffset", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
-        Ok(format!("{}+07:00", epoch_ms_to_iso(now)))
-    })?;
+    connection.create_scalar_function(
+        "sysdatetimeoffset",
+        0,
+        FunctionFlags::SQLITE_UTF8,
+        |_ctx| {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            Ok(format!("{}+07:00", epoch_ms_to_iso(now)))
+        },
+    )?;
 
     // DATEFROMPARTS(year, month, day) -> 'YYYY-MM-DD'
-    connection.create_scalar_function("datefromparts", 3, FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
-        let y: i64 = ctx.get(0)?;
-        let m: i64 = ctx.get(1)?;
-        let d: i64 = ctx.get(2)?;
-        Ok(format!("{y:04}-{m:02}-{d:02}"))
-    })?;
+    connection.create_scalar_function(
+        "datefromparts",
+        3,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let y: i64 = ctx.get(0)?;
+            let m: i64 = ctx.get(1)?;
+            let d: i64 = ctx.get(2)?;
+            Ok(format!("{y:04}-{m:02}-{d:02}"))
+        },
+    )?;
 
     // EOMONTH(date_str) -> 'YYYY-MM-DD' (last day of month)
-    connection.create_scalar_function("eomonth", 1, FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
-        let text: String = ctx.get(0)?;
-        if let Some(ms) = parse_iso8601_to_epoch_ms(&text) {
-            let days = (ms / 1_000) / 86_400;
-            let (y, m, _) = days_to_ymd(days);
-            let next_m_y = if m == 12 { y as i32 + 1 } else { y as i32 };
-            let next_m = if m == 12 { 1u32 } else { (m + 1) as u32 };
-            let first_day_next_month = ymd_to_days(next_m_y, next_m, 1);
-            let last_day = days_to_ymd(first_day_next_month - 1);
-            Ok(Some(format!("{:04}-{:02}-{:02}", last_day.0, last_day.1, last_day.2)))
-        } else {
-            Ok(None)
-        }
-    })?;
+    connection.create_scalar_function(
+        "eomonth",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let text: String = ctx.get(0)?;
+            if let Some(ms) = parse_iso8601_to_epoch_ms(&text) {
+                let days = (ms / 1_000) / 86_400;
+                let (y, m, _) = days_to_ymd(days);
+                let next_m_y = if m == 12 { y as i32 + 1 } else { y as i32 };
+                let next_m = if m == 12 { 1u32 } else { (m + 1) as u32 };
+                let first_day_next_month = ymd_to_days(next_m_y, next_m, 1);
+                let last_day = days_to_ymd(first_day_next_month - 1);
+                Ok(Some(format!(
+                    "{:04}-{:02}-{:02}",
+                    last_day.0, last_day.1, last_day.2
+                )))
+            } else {
+                Ok(None)
+            }
+        },
+    )?;
 
     // DB_NAME() -> 'NovaSqlServerLab'
     connection.create_scalar_function("db_name", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
@@ -632,9 +619,7 @@ fn epoch_ms_to_iso(ms: i64) -> String {
     let minutes = (time_secs % 3_600) / 60;
     let seconds = time_secs % 60;
     let (year, month, day) = days_to_ymd(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{frac_ms:03}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{frac_ms:03}Z")
 }
 
 #[cfg(test)]
@@ -673,11 +658,9 @@ mod tests {
         let conn = setup();
         let original = "2024-06-15T14:30:45.123Z";
         let roundtripped: String = conn
-            .query_row(
-                "SELECT from_epoch_ms(epoch_ms(?1))",
-                [original],
-                |row| row.get(0),
-            )
+            .query_row("SELECT from_epoch_ms(epoch_ms(?1))", [original], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(roundtripped, original);
     }

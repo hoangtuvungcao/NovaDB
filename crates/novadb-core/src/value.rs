@@ -38,9 +38,7 @@ pub(crate) fn value_ref_to_json_text(value: ValueRef<'_>) -> Result<String> {
         ValueRef::Text(text) => Value::String(
             std::str::from_utf8(text)
                 .map_err(|_| {
-                    Error::InvalidChange(
-                        "synchronized TEXT values must contain valid UTF-8".into(),
-                    )
+                    Error::InvalidChange("synchronized TEXT values must contain valid UTF-8".into())
                 })?
                 .to_owned(),
         ),
@@ -299,7 +297,11 @@ mod tests {
 
     #[test]
     fn json_to_sql_tagged_real_special_values() {
-        for (label, expected) in [("nan", f64::NAN), ("infinity", f64::INFINITY), ("-infinity", f64::NEG_INFINITY)] {
+        for (label, expected) in [
+            ("nan", f64::NAN),
+            ("infinity", f64::INFINITY),
+            ("-infinity", f64::NEG_INFINITY),
+        ] {
             let json_val = json!({"$novadb_type": "real", "value": label});
             let result = json_to_sql_value(&json_val).unwrap();
             match result {
@@ -336,10 +338,7 @@ mod tests {
         assert_eq!(value_ref_to_json(ValueRef::Null), Value::Null);
         assert_eq!(value_ref_to_json(ValueRef::Integer(42)), json!(42));
         assert_eq!(value_ref_to_json(ValueRef::Real(2.5)), json!(2.5));
-        assert_eq!(
-            value_ref_to_json(ValueRef::Text(b"hello")),
-            json!("hello")
-        );
+        assert_eq!(value_ref_to_json(ValueRef::Text(b"hello")), json!("hello"));
         let blob = value_ref_to_json(ValueRef::Blob(b"\x00\x01"));
         assert_eq!(blob["$novadb_type"], "blob");
         assert!(blob["base64"].is_string());
@@ -358,4 +357,3 @@ mod tests {
         assert_eq!(neg_inf["value"], "-infinity");
     }
 }
-

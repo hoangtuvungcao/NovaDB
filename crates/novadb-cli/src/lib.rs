@@ -418,14 +418,23 @@ fn import(args: &ImportArgs) -> Result<()> {
     let ext = args.file.extension().and_then(|e| e.to_str()).unwrap_or("");
     if ext.eq_ignore_ascii_case("sql") {
         db.execute_batch(&content)?;
-        println!("[SUCCESS] Executed SQL script '{}' in database '{}'", args.file.display(), args.path.display());
+        println!(
+            "[SUCCESS] Executed SQL script '{}' in database '{}'",
+            args.file.display(),
+            args.path.display()
+        );
         return Ok(());
     }
 
     let mut lines = content.lines().filter(|l| !l.trim().is_empty());
-    let header_line = lines.next().ok_or_else(|| anyhow::anyhow!("CSV file is empty"))?;
+    let header_line = lines
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("CSV file is empty"))?;
 
-    let headers: Vec<&str> = header_line.split(args.delimiter).map(|s| s.trim()).collect();
+    let headers: Vec<&str> = header_line
+        .split(args.delimiter)
+        .map(|s| s.trim())
+        .collect();
     if headers.is_empty() {
         bail!("No headers found in CSV file");
     }
@@ -451,7 +460,9 @@ fn import(args: &ImportArgs) -> Result<()> {
                 let trimmed = v.trim().trim_matches('"');
                 if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
                     "NULL".to_string()
-                } else if trimmed.parse::<f64>().is_ok() && !trimmed.starts_with('0') || trimmed == "0" {
+                } else if trimmed.parse::<f64>().is_ok() && !trimmed.starts_with('0')
+                    || trimmed == "0"
+                {
                     trimmed.to_string()
                 } else {
                     format!("'{}'", trimmed.replace('\'', "''"))
@@ -472,7 +483,12 @@ fn import(args: &ImportArgs) -> Result<()> {
         db.execute_batch(&batch_sql)?;
     }
 
-    println!("[SUCCESS] Imported {} record(s) into table '{}' from '{}'", count, args.table, args.file.display());
+    println!(
+        "[SUCCESS] Imported {} record(s) into table '{}' from '{}'",
+        count,
+        args.table,
+        args.file.display()
+    );
     Ok(())
 }
 
@@ -495,7 +511,11 @@ fn export(args: &ExportArgs) -> Result<()> {
     let db = NovaDb::open(&args.path)?;
     let result = db.query(&args.query)?;
 
-    let ext = args.output.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let ext = args
+        .output
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
 
     if ext.eq_ignore_ascii_case("json") {
         let json_str = serde_json::to_string_pretty(&result.rows)?;
@@ -504,24 +524,47 @@ fn export(args: &ExportArgs) -> Result<()> {
         let mut sql = String::new();
         sql.push_str("-- NovaDB SQL Export Dump\n");
         for row in &result.rows {
-            let cols = result.columns.iter().map(|c| format!("\"{}\"", c.replace('"', "\"\""))).collect::<Vec<_>>().join(", ");
-            let vals = result.columns.iter().map(|c| {
-                match row.get(c) {
+            let cols = result
+                .columns
+                .iter()
+                .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let vals = result
+                .columns
+                .iter()
+                .map(|c| match row.get(c) {
                     Some(serde_json::Value::Null) | None => "NULL".to_string(),
                     Some(serde_json::Value::Number(n)) => n.to_string(),
-                    Some(serde_json::Value::Bool(b)) => if *b { "1".to_string() } else { "0".to_string() },
+                    Some(serde_json::Value::Bool(b)) => {
+                        if *b {
+                            "1".to_string()
+                        } else {
+                            "0".to_string()
+                        }
+                    }
                     Some(serde_json::Value::String(s)) => format!("'{}'", s.replace('\'', "''")),
                     Some(v) => format!("'{}'", v.to_string().replace('\'', "''")),
-                }
-            }).collect::<Vec<_>>().join(", ");
-            sql.push_str(&format!("INSERT INTO exported_data ({cols}) VALUES ({vals});\n"));
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            sql.push_str(&format!(
+                "INSERT INTO exported_data ({cols}) VALUES ({vals});\n"
+            ));
         }
         std::fs::write(&args.output, sql)?;
     } else {
         // Default to CSV format
         let mut csv = String::new();
         // Header
-        csv.push_str(&result.columns.iter().map(|c| format!("\"{}\"", c.replace('"', "\"\""))).collect::<Vec<_>>().join(","));
+        csv.push_str(
+            &result
+                .columns
+                .iter()
+                .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         csv.push('\n');
 
         // Rows
@@ -541,7 +584,11 @@ fn export(args: &ExportArgs) -> Result<()> {
         std::fs::write(&args.output, csv)?;
     }
 
-    println!("[SUCCESS] Exported {} row(s) to '{}'", result.rows.len(), args.output.display());
+    println!(
+        "[SUCCESS] Exported {} row(s) to '{}'",
+        result.rows.len(),
+        args.output.display()
+    );
     Ok(())
 }
 
@@ -558,7 +605,10 @@ fn console(args: &ConsoleArgs) -> Result<()> {
     let db = if args.path.exists() {
         NovaDb::open(&args.path)?
     } else {
-        println!("[INFO] Database file '{}' does not exist. Creating new database...", args.path.display());
+        println!(
+            "[INFO] Database file '{}' does not exist. Creating new database...",
+            args.path.display()
+        );
         NovaDb::open(&args.path)?
     };
 
@@ -667,10 +717,22 @@ fn console(args: &ConsoleArgs) -> Result<()> {
             let sql_to_run = current_statement.trim().to_string();
             current_statement.clear();
 
-            let is_query = sql_to_run.trim_start().to_ascii_uppercase().starts_with("SELECT")
-                || sql_to_run.trim_start().to_ascii_uppercase().starts_with("WITH")
-                || sql_to_run.trim_start().to_ascii_uppercase().starts_with("EXPLAIN")
-                || sql_to_run.trim_start().to_ascii_uppercase().starts_with("PRAGMA");
+            let is_query = sql_to_run
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("SELECT")
+                || sql_to_run
+                    .trim_start()
+                    .to_ascii_uppercase()
+                    .starts_with("WITH")
+                || sql_to_run
+                    .trim_start()
+                    .to_ascii_uppercase()
+                    .starts_with("EXPLAIN")
+                || sql_to_run
+                    .trim_start()
+                    .to_ascii_uppercase()
+                    .starts_with("PRAGMA");
 
             let start = std::time::Instant::now();
 
@@ -809,7 +871,9 @@ async fn serve(args: &ServeArgs) -> Result<()> {
         default_pull_limit: novadb_server::DEFAULT_PULL_LIMIT,
         max_pull_limit: novadb_server::DEFAULT_MAX_PULL_LIMIT,
     };
-    config.validate().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    config
+        .validate()
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     if let Some(pg_addr) = args.pg_listen {
         let pg_db_path = args.data_dir.join("__default__.novadb");
@@ -829,7 +893,9 @@ async fn serve(args: &ServeArgs) -> Result<()> {
             }
         }
     } else {
-        novadb_server::serve(config).await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        novadb_server::serve(config)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     }
     Ok(())
 }
@@ -1283,8 +1349,9 @@ fn validate_database_name(name: &str) -> Result<()> {
     let valid_first = bytes
         .next()
         .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
-    let valid_rest = bytes
-        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_'));
+    let valid_rest = bytes.all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+    });
     if valid_length && valid_first && valid_rest {
         Ok(())
     } else {
@@ -1969,14 +2036,14 @@ mod tests {
     #[test]
     fn validate_database_name_rejects_invalid_ids() {
         for invalid in [
-            "",                   // empty
-            ".hidden",            // starts with dot
-            "-starts-dash",       // starts with dash
-            "_starts_underscore", // starts with underscore
-            "has space",          // contains space
-            "has.dot",            // contains dot
-            "has/slash",          // contains slash
-            "UPPER",             // uppercase
+            "",                                        // empty
+            ".hidden",                                 // starts with dot
+            "-starts-dash",                            // starts with dash
+            "_starts_underscore",                      // starts with underscore
+            "has space",                               // contains space
+            "has.dot",                                 // contains dot
+            "has/slash",                               // contains slash
+            "UPPER",                                   // uppercase
             &"a".repeat(MAX_DATABASE_NAME_LENGTH + 1), // too long
         ] {
             assert!(
@@ -1990,10 +2057,7 @@ mod tests {
     fn init_creates_a_database_file() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("new.db");
-        init(&InitArgs {
-            path: path.clone(),
-        })
-        .unwrap();
+        init(&InitArgs { path: path.clone() }).unwrap();
         assert!(path.exists());
         // Can be opened as a valid NovaDB database
         let db = NovaDb::open(&path).unwrap();
@@ -2067,4 +2131,3 @@ mod tests {
         assert_eq!(latest_local_cursor(42, &[]), 42);
     }
 }
-

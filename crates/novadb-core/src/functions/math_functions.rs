@@ -1,7 +1,7 @@
 //! Extended Mathematical, Trigonometric, and Geospatial Functions for NovaDB.
 
-use rusqlite::functions::FunctionFlags;
 use rusqlite::Connection;
+use rusqlite::functions::FunctionFlags;
 
 use crate::Result;
 
@@ -10,9 +10,7 @@ pub fn register(connection: &Connection) -> Result<()> {
     let deterministic = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
 
     // PI() -> 3.141592653589793
-    connection.create_scalar_function("pi", 0, deterministic, |_ctx| {
-        Ok(std::f64::consts::PI)
-    })?;
+    connection.create_scalar_function("pi", 0, deterministic, |_ctx| Ok(std::f64::consts::PI))?;
 
     // POWER(x, y) / POW(x, y)
     connection.create_scalar_function("power", 2, deterministic, |ctx| {
@@ -30,7 +28,11 @@ pub fn register(connection: &Connection) -> Result<()> {
     connection.create_scalar_function("sqrt", 1, deterministic, |ctx| {
         let x: f64 = ctx.get(0)?;
         if x < 0.0 {
-            return Err(rusqlite::Error::UserFunctionError("cannot calculate sqrt of negative number".to_string().into()));
+            return Err(rusqlite::Error::UserFunctionError(
+                "cannot calculate sqrt of negative number"
+                    .to_string()
+                    .into(),
+            ));
         }
         Ok(x.sqrt())
     })?;
@@ -51,7 +53,9 @@ pub fn register(connection: &Connection) -> Result<()> {
     connection.create_scalar_function("ln", 1, deterministic, |ctx| {
         let x: f64 = ctx.get(0)?;
         if x <= 0.0 {
-            return Err(rusqlite::Error::UserFunctionError("ln argument must be positive".to_string().into()));
+            return Err(rusqlite::Error::UserFunctionError(
+                "ln argument must be positive".to_string().into(),
+            ));
         }
         Ok(x.ln())
     })?;
@@ -60,7 +64,9 @@ pub fn register(connection: &Connection) -> Result<()> {
     connection.create_scalar_function("log10", 1, deterministic, |ctx| {
         let x: f64 = ctx.get(0)?;
         if x <= 0.0 {
-            return Err(rusqlite::Error::UserFunctionError("log10 argument must be positive".to_string().into()));
+            return Err(rusqlite::Error::UserFunctionError(
+                "log10 argument must be positive".to_string().into(),
+            ));
         }
         Ok(x.log10())
     })?;
@@ -69,7 +75,9 @@ pub fn register(connection: &Connection) -> Result<()> {
     connection.create_scalar_function("log2", 1, deterministic, |ctx| {
         let x: f64 = ctx.get(0)?;
         if x <= 0.0 {
-            return Err(rusqlite::Error::UserFunctionError("log2 argument must be positive".to_string().into()));
+            return Err(rusqlite::Error::UserFunctionError(
+                "log2 argument must be positive".to_string().into(),
+            ));
         }
         Ok(x.log2())
     })?;
@@ -152,7 +160,9 @@ pub fn register(connection: &Connection) -> Result<()> {
         let x: i64 = ctx.get(0)?;
         let y: i64 = ctx.get(1)?;
         if y == 0 {
-            return Err(rusqlite::Error::UserFunctionError("division by zero in mod".to_string().into()));
+            return Err(rusqlite::Error::UserFunctionError(
+                "division by zero in mod".to_string().into(),
+            ));
         }
         Ok(x % y)
     })?;
@@ -285,12 +295,8 @@ pub fn register(connection: &Connection) -> Result<()> {
 
     // RAND() / RAND(seed)
     let non_deterministic = FunctionFlags::SQLITE_UTF8;
-    connection.create_scalar_function("rand", 0, non_deterministic, |_ctx| {
-        Ok(0.54321f64)
-    })?;
-    connection.create_scalar_function("rand", 1, deterministic, |_ctx| {
-        Ok(0.54321f64)
-    })?;
+    connection.create_scalar_function("rand", 0, non_deterministic, |_ctx| Ok(0.54321f64))?;
+    connection.create_scalar_function("rand", 1, deterministic, |_ctx| Ok(0.54321f64))?;
 
     // ISNUMERIC(val)
     connection.create_scalar_function("isnumeric", 1, deterministic, |ctx| {
@@ -308,7 +314,8 @@ pub fn register(connection: &Connection) -> Result<()> {
     })?;
 
     // T-SQL System Metadata Functions
-    connection.create_scalar_function("databasepropertyex", -1, deterministic, |_ctx| Ok("ONLINE"))?;
+    connection
+        .create_scalar_function("databasepropertyex", -1, deterministic, |_ctx| Ok("ONLINE"))?;
     connection.create_scalar_function("sessionproperty", -1, deterministic, |_ctx| Ok(1i64))?;
     connection.create_scalar_function("object_id", -1, deterministic, |_ctx| Ok(1001i64))?;
     connection.create_scalar_function("object_name", -1, deterministic, |_ctx| Ok("Customers"))?;
@@ -342,16 +349,24 @@ mod tests {
         let pi: f64 = conn.query_row("SELECT pi()", [], |r| r.get(0)).unwrap();
         assert!((pi - std::f64::consts::PI).abs() < 1e-10);
 
-        let p: f64 = conn.query_row("SELECT power(2.0, 3.0)", [], |r| r.get(0)).unwrap();
+        let p: f64 = conn
+            .query_row("SELECT power(2.0, 3.0)", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(p, 8.0);
 
-        let sq: f64 = conn.query_row("SELECT sqrt(16.0)", [], |r| r.get(0)).unwrap();
+        let sq: f64 = conn
+            .query_row("SELECT sqrt(16.0)", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(sq, 4.0);
 
-        let s: i64 = conn.query_row("SELECT sign(-42)", [], |r| r.get(0)).unwrap();
+        let s: i64 = conn
+            .query_row("SELECT sign(-42)", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(s, -1);
 
-        let m: i64 = conn.query_row("SELECT mod(10, 3)", [], |r| r.get(0)).unwrap();
+        let m: i64 = conn
+            .query_row("SELECT mod(10, 3)", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(m, 1);
     }
 
@@ -359,11 +374,13 @@ mod tests {
     fn test_geospatial_haversine() {
         let conn = setup();
         // Hanoi (21.0285, 105.8542) to HCMC (10.8231, 106.6297) ~ 1130-1150 km
-        let dist_km: f64 = conn.query_row(
-            "SELECT geo_distance_km(21.0285, 105.8542, 10.8231, 106.6297)",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let dist_km: f64 = conn
+            .query_row(
+                "SELECT geo_distance_km(21.0285, 105.8542, 10.8231, 106.6297)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert!(dist_km > 1100.0 && dist_km < 1200.0);
     }
 }

@@ -82,10 +82,7 @@ mod tests {
                 Error::ReservedIdentifier("_novadb_meta".into()),
                 "reserved for NovaDB",
             ),
-            (
-                Error::TableNotFound("missing".into()),
-                "does not exist",
-            ),
+            (Error::TableNotFound("missing".into()), "does not exist"),
             (
                 Error::ColumnNotFound {
                     table: "notes".into(),
@@ -93,10 +90,7 @@ mod tests {
                 },
                 "does not exist",
             ),
-            (
-                Error::SyncNotEnabled("notes".into()),
-                "not sync-enabled",
-            ),
+            (Error::SyncNotEnabled("notes".into()), "not sync-enabled"),
             (
                 Error::UnsupportedSchema("composite key".into()),
                 "unsupported sync schema",
@@ -116,10 +110,7 @@ mod tests {
                 },
                 "in the future",
             ),
-            (
-                Error::TransactionControlNotAllowed,
-                "transaction-control",
-            ),
+            (Error::TransactionControlNotAllowed, "transaction-control"),
             (
                 Error::ProtectedSchemaChangeNotAllowed,
                 "protected internal schema",

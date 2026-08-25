@@ -46,8 +46,16 @@ mod tests {
     #[test]
     fn valid_identifiers_are_accepted() {
         for valid in [
-            "a", "A", "_private", "notes", "Table1", "my_table_2",
-            "_", "__double", "UPPERCASE", "mixedCase",
+            "a",
+            "A",
+            "_private",
+            "notes",
+            "Table1",
+            "my_table_2",
+            "_",
+            "__double",
+            "UPPERCASE",
+            "mixedCase",
         ] {
             validate_identifier(valid).unwrap_or_else(|_| panic!("should accept: {valid}"));
         }
@@ -77,10 +85,7 @@ mod tests {
     #[test]
     fn quote_schema_identifier_escapes_double_quotes() {
         assert_eq!(quote_schema_identifier("normal"), "\"normal\"");
-        assert_eq!(
-            quote_schema_identifier("has\"quote"),
-            "\"has\"\"quote\""
-        );
+        assert_eq!(quote_schema_identifier("has\"quote"), "\"has\"\"quote\"");
     }
 
     #[test]
@@ -100,4 +105,3 @@ mod tests {
         assert!(quote_identifier("drop;table").is_err());
     }
 }
-

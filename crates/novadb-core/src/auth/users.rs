@@ -136,10 +136,8 @@ pub fn activate_user(connection: &Connection, username: &str) -> Result<bool> {
 
 /// Drop a user entirely.
 pub fn drop_user(connection: &Connection, username: &str) -> Result<bool> {
-    let deleted = connection.execute(
-        "DELETE FROM _novadb_users WHERE username = ?1",
-        [username],
-    )?;
+    let deleted =
+        connection.execute("DELETE FROM _novadb_users WHERE username = ?1", [username])?;
     Ok(deleted > 0)
 }
 

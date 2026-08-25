@@ -3,8 +3,8 @@
 //! Provides `REGEXP`, `ILIKE`, `REVERSE`, `LEFT`, `RIGHT`, `SPLIT_PART`,
 //! `REPEAT`, `LPAD`, `RPAD`, `MD5`, `SHA256`, and encoding functions.
 
-use rusqlite::functions::FunctionFlags;
 use rusqlite::Connection;
+use rusqlite::functions::FunctionFlags;
 use sha2::{Digest, Sha256};
 
 use crate::Result;
@@ -173,7 +173,10 @@ pub fn register(connection: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let text: String = ctx.get(0)?;
-            let length: usize = { let v: i64 = ctx.get(1)?; v.max(0) as usize };
+            let length: usize = {
+                let v: i64 = ctx.get(1)?;
+                v.max(0) as usize
+            };
             let fill: String = ctx.get(2)?;
             if fill.is_empty() || text.chars().count() >= length {
                 return Ok(text.chars().take(length).collect::<String>());
@@ -196,7 +199,10 @@ pub fn register(connection: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let text: String = ctx.get(0)?;
-            let length: usize = { let v: i64 = ctx.get(1)?; v.max(0) as usize };
+            let length: usize = {
+                let v: i64 = ctx.get(1)?;
+                v.max(0) as usize
+            };
             let fill: String = ctx.get(2)?;
             if fill.is_empty() || text.chars().count() >= length {
                 return Ok(text.chars().take(length).collect::<String>());
@@ -332,12 +338,8 @@ fn ilike_match_inner(text: &[char], pattern: &[char], ti: usize, pi: usize) -> b
             }
             false
         }
-        '_' => {
-            ti < text.len() && ilike_match_inner(text, pattern, ti + 1, pi + 1)
-        }
-        c => {
-            ti < text.len() && text[ti] == c && ilike_match_inner(text, pattern, ti + 1, pi + 1)
-        }
+        '_' => ti < text.len() && ilike_match_inner(text, pattern, ti + 1, pi + 1),
+        c => ti < text.len() && text[ti] == c && ilike_match_inner(text, pattern, ti + 1, pi + 1),
     }
 }
 
@@ -394,11 +396,7 @@ mod tests {
     fn split_part_works() {
         let conn = setup();
         let part: String = conn
-            .query_row(
-                "SELECT split_part('a.b.c', '.', 2)",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT split_part('a.b.c', '.', 2)", [], |row| row.get(0))
             .unwrap();
         assert_eq!(part, "b");
     }

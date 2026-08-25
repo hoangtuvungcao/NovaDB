@@ -4,8 +4,8 @@
 //! `JSON_MERGE_PATCH()`, `JSON_CONTAINS()`, `JSON_DEPTH()`, `JSON_VALID()`,
 //! and `JSON_SET_NESTED()`.
 
-use rusqlite::functions::FunctionFlags;
 use rusqlite::Connection;
+use rusqlite::functions::FunctionFlags;
 use serde_json::Value;
 
 use crate::Result;
@@ -49,7 +49,11 @@ pub fn register(connection: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             if let Ok(text) = ctx.get::<String>(0) {
-                Ok(if serde_json::from_str::<Value>(&text).is_ok() { 1i64 } else { 0i64 })
+                Ok(if serde_json::from_str::<Value>(&text).is_ok() {
+                    1i64
+                } else {
+                    0i64
+                })
             } else {
                 Ok(0i64)
             }
@@ -64,7 +68,13 @@ pub fn register(connection: &Connection) -> Result<()> {
         |ctx| {
             let text: String = ctx.get(0)?;
             let path: String = ctx.get(1)?;
-            let norm_path = if path.starts_with("$.") { &path[2..] } else if path.starts_with('$') { &path[1..] } else { &path };
+            let norm_path = if path.starts_with("$.") {
+                &path[2..]
+            } else if path.starts_with('$') {
+                &path[1..]
+            } else {
+                &path
+            };
             match serde_json::from_str::<Value>(&text) {
                 Ok(v) => {
                     let mut cur = &v;
@@ -88,7 +98,9 @@ pub fn register(connection: &Connection) -> Result<()> {
                                 Ok(rusqlite::types::Value::Text(n.to_string()))
                             }
                         }
-                        Value::Bool(b) => Ok(rusqlite::types::Value::Integer(if *b { 1 } else { 0 })),
+                        Value::Bool(b) => {
+                            Ok(rusqlite::types::Value::Integer(if *b { 1 } else { 0 }))
+                        }
                         Value::Null => Ok(rusqlite::types::Value::Null),
                         other => Ok(rusqlite::types::Value::Text(other.to_string())),
                     }
@@ -106,7 +118,13 @@ pub fn register(connection: &Connection) -> Result<()> {
         |ctx| {
             let text: String = ctx.get(0)?;
             let path: String = ctx.get(1)?;
-            let norm_path = if path.starts_with("$.") { &path[2..] } else if path.starts_with('$') { &path[1..] } else { &path };
+            let norm_path = if path.starts_with("$.") {
+                &path[2..]
+            } else if path.starts_with('$') {
+                &path[1..]
+            } else {
+                &path
+            };
             match serde_json::from_str::<Value>(&text) {
                 Ok(v) => {
                     let mut cur = &v;
@@ -322,11 +340,10 @@ fn merge_patch(target: Value, patch: &Value) -> Value {
 fn json_contains(container: &Value, candidate: &Value) -> bool {
     match (container, candidate) {
         (Value::Array(arr), _) => arr.contains(candidate),
-        (Value::Object(map), Value::Object(candidate_map)) => {
-            candidate_map.iter().all(|(k, v)| {
-                map.get(k).is_some_and(|container_v| json_contains(container_v, v))
-            })
-        }
+        (Value::Object(map), Value::Object(candidate_map)) => candidate_map.iter().all(|(k, v)| {
+            map.get(k)
+                .is_some_and(|container_v| json_contains(container_v, v))
+        }),
         (a, b) => a == b,
     }
 }
@@ -360,11 +377,9 @@ mod tests {
     fn json_pretty_formats_with_indentation() {
         let conn = setup();
         let result: String = conn
-            .query_row(
-                r#"SELECT json_pretty('{"a":1,"b":2}')"#,
-                [],
-                |row| row.get(0),
-            )
+            .query_row(r#"SELECT json_pretty('{"a":1,"b":2}')"#, [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert!(result.contains('\n'));
         assert!(result.contains("  "));
@@ -390,11 +405,9 @@ mod tests {
     fn json_depth_measures_nesting() {
         let conn = setup();
         let depth: i64 = conn
-            .query_row(
-                r#"SELECT json_depth('{"a":{"b":{"c":1}}}')"#,
-                [],
-                |row| row.get(0),
-            )
+            .query_row(r#"SELECT json_depth('{"a":{"b":{"c":1}}}')"#, [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(depth, 4); // root obj → a obj → b obj → c value
     }
@@ -403,9 +416,7 @@ mod tests {
     fn json_keys_returns_array() {
         let conn = setup();
         let keys: String = conn
-            .query_row(r#"SELECT json_keys('{"b":2,"a":1}')"#, [], |row| {
-                row.get(0)
-            })
+            .query_row(r#"SELECT json_keys('{"b":2,"a":1}')"#, [], |row| row.get(0))
             .unwrap();
         let parsed: Vec<String> = serde_json::from_str(&keys).unwrap();
         assert_eq!(parsed.len(), 2);
@@ -448,11 +459,9 @@ mod tests {
     fn json_contains_checks_membership() {
         let conn = setup();
         let contains: bool = conn
-            .query_row(
-                r#"SELECT json_contains('[1,2,3]', '2')"#,
-                [],
-                |row| row.get(0),
-            )
+            .query_row(r#"SELECT json_contains('[1,2,3]', '2')"#, [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert!(contains);
     }
@@ -491,11 +500,9 @@ mod tests {
     fn json_array_length_works() {
         let conn = setup();
         let len: i64 = conn
-            .query_row(
-                r#"SELECT json_array_length('[1,2,3,4]')"#,
-                [],
-                |row| row.get(0),
-            )
+            .query_row(r#"SELECT json_array_length('[1,2,3,4]')"#, [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(len, 4);
     }

@@ -349,10 +349,7 @@ mod tests {
         assert!(report.size_bytes > 0);
 
         // Verify the backup file exists
-        let backup_path = directory
-            .path()
-            .join("data")
-            .join(&report.backup_id);
+        let backup_path = directory.path().join("data").join(&report.backup_id);
         assert!(backup_path.exists());
     }
 
@@ -392,4 +389,3 @@ mod tests {
         assert!(listed.is_empty());
     }
 }
-

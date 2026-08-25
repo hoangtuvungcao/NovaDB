@@ -160,8 +160,14 @@ pub fn router_with_catalog(
         .route("/v1/admin/databases/{database}/execute", post(sql_execute))
         .route("/v1/admin/databases/{database}/schema", get(schema))
         .route("/v1/admin/databases/{database}/backup", post(backup))
-        .route("/v1/admin/databases/{database}/integrity", post(integrity_check))
-        .route("/v1/admin/databases/{database}/checkpoint", post(wal_checkpoint))
+        .route(
+            "/v1/admin/databases/{database}/integrity",
+            post(integrity_check),
+        )
+        .route(
+            "/v1/admin/databases/{database}/checkpoint",
+            post(wal_checkpoint),
+        )
         .route("/v1/databases/{database}/push", post(push))
         .route("/v1/databases/{database}/pull", get(pull))
         .route("/v1/databases/{database}/sql/query", post(sql_query))
@@ -637,8 +643,9 @@ pub fn validate_database_id(database: &str) -> Result<(), DatabaseIdError> {
     let valid_first = bytes
         .next()
         .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
-    let valid_rest = bytes
-        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_'));
+    let valid_rest = bytes.all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+    });
     if valid_length && valid_first && valid_rest {
         Ok(())
     } else {
