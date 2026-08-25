@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Repository = $env:NOVADB_GITHUB_REPOSITORY,
+    [string]$Repository = "hoangtuvungcao/NovaDB",
     [string]$Version = "latest",
     [string]$InstallDir = $env:NOVADB_INSTALL_DIR,
     [switch]$NoPathUpdate
@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if ([string]::IsNullOrWhiteSpace($Repository) -or $Repository -notmatch '^[^/]+/[^/]+$') {
-    throw "Pass -Repository OWNER/REPOSITORY (this source tree has no canonical release repository yet)."
+    $Repository = "hoangtuvungcao/NovaDB"
 }
 
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {

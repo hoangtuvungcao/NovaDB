@@ -52,21 +52,28 @@ esac
 
 case "$OS" in
     linux)
-        TARGET_OS="unknown-linux-gnu"
+        if [ "$TARGET_ARCH" = "x86_64" ]; then
+            PLATFORM="linux-x86_64"
+        else
+            error "Unsupported Linux architecture: $TARGET_ARCH"
+        fi
         ;;
     darwin)
-        TARGET_OS="apple-darwin"
+        if [ "$TARGET_ARCH" = "aarch64" ]; then
+            PLATFORM="macos-aarch64"
+        else
+            PLATFORM="macos-x86_64"
+        fi
         ;;
     *)
         error "Unsupported operating system: $OS"
         ;;
 esac
 
-TARGET="${TARGET_ARCH}-${TARGET_OS}"
 INSTALL_DIR="${NOVADB_INSTALL_DIR:-/usr/local/bin}"
 DATA_DIR="${NOVADB_DATA_DIR:-/var/lib/novadb}"
 
-info "Installing NovaDB for ${TARGET}..."
+info "Installing NovaDB for ${PLATFORM}..."
 
 # 2. Check permissions for system directory
 USE_SUDO=""
@@ -86,20 +93,24 @@ if [ -f "./Cargo.toml" ] && command -v cargo >/dev/null 2>&1; then
     $USE_SUDO install -m 755 target/release/novadb "${INSTALL_DIR}/novadb"
     $USE_SUDO install -m 755 target/release/novadbd "${INSTALL_DIR}/novadbd"
 else
-    # In production releases, this pulls prebuilt tarballs from GitHub Releases
-    RELEASE_URL="https://github.com/novadb/novadb/releases/latest/download/novadb-${TARGET}.tar.gz"
+    RELEASE_URL="https://github.com/hoangtuvungcao/NovaDB/releases/latest/download/novadb-${PLATFORM}.tar.gz"
     TMP_DIR="$(mktemp -d)"
     trap 'rm -rf "$TMP_DIR"' EXIT
 
     info "Downloading NovaDB from ${RELEASE_URL}..."
     if curl -fsSL "$RELEASE_URL" -o "${TMP_DIR}/novadb.tar.gz" 2>/dev/null; then
         tar -xzf "${TMP_DIR}/novadb.tar.gz" -C "$TMP_DIR"
-        $USE_SUDO install -m 755 "${TMP_DIR}/novadb" "${INSTALL_DIR}/novadb"
-        $USE_SUDO install -m 755 "${TMP_DIR}/novadbd" "${INSTALL_DIR}/novadbd"
+        # Find extracted binaries (either directly in TMP_DIR or in subfolder novadb-*)
+        BIN_DIR="$TMP_DIR"
+        if [ -d "${TMP_DIR}/novadb-${PLATFORM}" ]; then
+            BIN_DIR="${TMP_DIR}/novadb-${PLATFORM}"
+        fi
+        $USE_SUDO install -m 755 "${BIN_DIR}/novadb" "${INSTALL_DIR}/novadb"
+        $USE_SUDO install -m 755 "${BIN_DIR}/novadbd" "${INSTALL_DIR}/novadbd"
     else
         warn "Pre-built binary not found on remote. Building from source via cargo..."
         if command -v cargo >/dev/null 2>&1; then
-            cargo install --git https://github.com/novadb/novadb --bin novadb --bin novadbd --root "${INSTALL_DIR}/.."
+            cargo install --git https://github.com/hoangtuvungcao/NovaDB.git --bin novadb --bin novadbd --root "${INSTALL_DIR}/.."
         else
             error "Rust toolchain (cargo) is required to build NovaDB. Install rustup: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
         fi
