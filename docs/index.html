@@ -138,6 +138,7 @@
       color: var(--muted);
       border-radius: 8px;
       font-size: 13px;
+      transition: 0.15s;
     }
     .nav a:hover { color: var(--text); background: var(--panel); }
     .nav a.active { color: var(--green); background: rgba(45, 223, 145, 0.08); font-weight: 600; }
@@ -311,7 +312,7 @@
       </a>
       <div class="actions">
         <a class="icon" href="https://github.com/hoangtuvungcao/NovaDB" target="_blank">GitHub</a>
-        <a class="icon" href="MANUAL.md">Manual.md</a>
+        <a class="icon" href="https://github.com/hoangtuvungcao/NovaDB/blob/master/docs/MANUAL.md" target="_blank">Manual.md</a>
         <button class="icon" id="theme-btn">Theme</button>
       </div>
     </div>
@@ -321,7 +322,7 @@
     <aside>
       <p class="nav-label">Getting Started</p>
       <nav class="nav">
-        <a href="#overview" class="active">Overview</a>
+        <a href="#overview">Overview</a>
         <a href="#quickstart">Quick Start</a>
         <a href="#architecture">Architecture</a>
       </nav>
@@ -355,7 +356,7 @@
         <div class="buttons">
           <a class="button primary" href="#quickstart">Quick Start (5 Mins)</a>
           <a class="button secondary" href="https://github.com/hoangtuvungcao/NovaDB" target="_blank">GitHub Repository</a>
-          <a class="button secondary" href="MANUAL.md">Reference Manual</a>
+          <a class="button secondary" href="https://github.com/hoangtuvungcao/NovaDB/blob/master/docs/MANUAL.md" target="_blank">Reference Manual</a>
         </div>
         <div class="metrics">
           <div class="metric"><b>Port 5432</b><span>PostgreSQL Wire v3</span></div>
@@ -420,6 +421,41 @@ psql -h 127.0.0.1 -p 5432 -U admin -d default</pre>
         </div>
       </section>
 
+      <!-- ARCHITECTURE -->
+      <section id="architecture">
+        <div class="head">
+          <p class="kicker">Core Engine</p>
+          <h2>High-Performance Architecture</h2>
+          <p>NovaDB combines high-throughput concurrent I/O with ACID-compliant SQLite WAL storage.</p>
+        </div>
+        <div class="grid">
+          <div class="card">
+            <h3>64MB Page Cache</h3>
+            <p>SQLite <code>PRAGMA cache_size = -64000</code> caches hot index pages and table data directly in RAM, reducing disk reads.</p>
+          </div>
+          <div class="card">
+            <h3>In-Memory Temp Store</h3>
+            <p><code>PRAGMA temp_store = MEMORY</code> executes recursive CTEs, temporary tables, and sort operations in RAM without writing temporary files to disk.</p>
+          </div>
+          <div class="card">
+            <h3>256MB Memory-Mapped I/O</h3>
+            <p><code>PRAGMA mmap_size = 268435456</code> allows kernel memory-mapping of the database file, minimizing context switches and memory copies.</p>
+          </div>
+          <div class="card">
+            <h3>Multi-Client Connection Pool</h3>
+            <p><code>NovaDbPool</code> manages thread-safe reader/writer handles with RAII recycling and non-blocking parallel reads across threads.</p>
+          </div>
+          <div class="card">
+            <h3>Deterministic Replication</h3>
+            <p>Hybrid Logical Clocks (HLC) and Last-Writer-Wins (LWW) resolution ensure consistent convergence across offline replicas.</p>
+          </div>
+          <div class="card">
+            <h3>Enterprise Security</h3>
+            <p>Salted SHA-256 password hashing, user activation toggles, and granular table-level RBAC grants.</p>
+          </div>
+        </div>
+      </section>
+
       <!-- WIRE PROTOCOL -->
       <section id="wire-protocol">
         <div class="head">
@@ -439,6 +475,76 @@ psql -h 127.0.0.1 -p 5432 -U admin -d default</pre>
           <div class="card">
             <h3>Native Drivers</h3>
             <p>Direct driver support for Python (psycopg2/asyncpg), Node.js (pg), PHP (pdo_pgsql), Go (pgx), C# (Npgsql), Java (JDBC), and Rust (tokio-postgres).</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- HTTP REST API -->
+      <section id="http-api">
+        <div class="head">
+          <p class="kicker">REST Interface</p>
+          <h2>HTTP Administration &amp; Query API (Port 8787)</h2>
+          <p>Execute SQL queries, batch DDL scripts, manage schemas, and run maintenance operations via JSON endpoints.</p>
+        </div>
+        <div class="codebox">
+          <div class="codebar">
+            <span>HTTP Endpoints (cURL)</span>
+            <button class="copy-btn" onclick="copyCode('code-http-endpoints')">Copy</button>
+          </div>
+          <pre id="code-http-endpoints"># 1. Execute SQL Query (Returns JSON rows)
+POST /v1/admin/databases/:id/query
+Body: {"sql": "SELECT uuid_v7() AS id, now_iso() AS ts;"}
+
+# 2. Execute Batch DDL Script
+POST /v1/admin/databases/:id/execute
+Body: {"sql": "CREATE TABLE Users (Id INT PRIMARY KEY, Name TEXT); INSERT INTO Users VALUES (1, 'Alice');"}
+
+# 3. Inspect Database Schema
+GET /v1/admin/databases/:id/schema
+
+# 4. Create Online Hot Backup
+POST /v1/admin/databases/:id/backup
+Body: {"destination_path": "./novadb-backups/backup.novadb"}
+
+# 5. Check Database Integrity
+POST /v1/admin/databases/:id/integrity
+
+# 6. Checkpoint WAL Log
+POST /v1/admin/databases/:id/checkpoint</pre>
+        </div>
+      </section>
+
+      <!-- WEB ADMIN STUDIO -->
+      <section id="studio">
+        <div class="head">
+          <p class="kicker">Management UI</p>
+          <h2>Web Admin Studio</h2>
+          <p>Built-in visual database management dashboard accessible at <code>http://127.0.0.1:8787/studio</code>.</p>
+        </div>
+        <div class="grid">
+          <div class="card">
+            <h3>Table Explorer &amp; Grid</h3>
+            <p>Live spreadsheet grid with pagination, sorting, WHERE filters, row editing, column additions, table renaming, truncation, and CSV/SQL exports.</p>
+          </div>
+          <div class="card">
+            <h3>SQL Console &amp; REPL</h3>
+            <p>Multi-batch query editor with live execution timer, query history, SQL formatting, syntax snippets, and CSV/JSON export.</p>
+          </div>
+          <div class="card">
+            <h3>Schema Designer</h3>
+            <p>Visual schema cards displaying columns, types, primary keys, and relationships for all tables in the active database.</p>
+          </div>
+          <div class="card">
+            <h3>Import &amp; Export Suite</h3>
+            <p>Execute full <code>.sql</code> migration scripts, import CSV data to tables, and export complete database <code>.sql</code> dumps with 1 click.</p>
+          </div>
+          <div class="card">
+            <h3>Vector &amp; AI Search Lab</h3>
+            <p>Interactive playground for testing float32 embeddings, cosine similarity scores, and semantic search queries.</p>
+          </div>
+          <div class="card">
+            <h3>Users &amp; RBAC Security</h3>
+            <p>Manage database users, toggle active states, create custom roles, and configure table-level permissions.</p>
           </div>
         </div>
       </section>
@@ -572,6 +678,64 @@ LIMIT 5;</pre>
         </div>
       </section>
 
+      <!-- EXTENDED FUNCTIONS -->
+      <section id="functions">
+        <div class="head">
+          <p class="kicker">SQL Extensions</p>
+          <h2>40+ Built-in Extended Functions</h2>
+          <p>Rich set of specialized functions for JSON, UUID, Date/Time, Math, and String processing.</p>
+        </div>
+        <div class="grid">
+          <div class="card">
+            <h3>UUID Functions</h3>
+            <p><code>UUID_V4()</code>, <code>UUID_V7()</code> (monotonic time-ordered), <code>UUID_IS_VALID(u)</code>, <code>UUID_VERSION(u)</code>.</p>
+          </div>
+          <div class="card">
+            <h3>Date &amp; Time Functions</h3>
+            <p><code>NOW_ISO()</code>, <code>NOW_MS()</code>, <code>DATE_PART(p, d)</code>, <code>DATE_TRUNC(u, d)</code>, <code>EPOCH_MS(d)</code>, <code>AGE_MS(d)</code>.</p>
+          </div>
+          <div class="card">
+            <h3>JSON (RFC 7396)</h3>
+            <p><code>JSON_MERGE_PATCH(a, b)</code>, <code>JSON_PRETTY(j)</code>, <code>JSON_KEYS(j)</code>, <code>JSON_CONTAINS(j, v)</code>, <code>JSON_DEPTH(j)</code>.</p>
+          </div>
+          <div class="card">
+            <h3>Crypto &amp; Hashing</h3>
+            <p><code>SHA256(data)</code>, <code>MD5(data)</code>, <code>HMAC_SHA256(key, data)</code>, <code>CHECKSUM(...)</code>.</p>
+          </div>
+          <div class="card">
+            <h3>String &amp; Text</h3>
+            <p><code>REGEXP(pattern, text)</code>, <code>ILIKE</code>, <code>SPLIT_PART(s, d, i)</code>, <code>LPAD(s, l, p)</code>, <code>RPAD(s, l, p)</code>, <code>INITCAP(s)</code>.</p>
+          </div>
+          <div class="card">
+            <h3>Aggregates</h3>
+            <p><code>STRING_AGG(expr, sep)</code>, <code>JSON_AGG(expr)</code>, <code>JSON_OBJECT_AGG(k, v)</code>, <code>ARRAY_AGG(expr)</code>.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- LOCAL-FIRST REPLICATION -->
+      <section id="replication">
+        <div class="head">
+          <p class="kicker">Distributed Sync</p>
+          <h2>Local-First Replication &amp; Sync Engine</h2>
+          <p>Deterministic Last-Writer-Wins (LWW) convergence using Hybrid Logical Clocks (HLC).</p>
+        </div>
+        <div class="grid">
+          <div class="card">
+            <h3>Atomic Change Capture</h3>
+            <p>Automatic change tracking triggers log all mutations into <code>_novadb_changes</code> with HLC timestamps and device UUIDs.</p>
+          </div>
+          <div class="card">
+            <h3>Deterministic LWW Merge</h3>
+            <p>Tie-breaking tuple <code>(hlc, device_id, change_id)</code> ensures consistent conflict resolution across all distributed nodes.</p>
+          </div>
+          <div class="card">
+            <h3>Sync Relay Protocol</h3>
+            <p>Incremental push/pull synchronization via cursor-based paging with offline-first support.</p>
+          </div>
+        </div>
+      </section>
+
       <!-- MULTI-LANGUAGE CLIENTS -->
       <section id="clients">
         <div class="head">
@@ -602,6 +766,38 @@ conn.close()</pre>
         </div>
       </section>
 
+      <!-- DEPLOYMENT -->
+      <section id="deployment">
+        <div class="head">
+          <p class="kicker">Production Operations</p>
+          <h2>Deployment &amp; Operations</h2>
+          <p>Run NovaDB in production as a Systemd service or with Docker Compose.</p>
+        </div>
+        <div class="codebox">
+          <div class="codebar">
+            <span>Docker Compose (compose.yaml)</span>
+            <button class="copy-btn" onclick="copyCode('code-docker')">Copy</button>
+          </div>
+          <pre id="code-docker">services:
+  novadb:
+    image: ghcr.io/hoangtuvungcao/novadb:latest
+    container_name: novadb
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+      - "5432:5432"
+    volumes:
+      - novadb_data:/data
+    environment:
+      - NOVADB_LISTEN=0.0.0.0:8787
+      - NOVADB_PG_LISTEN=0.0.0.0:5432
+      - NOVADB_DATA_DIR=/data
+
+volumes:
+  novadb_data:</pre>
+        </div>
+      </section>
+
       <!-- FOOTER -->
       <footer>
         <div>NovaDB Open Source Database Engine — Licensed under Apache-2.0 / MIT.</div>
@@ -612,15 +808,44 @@ conn.close()</pre>
 
   <script>
     function copyCode(id) {
-      const text = document.getElementById(id).innerText;
+      const el = document.getElementById(id);
+      if (!el) return;
+      const text = el.innerText;
       navigator.clipboard.writeText(text);
-      event.target.textContent = "Copied!";
-      setTimeout(() => event.target.textContent = "Copy", 1500);
+      if (event && event.target) {
+        const orig = event.target.textContent;
+        event.target.textContent = "Copied!";
+        setTimeout(() => event.target.textContent = orig, 1500);
+      }
     }
+
     document.getElementById("theme-btn").addEventListener("click", () => {
       const current = document.documentElement.getAttribute("data-theme");
       const next = current === "light" ? "dark" : "light";
       document.documentElement.setAttribute("data-theme", next);
+    });
+
+    // Scroll spy for active sidebar link
+    const sections = document.querySelectorAll("main section[id]");
+    const navLinks = document.querySelectorAll("aside .nav a");
+
+    window.addEventListener("scroll", () => {
+      let current = "";
+      const scrollPos = window.scrollY + 120;
+      sections.forEach(section => {
+        const top = section.offsetTop;
+        const height = section.offsetHeight;
+        if (scrollPos >= top && scrollPos < top + height) {
+          current = section.getAttribute("id");
+        }
+      });
+
+      navLinks.forEach(link => {
+        link.classList.remove("active");
+        if (link.getAttribute("href") === "#" + current) {
+          link.classList.add("active");
+        }
+      });
     });
   </script>
 </body>
