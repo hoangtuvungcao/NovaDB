@@ -1932,7 +1932,12 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let name = OsString::from_vec(vec![b'1', b'_', 0xff, b'.', b's', b'q', b'l']);
-        fs::write(directory.path().join(name), "SELECT 1;").unwrap();
+        if let Err(error) = fs::write(directory.path().join(name), "SELECT 1;") {
+            if cfg!(target_os = "macos") && error.raw_os_error() == Some(92) {
+                return;
+            }
+            panic!("failed to create invalid UTF-8 migration filename: {error}");
+        }
 
         let error = load_migration_directory(directory.path()).unwrap_err();
         assert!(error.to_string().contains("filename is not valid UTF-8"));
