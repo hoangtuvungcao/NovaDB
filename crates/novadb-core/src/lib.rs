@@ -1471,7 +1471,10 @@ fn normalize_single_batch(sql: &str) -> String {
     {
         normalized = re_temp_period.replace_all(&normalized, "").into_owned();
     }
-    if let Ok(re_tbl_with) = regex::Regex::new(r"(?is)\)\s*WITH\s*\((?:[^;()]|\([^()]*\))*\)\s*;?")
+    if let Ok(re_tbl_with) =
+        regex::Regex::new(
+            r"(?is)\)\s*WITH\s*\(\s*SYSTEM_VERSIONING\s*=\s*(?:ON|OFF)(?:[^;()]|\([^;()]*\))*\)\s*;?",
+        )
     {
         normalized = re_tbl_with.replace_all(&normalized, ");").into_owned();
     }
@@ -2445,29 +2448,37 @@ fn normalize_single_batch(sql: &str) -> String {
     }
 
     // 24. T-SQL XML methods (@XML.value, P.value, @XML.exist, @XML.modify, @XML.query)
-    if let Ok(re_xml_val) =
-        regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.value\s*\([\s\S]*?\)")
+    if let Ok(re_xml_val) = regex::Regex::new(
+        r"(?i)\b(?:(?:[a-zA-Z0-9_#$]+(?:\.[a-zA-Z0-9_#$]+)+)|@?[a-zA-Z0-9_#$]+)\.value\s*\([\s\S]*?\)",
+    )
     {
         normalized = re_xml_val.replace_all(&normalized, "'Nova'").into_owned();
     }
-    if let Ok(re_xml_ex) =
-        regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.exist\s*\([\s\S]*?\)")
+    if let Ok(re_xml_ex) = regex::Regex::new(
+        r"(?i)\b(?:(?:[a-zA-Z0-9_#$]+(?:\.[a-zA-Z0-9_#$]+)+)|@?[a-zA-Z0-9_#$]+)\.exist\s*\([\s\S]*?\)",
+    )
     {
         normalized = re_xml_ex.replace_all(&normalized, "1").into_owned();
     }
-    if let Ok(re_xml_query) =
-        regex::Regex::new(r"(?i)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.query\s*\([\s\S]*?\)")
+    if let Ok(re_xml_query) = regex::Regex::new(
+        r"(?i)\b(?:(?:[a-zA-Z0-9_#$]+(?:\.[a-zA-Z0-9_#$]+)+)|@?[a-zA-Z0-9_#$]+)\.query\s*\([\s\S]*?\)",
+    )
     {
         normalized = re_xml_query
             .replace_all(&normalized, "'<item>Nova</item>'")
             .into_owned();
     }
-    if let Ok(re_xml_mod) =
-        regex::Regex::new(r"(?is)(?:[a-zA-Z0-9_#$]+\.)*@?[a-zA-Z0-9_#$]+\.modify\s*\([\s\S]*?\);?")
+    if let Ok(re_xml_mod) = regex::Regex::new(
+        r"(?is)\b(?:(?:[a-zA-Z0-9_#$]+(?:\.[a-zA-Z0-9_#$]+)+)|@?[a-zA-Z0-9_#$]+)\.modify\s*\([\s\S]*?\);?",
+    )
     {
         normalized = re_xml_mod
             .replace_all(&normalized, "-- xml.modify\n")
             .into_owned();
+    }
+    if let Ok(re_alias_lit) = regex::Regex::new(r#"(?i)\b[a-zA-Z_#$][a-zA-Z0-9_#$]*\.('[^']*')"#)
+    {
+        normalized = re_alias_lit.replace_all(&normalized, "${1}").into_owned();
     }
 
     // 25. T-SQL OPENXML
@@ -2479,13 +2490,13 @@ fn normalize_single_batch(sql: &str) -> String {
 
     // 26. T-SQL STRING_SPLIT (Dynamic Recursive CTE splitting)
     if let Ok(re_str_split) = regex::Regex::new(
-        r"(?is)\bFROM\s+STRING_SPLIT\s*\(\s*('[^']*'|[a-zA-Z0-9_#$.]+)\s*,\s*('[^']*'|[a-zA-Z0-9_#$.]+)\s*\)(?:\s*(?:AS\s+)?([a-zA-Z0-9_#$]+))?",
+        r"(?is)\bFROM\s+STRING_SPLIT\s*\(\s*('[^']*'|[a-zA-Z0-9_#$.]+)\s*,\s*('[^']*'|[a-zA-Z0-9_#$.]+)(?:\s*,\s*[^)]+)?\s*\)(?:\s*(?:AS\s+)?([a-zA-Z0-9_#$]+))?",
     ) {
         normalized = re_str_split.replace_all(&normalized, |caps: &regex::Captures| {
             let text = caps.get(1).map(|m| m.as_str()).unwrap_or("''");
             let delim = caps.get(2).map(|m| m.as_str()).unwrap_or("','");
             let alias = caps.get(3).map(|m| m.as_str()).unwrap_or("split_tbl");
-            format!("FROM (WITH RECURSIVE split(value, rest) AS (SELECT '', {text} || {delim} UNION ALL SELECT substr(rest, 1, instr(rest, {delim}) - 1), substr(rest, instr(rest, {delim}) + 1) FROM split WHERE rest != '') SELECT value FROM split WHERE value != '') AS {alias}")
+            format!("FROM (WITH RECURSIVE split(value, rest, ordinal) AS (SELECT '', {text} || {delim}, 0 UNION ALL SELECT substr(rest, 1, instr(rest, {delim}) - 1), substr(rest, instr(rest, {delim}) + length({delim})), ordinal + 1 FROM split WHERE rest != '' AND instr(rest, {delim}) > 0) SELECT value, ordinal FROM split WHERE value != '') AS {alias}")
         }).into_owned();
     }
 
@@ -2502,15 +2513,77 @@ fn normalize_single_batch(sql: &str) -> String {
         }).into_owned();
     }
 
+    // 27b. T-SQL OPENJSON ... WITH (...) schema mapping
+    if let Ok(re_openjson_with) = regex::Regex::new(
+        r"(?is)\b(FROM|CROSS\s+JOIN|LEFT\s+JOIN|JOIN)\s+OPENJSON\s*\(\s*([^)]+)\s*\)\s+WITH\s*\(\s*((?:[^()]|\([^()]*\))*)\s*\)\s*(?:AS\s+)?([a-zA-Z0-9_#$]+)?",
+    ) {
+        while let Some(caps) = re_openjson_with.captures(&normalized.clone()) {
+            let full = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+            let kw = caps.get(1).map(|m| m.as_str()).unwrap_or("FROM");
+            let expr = caps.get(2).map(|m| m.as_str()).unwrap_or("''");
+            let schema = caps.get(3).map(|m| m.as_str()).unwrap_or("");
+            let alias = caps.get(4).map(|m| m.as_str()).unwrap_or("oj");
+
+            let mut cols: Vec<(String, String)> = Vec::new();
+            if let Ok(re_schema_col) = regex::Regex::new(
+                r#"(?i)\b([a-zA-Z0-9_#$]+)\s+[a-zA-Z0-9_(),\s]+\s+'(\$[^']*)'(?:\s+AS\s+JSON)?"#,
+            ) {
+                for c in re_schema_col.captures_iter(schema) {
+                    let col = c
+                        .get(1)
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_else(|| "value".to_string());
+                    let path = c
+                        .get(2)
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_else(|| "$".to_string());
+                    cols.push((col, path));
+                }
+            }
+
+            let kw_upper = kw.to_uppercase();
+            let replacement = if kw_upper == "FROM" {
+                if cols.is_empty() {
+                    format!("{kw} (SELECT key, value, type FROM json_each({expr})) AS {alias}")
+                } else {
+                    let projections: Vec<String> = cols
+                        .iter()
+                        .map(|(col, path)| format!("json_extract(value, '{path}') AS {col}"))
+                        .collect();
+                    format!(
+                        "{kw} (SELECT {} FROM json_each({expr})) AS {alias}",
+                        projections.join(", ")
+                    )
+                }
+            } else {
+                for (col, path) in &cols {
+                    let target_ref1 = format!("{alias}.{col}");
+                    let target_ref2 = format!("[{alias}].[{col}]");
+                    let target_ref3 = format!("{alias}.[{col}]");
+                    let target_ref4 = format!("[{alias}].{col}");
+                    let rewrite = format!("json_extract({alias}.value, '{path}')");
+                    normalized = normalized.replace(&target_ref1, &rewrite);
+                    normalized = normalized.replace(&target_ref2, &rewrite);
+                    normalized = normalized.replace(&target_ref3, &rewrite);
+                    normalized = normalized.replace(&target_ref4, &rewrite);
+                }
+                format!("{kw} json_each({expr}) AS {alias}")
+            };
+
+            normalized = normalized.replacen(full, &replacement, 1);
+        }
+    }
+
     // 28. T-SQL OPENJSON (Dynamic json_each mapping)
     if let Ok(re_openjson) = regex::Regex::new(
-        r"(?is)\bFROM\s+OPENJSON\s*\(\s*([^)]+)\s*\)(?:\s*(?:AS\s+)?([a-zA-Z0-9_#$]+))?",
+        r"(?is)\b(FROM|CROSS\s+JOIN|LEFT\s+JOIN|JOIN)\s+OPENJSON\s*\(\s*([^)]+)\s*\)(?:\s*;?\s*(?:AS\s+)?([a-zA-Z0-9_#$]+))?",
     ) {
         normalized = re_openjson
             .replace_all(&normalized, |caps: &regex::Captures| {
-                let expr = caps.get(1).map(|m| m.as_str()).unwrap_or("''");
-                let alias = caps.get(2).map(|m| m.as_str()).unwrap_or("oj");
-                format!("FROM (SELECT key, value, type FROM json_each({expr})) AS {alias}")
+                let kw = caps.get(1).map(|m| m.as_str()).unwrap_or("FROM");
+                let expr = caps.get(2).map(|m| m.as_str()).unwrap_or("''");
+                let alias = caps.get(3).map(|m| m.as_str()).unwrap_or("oj");
+                format!("{kw} (SELECT key, value, type FROM json_each({expr})) AS {alias}")
             })
             .into_owned();
     }
@@ -5850,12 +5923,53 @@ INSERT INTO Orders (CustomerID, Status, TotalAmount) VALUES (1, 'Completed', 250
         assert_eq!(res.rows[1]["value"], "banana");
         assert_eq!(res.rows[2]["value"], "cherry");
 
-        // 2. Dynamic OPENJSON
+        // 2. STRING_SPLIT with ordinal (SQL Server 2025 signature)
+        let res_with_ordinal = db
+            .query("SELECT value, ordinal FROM STRING_SPLIT('A,B,C', ',', 1);")
+            .unwrap();
+        assert_eq!(res_with_ordinal.rows.len(), 3);
+        assert_eq!(res_with_ordinal.rows[0]["value"], "A");
+        assert_eq!(res_with_ordinal.rows[0]["ordinal"], 1);
+        assert_eq!(res_with_ordinal.rows[1]["value"], "B");
+        assert_eq!(res_with_ordinal.rows[1]["ordinal"], 2);
+        assert_eq!(res_with_ordinal.rows[2]["value"], "C");
+        assert_eq!(res_with_ordinal.rows[2]["ordinal"], 3);
+
+        // 3. Dynamic OPENJSON
         let res_json = db
             .query(
                 "SELECT key, value FROM OPENJSON('{\"name\":\"NovaDB\",\"version\":\"0.1.1\"}');",
             )
             .unwrap();
         assert_eq!(res_json.rows.len(), 2);
+    }
+
+    #[test]
+    fn test_xml_value_chain_does_not_leave_alias_prefix() {
+        let sql = r#"
+SELECT
+    P.N.value('(name/text())[1]', 'NVARCHAR(100)') AS ProductName
+FROM dbo.AdvXmlDocuments AS X
+CROSS APPLY X.DocumentData.nodes('/shop/products/product') AS P(N);
+"#;
+        let normalized = normalize_sql_dialect(sql);
+        assert!(
+            !normalized.contains("P.'Nova'"),
+            "XML value rewrite must replace full chained expression. Normalized SQL:\n{normalized}"
+        );
+        assert!(normalized.contains("'Nova' AS ProductName"));
+    }
+
+    #[test]
+    fn test_openjson_with_schema_mapping() {
+        let db = NovaDb::open_in_memory().unwrap();
+        let q = r#"
+DECLARE @NestedJson NVARCHAR(MAX) = N'[{"customer":"A","orders":[{"id":1,"amount":100}]}]';
+SELECT C.CustomerName, O.OrderID, O.Amount
+FROM OPENJSON(@NestedJson) WITH (CustomerName NVARCHAR(100) '$.customer', Orders NVARCHAR(MAX) '$.orders' AS JSON) AS C
+CROSS APPLY OPENJSON(C.Orders) WITH (OrderID INT '$.id', Amount DECIMAL(18,2) '$.amount') AS O;
+"#;
+        let res = db.query(q).unwrap();
+        assert_eq!(res.rows.len(), 1);
     }
 }
