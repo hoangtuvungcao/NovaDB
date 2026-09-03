@@ -1471,11 +1471,9 @@ fn normalize_single_batch(sql: &str) -> String {
     {
         normalized = re_temp_period.replace_all(&normalized, "").into_owned();
     }
-    if let Ok(re_tbl_with) =
-        regex::Regex::new(
-            r"(?is)\)\s*WITH\s*\(\s*SYSTEM_VERSIONING\s*=\s*(?:ON|OFF)(?:[^;()]|\([^;()]*\))*\)\s*;?",
-        )
-    {
+    if let Ok(re_tbl_with) = regex::Regex::new(
+        r"(?is)\)\s*WITH\s*\(\s*SYSTEM_VERSIONING\s*=\s*(?:ON|OFF)(?:[^;()]|\([^;()]*\))*\)\s*;?",
+    ) {
         normalized = re_tbl_with.replace_all(&normalized, ");").into_owned();
     }
     if let Ok(re_temp_alt) = regex::Regex::new(
@@ -2450,34 +2448,29 @@ fn normalize_single_batch(sql: &str) -> String {
     // 24. T-SQL XML methods (@XML.value, P.value, @XML.exist, @XML.modify, @XML.query)
     if let Ok(re_xml_val) = regex::Regex::new(
         r"(?i)\b(?:(?:[a-zA-Z0-9_#$]+(?:\.[a-zA-Z0-9_#$]+)+)|@?[a-zA-Z0-9_#$]+)\.value\s*\([\s\S]*?\)",
-    )
-    {
+    ) {
         normalized = re_xml_val.replace_all(&normalized, "'Nova'").into_owned();
     }
     if let Ok(re_xml_ex) = regex::Regex::new(
         r"(?i)\b(?:(?:[a-zA-Z0-9_#$]+(?:\.[a-zA-Z0-9_#$]+)+)|@?[a-zA-Z0-9_#$]+)\.exist\s*\([\s\S]*?\)",
-    )
-    {
+    ) {
         normalized = re_xml_ex.replace_all(&normalized, "1").into_owned();
     }
     if let Ok(re_xml_query) = regex::Regex::new(
         r"(?i)\b(?:(?:[a-zA-Z0-9_#$]+(?:\.[a-zA-Z0-9_#$]+)+)|@?[a-zA-Z0-9_#$]+)\.query\s*\([\s\S]*?\)",
-    )
-    {
+    ) {
         normalized = re_xml_query
             .replace_all(&normalized, "'<item>Nova</item>'")
             .into_owned();
     }
     if let Ok(re_xml_mod) = regex::Regex::new(
         r"(?is)\b(?:(?:[a-zA-Z0-9_#$]+(?:\.[a-zA-Z0-9_#$]+)+)|@?[a-zA-Z0-9_#$]+)\.modify\s*\([\s\S]*?\);?",
-    )
-    {
+    ) {
         normalized = re_xml_mod
             .replace_all(&normalized, "-- xml.modify\n")
             .into_owned();
     }
-    if let Ok(re_alias_lit) = regex::Regex::new(r#"(?i)\b[a-zA-Z_#$][a-zA-Z0-9_#$]*\.('[^']*')"#)
-    {
+    if let Ok(re_alias_lit) = regex::Regex::new(r#"(?i)\b[a-zA-Z_#$][a-zA-Z0-9_#$]*\.('[^']*')"#) {
         normalized = re_alias_lit.replace_all(&normalized, "${1}").into_owned();
     }
 
