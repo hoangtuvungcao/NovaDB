@@ -1,3 +1,5 @@
+mod console;
+
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, IsTerminal, Read};
@@ -53,10 +55,10 @@ pub enum Command {
     Migrate(MigrateArgs),
     /// Administer databases exposed by a `NovaDB` server.
     Remote(RemoteCommandArgs),
-    /// Start the NovaDB HTTP relay and PostgreSQL wire protocol server.
+    /// Start the NovaDB HTTP relay and the PostgreSQL / MySQL wire protocol servers.
     Serve(ServeArgs),
     /// Open an interactive SQL shell (REPL console) for a database.
-    Console(ConsoleArgs),
+    Console(console::ConsoleArgs),
     /// Import CSV data into a database table.
     Import(ImportArgs),
     /// Export query results to a CSV or JSON file.
@@ -385,7 +387,7 @@ pub async fn run_with(cli: Cli) -> Result<()> {
         Command::Migrate(args) => migrate(&args),
         Command::Remote(args) => remote_command(&args).await,
         Command::Serve(args) => serve(&args).await,
-        Command::Console(args) => console(&args),
+        Command::Console(args) => console::console(&args),
         Command::Import(args) => import(&args),
         Command::Export(args) => export(&args),
     }
@@ -408,6 +410,11 @@ pub struct ImportArgs {
     /// Delimiter character (default: comma ',').
     #[arg(long, default_value = ",")]
     pub delimiter: char,
+
+    /// Skip rows whose field count differs from the header (a summary is
+    /// printed) instead of aborting the whole import.
+    #[arg(long)]
+    pub skip_bad_rows: bool,
 }
 
 fn import(args: &ImportArgs) -> Result<()> {
@@ -426,61 +433,30 @@ fn import(args: &ImportArgs) -> Result<()> {
         return Ok(());
     }
 
-    let mut lines = content.lines().filter(|l| !l.trim().is_empty());
-    let header_line = lines
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("CSV file is empty"))?;
-
-    let headers: Vec<&str> = header_line
-        .split(args.delimiter)
-        .map(|s| s.trim())
-        .collect();
-    if headers.is_empty() {
-        bail!("No headers found in CSV file");
+    let lined = console::csv::parse_csv_lined(&content, args.delimiter)
+        .with_context(|| format!("invalid CSV in '{}'", args.file.display()))?;
+    let (records, bad) = console::csv::check_field_counts(lined, args.skip_bad_rows)?;
+    let count = records.len() - 1;
+    if count > 0 {
+        // One `execute_batch` call is one transaction: all rows or none.
+        let sql = console::csv::build_import_sql(&args.table, &records, false)?;
+        db.execute_batch(&sql).with_context(|| {
+            format!("import into '{}' failed; nothing was imported", args.table)
+        })?;
     }
-
-    let escaped_cols = headers
-        .iter()
-        .map(|h| format!("\"{}\"", h.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let mut count = 0usize;
-    let mut batch_sql = String::new();
-
-    for line in lines {
-        let values: Vec<&str> = line.split(args.delimiter).collect();
-        if values.len() != headers.len() {
-            continue;
-        }
-
-        let val_literals: Vec<String> = values
+    if !bad.is_empty() {
+        let list: Vec<String> = bad
             .iter()
-            .map(|v| {
-                let trimmed = v.trim().trim_matches('"');
-                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
-                    "NULL".to_string()
-                } else if trimmed.parse::<f64>().is_ok() && !trimmed.starts_with('0')
-                    || trimmed == "0"
-                {
-                    trimmed.to_string()
-                } else {
-                    format!("'{}'", trimmed.replace('\'', "''"))
-                }
-            })
+            .take(20)
+            .map(|(line, n)| format!("line {line} ({n} fields)"))
             .collect();
-
-        batch_sql.push_str(&format!(
-            "INSERT INTO \"{}\" ({}) VALUES ({});\n",
-            args.table.replace('"', "\"\""),
-            escaped_cols,
-            val_literals.join(", ")
-        ));
-        count += 1;
-    }
-
-    if !batch_sql.is_empty() {
-        db.execute_batch(&batch_sql)?;
+        eprintln!(
+            "[WARNING] Skipped {} row(s) with the wrong number of fields (expected {}): {}{}",
+            bad.len(),
+            records[0].len(),
+            list.join(", "),
+            if bad.len() > 20 { ", ..." } else { "" }
+        );
     }
 
     println!(
@@ -593,235 +569,6 @@ fn export(args: &ExportArgs) -> Result<()> {
 }
 
 #[derive(Debug, Args)]
-pub struct ConsoleArgs {
-    /// Path to the local `NovaDB` database file to open.
-    #[arg(value_name = "PATH")]
-    pub path: PathBuf,
-}
-
-fn console(args: &ConsoleArgs) -> Result<()> {
-    use std::io::Write;
-
-    let db = if args.path.exists() {
-        NovaDb::open(&args.path)?
-    } else {
-        println!(
-            "[INFO] Database file '{}' does not exist. Creating new database...",
-            args.path.display()
-        );
-        NovaDb::open(&args.path)?
-    };
-
-    println!("NovaDB Interactive SQL Console");
-    println!("Connected to: {}", args.path.display());
-    println!("Type .help for instructions, .quit or Ctrl+D to exit.");
-    println!();
-
-    let mut timer_enabled = true;
-    let mut current_statement = String::new();
-    let stdin = std::io::stdin();
-
-    loop {
-        if current_statement.is_empty() {
-            print!("novadb> ");
-        } else {
-            print!("   ...> ");
-        }
-        std::io::stdout().flush()?;
-
-        let mut line = String::new();
-        if stdin.read_line(&mut line)? == 0 {
-            // EOF
-            println!("\nGoodbye.");
-            break;
-        }
-
-        let trimmed = line.trim();
-
-        // Check for dot commands
-        if current_statement.is_empty() && trimmed.starts_with('.') {
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            match parts[0] {
-                ".quit" | ".exit" | ".q" => {
-                    println!("Goodbye.");
-                    break;
-                }
-                ".help" | ".h" => {
-                    println!("Available Dot Commands:");
-                    println!("  .tables                List all tables in database");
-                    println!("  .schema [table]        Show CREATE statements");
-                    println!("  .timer [on|off]        Toggle query execution timer");
-                    println!("  .help                  Show this help");
-                    println!("  .quit                  Exit the console");
-                    println!();
-                    println!("SQL Tips:");
-                    println!("  - End statements with a semicolon (;) to execute");
-                    println!("  - Supports standard SQL, CTEs, Window functions, JSON, UUIDs");
-                }
-                ".tables" => {
-                    match db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_novadb_%' ORDER BY name") {
-                        Ok(res) => {
-                            if res.rows.is_empty() {
-                                println!("(No user tables found)");
-                            } else {
-                                for r in res.rows {
-                                    if let Some(name) = r.get("name").and_then(|v| v.as_str()) {
-                                        print!("{:<20} ", name);
-                                    }
-                                }
-                                println!();
-                            }
-                        }
-                        Err(e) => eprintln!("Error: {e}"),
-                    }
-                }
-                ".schema" => {
-                    let sql = if parts.len() > 1 {
-                        format!("SELECT sql FROM sqlite_master WHERE type IN ('table','view','index') AND name='{}'", parts[1])
-                    } else {
-                        "SELECT sql FROM sqlite_master WHERE type IN ('table','view','index') AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY type, name".to_string()
-                    };
-                    match db.query(&sql) {
-                        Ok(res) => {
-                            for r in res.rows {
-                                if let Some(s) = r.get("sql").and_then(|v| v.as_str()) {
-                                    println!("{};\n", s);
-                                }
-                            }
-                        }
-                        Err(e) => eprintln!("Error: {e}"),
-                    }
-                }
-                ".timer" => {
-                    if parts.len() > 1 {
-                        timer_enabled = parts[1].eq_ignore_ascii_case("on") || parts[1] == "1";
-                    } else {
-                        timer_enabled = !timer_enabled;
-                    }
-                    println!("Timer is now {}", if timer_enabled { "ON" } else { "OFF" });
-                }
-                cmd => {
-                    eprintln!("Unknown command: {cmd}. Type .help for available commands.");
-                }
-            }
-            continue;
-        }
-
-        if trimmed.is_empty() && current_statement.is_empty() {
-            continue;
-        }
-
-        current_statement.push_str(&line);
-
-        if current_statement.trim_end().ends_with(';') {
-            let sql_to_run = current_statement.trim().to_string();
-            current_statement.clear();
-
-            let is_query = sql_to_run
-                .trim_start()
-                .to_ascii_uppercase()
-                .starts_with("SELECT")
-                || sql_to_run
-                    .trim_start()
-                    .to_ascii_uppercase()
-                    .starts_with("WITH")
-                || sql_to_run
-                    .trim_start()
-                    .to_ascii_uppercase()
-                    .starts_with("EXPLAIN")
-                || sql_to_run
-                    .trim_start()
-                    .to_ascii_uppercase()
-                    .starts_with("PRAGMA");
-
-            let start = std::time::Instant::now();
-
-            if is_query {
-                match db.query(&sql_to_run) {
-                    Ok(res) => {
-                        let elapsed = start.elapsed();
-                        print_ascii_table(&res.columns, &res.rows);
-                        if timer_enabled {
-                            println!("({} row(s), took {:.2?})", res.rows.len(), elapsed);
-                        }
-                    }
-                    Err(e) => eprintln!("Query Error: {e}"),
-                }
-            } else {
-                match db.execute_batch(&sql_to_run) {
-                    Ok(()) => {
-                        let elapsed = start.elapsed();
-                        if timer_enabled {
-                            println!("Statement executed successfully ({:.2?})", elapsed);
-                        } else {
-                            println!("Statement executed successfully.");
-                        }
-                    }
-                    Err(e) => eprintln!("Execution Error: {e}"),
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn print_ascii_table(columns: &[String], rows: &[serde_json::Value]) {
-    if columns.is_empty() {
-        println!("(No columns)");
-        return;
-    }
-
-    // Calculate column widths
-    let mut widths: Vec<usize> = columns.iter().map(|c| c.len()).collect();
-
-    for row in rows {
-        for (i, col) in columns.iter().enumerate() {
-            let val_str = match row.get(col) {
-                Some(serde_json::Value::Null) | None => "NULL".to_string(),
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(v) => v.to_string(),
-            };
-            widths[i] = widths[i].max(val_str.len()).min(50);
-        }
-    }
-
-    // Print Header
-    let mut separator = String::from("+");
-    for w in &widths {
-        separator.push_str(&format!("{}+", "-".repeat(w + 2)));
-    }
-    println!("{}", separator);
-
-    let mut header = String::from("|");
-    for (i, col) in columns.iter().enumerate() {
-        header.push_str(&format!(" {:<width$} |", col, width = widths[i]));
-    }
-    println!("{}", header);
-    println!("{}", separator);
-
-    // Print Rows
-    for row in rows {
-        let mut row_line = String::from("|");
-        for (i, col) in columns.iter().enumerate() {
-            let val_str = match row.get(col) {
-                Some(serde_json::Value::Null) | None => "NULL".to_string(),
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(v) => v.to_string(),
-            };
-            let truncated = if val_str.len() > widths[i] {
-                format!("{}...", &val_str[..widths[i].saturating_sub(3)])
-            } else {
-                val_str
-            };
-            row_line.push_str(&format!(" {:<width$} |", truncated, width = widths[i]));
-        }
-        println!("{}", row_line);
-    }
-    println!("{}", separator);
-}
-
-#[derive(Debug, Args)]
 pub struct ServeArgs {
     /// Address on which the HTTP server listens.
     #[arg(long, default_value = "127.0.0.1:8787")]
@@ -830,6 +577,10 @@ pub struct ServeArgs {
     /// Address for PostgreSQL wire protocol (e.g., 127.0.0.1:5432).
     #[arg(long)]
     pub pg_listen: Option<std::net::SocketAddr>,
+
+    /// Address for the MySQL wire protocol (e.g., 127.0.0.1:3306).
+    #[arg(long)]
+    pub mysql_listen: Option<std::net::SocketAddr>,
 
     /// `SQLite` file used for the durable relay log.
     #[arg(long, default_value = "novadb-relay.sqlite3")]
@@ -850,18 +601,53 @@ pub struct ServeArgs {
     /// Password for PostgreSQL wire protocol authentication.
     #[arg(long, env = "NOVADB_PG_PASSWORD")]
     pub pg_password: Option<String>,
+
+    /// PostgreSQL password authentication method: scram-sha-256, md5, or password.
+    #[arg(long, env = "NOVADB_PG_AUTH_METHOD", default_value = "scram-sha-256")]
+    pub pg_auth_method: novadb_wire::PgAuthMethod,
+
+    /// Maximum number of concurrent PostgreSQL client connections.
+    #[arg(long, env = "NOVADB_PG_MAX_CONNECTIONS", default_value_t = novadb_wire::DEFAULT_MAX_CONNECTIONS)]
+    pub pg_max_connections: usize,
+
+    /// Username for MySQL wire protocol authentication.
+    #[arg(long, env = "NOVADB_MYSQL_USER")]
+    pub mysql_user: Option<String>,
+
+    /// Password for MySQL wire protocol authentication (`mysql_native_password`).
+    #[arg(long, env = "NOVADB_MYSQL_PASSWORD")]
+    pub mysql_password: Option<String>,
+
+    /// Maximum number of concurrent MySQL client connections.
+    #[arg(long, env = "NOVADB_MYSQL_MAX_CONNECTIONS", default_value_t = novadb_mysql::DEFAULT_MAX_CONNECTIONS)]
+    pub mysql_max_connections: usize,
+
+    /// Browser origin allowed to call the HTTP API via CORS (repeatable; `*` allows any).
+    #[arg(
+        long = "cors-origin",
+        env = "NOVADB_CORS_ORIGINS",
+        value_delimiter = ','
+    )]
+    pub cors_origins: Vec<String>,
+
+    /// Seconds an HTTP request may take before the server replies 408.
+    #[arg(long, env = "NOVADB_REQUEST_TIMEOUT_SECS", default_value_t = novadb_server::DEFAULT_REQUEST_TIMEOUT_SECS)]
+    pub request_timeout_secs: u64,
+
+    /// Allow listening on non-loopback addresses without a bearer token / PG / MySQL password.
+    #[arg(long, env = "NOVADB_ALLOW_INSECURE")]
+    pub allow_insecure: bool,
 }
 
-async fn serve(args: &ServeArgs) -> Result<()> {
-    if !args.data_dir.exists() {
-        std::fs::create_dir_all(&args.data_dir)?;
-    }
-    if let Some(parent) = args.database_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-    }
+/// HTTP configuration plus the optional wire gateway configurations.
+type ServeConfigs = (
+    novadb_server::ServerConfig,
+    Option<novadb_wire::PgConfig>,
+    Option<novadb_mysql::MySqlConfig>,
+);
 
+/// Builds and validates the HTTP and optional PostgreSQL / MySQL configurations.
+fn serve_configs(args: &ServeArgs) -> Result<ServeConfigs> {
     let config = novadb_server::ServerConfig {
         listen_addr: args.listen,
         database_path: args.database_path.clone(),
@@ -870,34 +656,163 @@ async fn serve(args: &ServeArgs) -> Result<()> {
         max_push_batch_size: novadb_server::DEFAULT_MAX_PUSH_BATCH_SIZE,
         default_pull_limit: novadb_server::DEFAULT_PULL_LIMIT,
         max_pull_limit: novadb_server::DEFAULT_MAX_PULL_LIMIT,
+        cors_origins: args.cors_origins.clone(),
+        request_timeout: std::time::Duration::from_secs(args.request_timeout_secs),
+        allow_insecure: args.allow_insecure,
     };
     config
         .validate()
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    if let Some(pg_addr) = args.pg_listen {
+    let pg_config = args.pg_listen.map(|pg_addr| {
         let pg_db_path = args.data_dir.join("__default__.novadb");
-        let pg_database = NovaDb::open(&pg_db_path)?;
-        let pg_config = novadb_wire::PgConfig {
-            listen_addr: pg_addr,
-            username: args.pg_user.clone(),
-            password: args.pg_password.clone(),
-            database_path: pg_db_path.to_string_lossy().into_owned(),
-        };
-        tokio::select! {
-            result = novadb_server::serve(config) => {
-                result.map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            }
-            result = novadb_wire::serve_pg(pg_database, pg_config) => {
-                result.map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            }
-        }
-    } else {
-        novadb_server::serve(config)
-            .await
+        let mut pg_config = novadb_wire::PgConfig::new(pg_addr, pg_db_path.to_string_lossy());
+        pg_config.username = args.pg_user.clone();
+        pg_config.password = args.pg_password.clone();
+        pg_config.data_dir = Some(args.data_dir.clone());
+        pg_config.auth_method = args.pg_auth_method;
+        pg_config.max_connections = args.pg_max_connections;
+        pg_config.allow_insecure = args.allow_insecure;
+        pg_config
+    });
+    if let Some(pg_config) = &pg_config {
+        pg_config
+            .validate()
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     }
+    let mysql_config = args.mysql_listen.map(|mysql_addr| {
+        let mut mysql_config = novadb_mysql::MySqlConfig::new(mysql_addr, args.data_dir.clone());
+        mysql_config.username = args.mysql_user.clone();
+        mysql_config.password = args.mysql_password.clone();
+        mysql_config.max_connections = args.mysql_max_connections;
+        mysql_config.allow_insecure = args.allow_insecure;
+        mysql_config
+    });
+    if let Some(mysql_config) = &mysql_config {
+        mysql_config
+            .validate()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    }
+    Ok((config, pg_config, mysql_config))
+}
+
+async fn serve(args: &ServeArgs) -> Result<()> {
+    // Validate before touching the filesystem so misconfiguration fails fast.
+    let (config, pg_config, mysql_config) = serve_configs(args)?;
+    if !args.data_dir.exists() {
+        std::fs::create_dir_all(&args.data_dir)?;
+    }
+    if let Some(parent) = args.database_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    if args.allow_insecure {
+        eprintln!(
+            "[WARN] --allow-insecure is set: unauthenticated non-loopback listeners are permitted"
+        );
+    }
+
+    novadb_server::serve_with_gateways(config, pg_config, mysql_config)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod serve_tests {
+    use super::*;
+
+    fn parse_serve(extra: &[&str]) -> ServeArgs {
+        let mut argv = vec!["novadb", "serve"];
+        argv.extend_from_slice(extra);
+        match Cli::try_parse_from(argv).unwrap().command {
+            Command::Serve(args) => args,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn serve_refuses_unauthenticated_public_listeners() {
+        let args = parse_serve(&["--listen", "0.0.0.0:8787", "--bearer-token", "t"]);
+        assert!(serve_configs(&args).is_ok());
+
+        let args = parse_serve(&["--listen", "127.0.0.1:8787", "--pg-listen", "0.0.0.0:5432"]);
+        if std::env::var_os("NOVADB_PG_PASSWORD").is_none() {
+            let error = serve_configs(&args).unwrap_err().to_string();
+            assert!(error.contains("--allow-insecure"), "{error}");
+        }
+
+        let args = parse_serve(&[
+            "--listen",
+            "0.0.0.0:8787",
+            "--pg-listen",
+            "0.0.0.0:5432",
+            "--allow-insecure",
+        ]);
+        let (config, pg_config, _) = serve_configs(&args).unwrap();
+        assert!(config.allow_insecure);
+        assert!(pg_config.unwrap().allow_insecure);
+    }
+
+    #[test]
+    fn serve_passes_hardening_options_through() {
+        let args = parse_serve(&[
+            "--cors-origin",
+            "https://a.example,https://b.example",
+            "--request-timeout-secs",
+            "9",
+            "--pg-listen",
+            "127.0.0.1:5432",
+            "--pg-auth-method",
+            "md5",
+            "--pg-max-connections",
+            "3",
+        ]);
+        let (config, pg_config, _) = serve_configs(&args).unwrap();
+        assert_eq!(
+            config.cors_origins,
+            ["https://a.example", "https://b.example"]
+        );
+        assert_eq!(config.request_timeout, std::time::Duration::from_secs(9));
+        let pg_config = pg_config.unwrap();
+        assert_eq!(pg_config.auth_method, novadb_wire::PgAuthMethod::Md5);
+        assert_eq!(pg_config.max_connections, 3);
+        assert_eq!(
+            pg_config.data_dir.as_deref(),
+            Some(Path::new("novadb-data"))
+        );
+
+        let args = parse_serve(&["--cors-origin", "https://a.example/"]);
+        assert!(serve_configs(&args).is_err());
+    }
+
+    #[test]
+    fn serve_configures_the_mysql_gateway() {
+        let args = parse_serve(&[
+            "--mysql-listen",
+            "127.0.0.1:3306",
+            "--mysql-user",
+            "app",
+            "--mysql-password",
+            "pw",
+            "--mysql-max-connections",
+            "4",
+        ]);
+        let (_, pg_config, mysql_config) = serve_configs(&args).unwrap();
+        assert!(pg_config.is_none());
+        let mysql_config = mysql_config.unwrap();
+        assert_eq!(mysql_config.username.as_deref(), Some("app"));
+        assert_eq!(mysql_config.password.as_deref(), Some("pw"));
+        assert_eq!(mysql_config.max_connections, 4);
+        assert_eq!(mysql_config.data_dir, Path::new("novadb-data"));
+
+        if std::env::var_os("NOVADB_MYSQL_PASSWORD").is_none() {
+            let args = parse_serve(&["--mysql-listen", "0.0.0.0:3306"]);
+            let error = serve_configs(&args).unwrap_err().to_string();
+            assert!(error.contains("--mysql-password"), "{error}");
+        }
+    }
 }
 
 fn init(args: &InitArgs) -> Result<()> {
@@ -928,6 +843,12 @@ fn execute(args: &SqlArgs) -> Result<()> {
     database
         .execute_batch(&sql)
         .context("failed to execute SQL")?;
+    if console::sql::mentions_rows(&sql) {
+        eprintln!(
+            "note: `novadb exec` returns no rows; any SELECT / RETURNING / OUTPUT results were \
+             discarded. Use `novadb query` to see rows."
+        );
+    }
     print_json(&json!({ "ok": true }))
 }
 
@@ -1704,6 +1625,59 @@ mod tests {
             panic!("expected sync-enable command");
         };
         assert_eq!(args.primary_key, "id");
+    }
+
+    fn import_fixture(csv: &[u8], skip_bad_rows: bool) -> (tempfile::TempDir, Result<()>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let db = NovaDb::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE people (id INTEGER, name TEXT, note TEXT)")
+            .unwrap();
+        drop(db);
+        let file = dir.path().join("in.csv");
+        std::fs::write(&file, csv).unwrap();
+        let result = import(&ImportArgs {
+            path,
+            file,
+            table: "people".into(),
+            delimiter: ',',
+            skip_bad_rows,
+        });
+        (dir, result)
+    }
+
+    fn people(dir: &tempfile::TempDir) -> Vec<serde_json::Value> {
+        let db = NovaDb::open(dir.path().join("t.db")).unwrap();
+        db.query("SELECT id, name, note FROM people ORDER BY id")
+            .unwrap()
+            .rows
+    }
+
+    #[test]
+    fn import_handles_quotes_bom_crlf_and_newlines() {
+        let csv = "\u{feff}id,name,note\r\n1,\"Smith, J\",\"say \"\"hi\"\"\"\r\n2,bob,\"two\r\nlines\"\r\n";
+        let (dir, result) = import_fixture(csv.as_bytes(), false);
+        result.unwrap();
+        let rows = people(&dir);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["name"], "Smith, J");
+        assert_eq!(rows[0]["note"], "say \"hi\"");
+        assert_eq!(rows[1]["note"], "two\r\nlines");
+    }
+
+    #[test]
+    fn import_rejects_field_count_mismatch_atomically() {
+        let (dir, result) = import_fixture(b"id,name,note\n1,a,x\n2,b\n3,c,z\n", false);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("line 3"), "{err}");
+        assert!(people(&dir).is_empty());
+    }
+
+    #[test]
+    fn import_skip_bad_rows_keeps_good_rows() {
+        let (dir, result) = import_fixture(b"id,name,note\n1,a,x\n2,b\n3,c,z\n", true);
+        result.unwrap();
+        assert_eq!(people(&dir).len(), 2);
     }
 
     #[test]

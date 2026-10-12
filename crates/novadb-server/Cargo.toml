@@ -12,11 +12,13 @@ axum.workspace = true
 clap.workspace = true
 novadb-core = { path = "../novadb-core" }
 novadb-wire = { path = "../novadb-wire" }
+novadb-mysql = { path = "../novadb-mysql" }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tower-http = { workspace = true, features = ["timeout"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
