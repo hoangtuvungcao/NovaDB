@@ -4,6 +4,7 @@ members = [
     "crates/novadb-server",
     "crates/novadb-cli",
     "crates/novadb-wire",
+    "crates/novadb-mysql",
     "crates/novadb-e2e",
 ]
 resolver = "3"

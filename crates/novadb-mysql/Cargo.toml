@@ -1,0 +1,25 @@
+[package]
+name = "novadb-mysql"
+description = "MySQL wire protocol gateway for NovaDB"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+novadb-core = { path = "../novadb-core" }
+serde_json.workspace = true
+sha1.workspace = true
+sha2 = "0.10.9"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "macros", "rt", "sync", "time"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true
