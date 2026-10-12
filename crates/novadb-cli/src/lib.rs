@@ -1898,7 +1898,8 @@ mod tests {
         assert!(error.to_string().contains("not valid UTF-8"));
     }
 
-    #[cfg(unix)]
+    // macOS file systems (APFS/HFS+) refuse to create non-UTF-8 file names.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn migration_loader_rejects_invalid_utf8_filename() {
         use std::ffi::OsString;
