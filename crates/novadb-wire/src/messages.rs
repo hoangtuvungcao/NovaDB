@@ -8,6 +8,8 @@
 use bytes::{Buf, BufMut, BytesMut};
 use std::collections::HashMap;
 
+use crate::errors::PgError;
+
 /// Messages sent from the frontend (client) to the backend (server).
 #[derive(Debug)]
 pub enum FrontendMessage {
@@ -18,6 +20,10 @@ pub enum FrontendMessage {
     },
     /// SSL negotiation request (we decline SSL for now).
     SslRequest,
+    /// GSSAPI encryption negotiation request (declined).
+    GssEncRequest,
+    /// Query cancellation request (not supported; the connection is closed).
+    CancelRequest,
     /// Simple query protocol.
     Query(String),
     /// Parse step of extended query protocol.
@@ -30,7 +36,12 @@ pub enum FrontendMessage {
     Bind {
         portal: String,
         statement: String,
+        /// Parameter format codes (0 = text, 1 = binary); empty = all text,
+        /// one entry = applies to every parameter.
+        param_formats: Vec<i16>,
         params: Vec<Option<Vec<u8>>>,
+        /// Result format codes with the same broadcasting rules.
+        result_formats: Vec<i16>,
     },
     /// Describe step of extended query protocol.
     Describe { kind: u8, name: String },
@@ -42,10 +53,12 @@ pub enum FrontendMessage {
     Close { kind: u8, name: String },
     /// Flush output buffers.
     Flush,
-    /// Password response for authentication.
-    PasswordMessage(String),
+    /// Raw body of a password / SASL response message (`'p'`).
+    PasswordMessage(Vec<u8>),
     /// Client termination.
     Terminate,
+    /// A message type this server does not implement.
+    Unknown(u8),
 }
 
 /// Messages sent from the backend (server) to the frontend (client).
@@ -55,6 +68,14 @@ pub enum BackendMessage {
     AuthenticationOk,
     /// Request cleartext password.
     AuthenticationCleartextPassword,
+    /// Request an MD5-hashed password using the given salt.
+    AuthenticationMd5Password { salt: [u8; 4] },
+    /// Start SASL authentication with the listed mechanisms.
+    AuthenticationSasl { mechanisms: Vec<String> },
+    /// SASL challenge data.
+    AuthenticationSaslContinue { data: Vec<u8> },
+    /// SASL outcome data (server signature).
+    AuthenticationSaslFinal { data: Vec<u8> },
     /// Server parameter status.
     ParameterStatus { name: String, value: String },
     /// Backend key data (process ID + secret key for cancel).
@@ -70,11 +91,7 @@ pub enum BackendMessage {
     /// Empty query response.
     EmptyQueryResponse,
     /// Error response.
-    ErrorResponse {
-        severity: String,
-        code: String,
-        message: String,
-    },
+    ErrorResponse { severity: String, error: PgError },
     /// Notice (non-fatal warning).
     NoticeResponse { message: String },
     /// Parse complete (extended query protocol).
@@ -83,6 +100,10 @@ pub enum BackendMessage {
     BindComplete,
     /// No data (for Describe on an empty result set).
     NoData,
+    /// Parameter types of a prepared statement (reply to Describe).
+    ParameterDescription { oids: Vec<i32> },
+    /// An Execute row limit was reached before the portal was exhausted.
+    PortalSuspended,
     /// Close complete.
     CloseComplete,
 }
@@ -101,126 +122,170 @@ pub struct ColumnDescription {
 
 // --- Decoding ---
 
-/// Parse a frontend message from the buffer. Returns None if not enough data.
-pub fn decode_startup(buf: &mut BytesMut) -> Option<FrontendMessage> {
-    if buf.len() < 4 {
-        return None;
+/// Protocol version 3.0 (`196608`).
+pub const PROTOCOL_VERSION_3: i32 = 196_608;
+/// `SSLRequest` magic version code.
+const SSL_REQUEST_CODE: i32 = 80_877_103;
+/// `GSSENCRequest` magic version code.
+const GSSENC_REQUEST_CODE: i32 = 80_877_104;
+/// `CancelRequest` magic version code.
+const CANCEL_REQUEST_CODE: i32 = 80_877_102;
+/// Maximum accepted startup packet length (matches PostgreSQL's limit).
+pub const MAX_STARTUP_PACKET_BYTES: usize = 10_000;
+/// Maximum accepted length of a single typed frontend message.
+pub const MAX_MESSAGE_BYTES: usize = 64 * 1_024 * 1_024;
+
+/// A malformed or oversized frontend message. The connection must be closed
+/// because message framing can no longer be trusted.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ProtocolError {
+    #[error("invalid message length {0}")]
+    InvalidLength(i32),
+    #[error("message of {0} bytes exceeds the maximum of {1} bytes")]
+    TooLarge(usize, usize),
+    #[error("malformed {0} message")]
+    Malformed(&'static str),
+}
+
+/// Validates a length word (which includes itself) against `max`.
+fn checked_length(raw: i32, max: usize) -> Result<usize, ProtocolError> {
+    let len = usize::try_from(raw).map_err(|_| ProtocolError::InvalidLength(raw))?;
+    if len < 4 {
+        return Err(ProtocolError::InvalidLength(raw));
     }
-    let len = (&buf[..4]).get_i32() as usize;
+    if len > max {
+        return Err(ProtocolError::TooLarge(len, max));
+    }
+    Ok(len)
+}
+
+/// Parse a startup-phase message from the buffer.
+///
+/// Returns `Ok(None)` if more data is needed.
+pub fn decode_startup(buf: &mut BytesMut) -> Result<Option<FrontendMessage>, ProtocolError> {
+    if buf.len() < 4 {
+        return Ok(None);
+    }
+    let len = checked_length((&buf[..4]).get_i32(), MAX_STARTUP_PACKET_BYTES)?;
+    if len < 8 {
+        return Err(ProtocolError::Malformed("startup"));
+    }
     if buf.len() < len {
-        return None;
+        return Ok(None);
     }
 
     let mut msg = buf.split_to(len);
     msg.advance(4); // skip length
+    let version = msg.get_i32();
 
-    if msg.len() < 4 {
-        return None;
+    match version {
+        SSL_REQUEST_CODE => return Ok(Some(FrontendMessage::SslRequest)),
+        GSSENC_REQUEST_CODE => return Ok(Some(FrontendMessage::GssEncRequest)),
+        CANCEL_REQUEST_CODE => return Ok(Some(FrontendMessage::CancelRequest)),
+        _ => {}
     }
-
-    let version = (&msg[..4]).get_i32();
-
-    // SSL request: version = 80877103
-    if version == 80_877_103 {
-        return Some(FrontendMessage::SslRequest);
-    }
-
-    msg.advance(4); // skip version
 
     // Parse null-terminated key=value pairs
     let mut params = HashMap::new();
     loop {
-        let key = read_cstring(&mut msg)?;
+        let key = read_cstring(&mut msg).ok_or(ProtocolError::Malformed("startup"))?;
         if key.is_empty() {
             break;
         }
-        let value = read_cstring(&mut msg)?;
+        let value = read_cstring(&mut msg).ok_or(ProtocolError::Malformed("startup"))?;
         params.insert(key, value);
     }
 
-    Some(FrontendMessage::Startup { version, params })
+    Ok(Some(FrontendMessage::Startup { version, params }))
+}
+
+/// Reads a non-negative 16-bit count field.
+fn read_count(body: &mut BytesMut, what: &'static str) -> Result<usize, ProtocolError> {
+    if body.remaining() < 2 {
+        return Ok(0);
+    }
+    usize::try_from(body.get_i16()).map_err(|_| ProtocolError::Malformed(what))
+}
+
+/// Reads a `count + i16 codes` format-code list.
+fn read_formats(body: &mut BytesMut, what: &'static str) -> Result<Vec<i16>, ProtocolError> {
+    let count = read_count(body, what)?;
+    if body.remaining() < count * 2 {
+        return Err(ProtocolError::Malformed(what));
+    }
+    Ok((0..count).map(|_| body.get_i16()).collect())
 }
 
 /// Parse a typed frontend message (after startup).
-pub fn decode_message(buf: &mut BytesMut) -> Option<FrontendMessage> {
+///
+/// Returns `Ok(None)` if more data is needed.
+pub fn decode_message(buf: &mut BytesMut) -> Result<Option<FrontendMessage>, ProtocolError> {
     if buf.len() < 5 {
-        return None;
+        return Ok(None);
     }
     let msg_type = buf[0];
-    let len = (&buf[1..5]).get_i32() as usize;
+    let len = checked_length((&buf[1..5]).get_i32(), MAX_MESSAGE_BYTES)?;
     if buf.len() < 1 + len {
-        return None;
+        return Ok(None);
     }
 
     buf.advance(1); // skip type byte
     let mut body = buf.split_to(len);
     body.advance(4); // skip length (included in len)
 
-    match msg_type {
+    let message = match msg_type {
         b'Q' => {
-            let query = read_cstring(&mut body).unwrap_or_default();
-            Some(FrontendMessage::Query(query))
+            let query = read_cstring(&mut body).ok_or(ProtocolError::Malformed("Query"))?;
+            FrontendMessage::Query(query)
         }
         b'P' => {
-            let name = read_cstring(&mut body).unwrap_or_default();
-            let query = read_cstring(&mut body).unwrap_or_default();
-            let num_params = if body.remaining() >= 2 {
-                body.get_i16() as usize
-            } else {
-                0
-            };
-            let mut param_types = Vec::with_capacity(num_params);
+            let name = read_cstring(&mut body).ok_or(ProtocolError::Malformed("Parse"))?;
+            let query = read_cstring(&mut body).ok_or(ProtocolError::Malformed("Parse"))?;
+            let num_params = read_count(&mut body, "Parse")?;
+            let mut param_types = Vec::with_capacity(num_params.min(body.remaining() / 4));
             for _ in 0..num_params {
-                if body.remaining() >= 4 {
-                    param_types.push(body.get_i32());
+                if body.remaining() < 4 {
+                    return Err(ProtocolError::Malformed("Parse"));
                 }
+                param_types.push(body.get_i32());
             }
-            Some(FrontendMessage::Parse {
+            FrontendMessage::Parse {
                 name,
                 query,
                 param_types,
-            })
+            }
         }
         b'B' => {
-            let portal = read_cstring(&mut body).unwrap_or_default();
-            let statement = read_cstring(&mut body).unwrap_or_default();
-            // Skip format codes
-            let num_formats = if body.remaining() >= 2 {
-                body.get_i16() as usize
-            } else {
-                0
-            };
-            for _ in 0..num_formats {
-                if body.remaining() >= 2 {
-                    body.advance(2);
-                }
-            }
+            let portal = read_cstring(&mut body).ok_or(ProtocolError::Malformed("Bind"))?;
+            let statement = read_cstring(&mut body).ok_or(ProtocolError::Malformed("Bind"))?;
+            let param_formats = read_formats(&mut body, "Bind")?;
             // Read parameters
-            let num_params = if body.remaining() >= 2 {
-                body.get_i16() as usize
-            } else {
-                0
-            };
-            let mut params = Vec::with_capacity(num_params);
+            let num_params = read_count(&mut body, "Bind")?;
+            let mut params = Vec::with_capacity(num_params.min(body.remaining() / 4));
             for _ in 0..num_params {
-                if body.remaining() >= 4 {
-                    let param_len = body.get_i32();
-                    if param_len < 0 {
-                        params.push(None); // NULL
-                    } else {
-                        let len = param_len as usize;
-                        if body.remaining() >= len {
-                            let data = body.split_to(len).to_vec();
-                            params.push(Some(data));
-                        }
+                if body.remaining() < 4 {
+                    return Err(ProtocolError::Malformed("Bind"));
+                }
+                let param_len = body.get_i32();
+                if param_len < 0 {
+                    params.push(None); // NULL
+                } else {
+                    let len =
+                        usize::try_from(param_len).map_err(|_| ProtocolError::Malformed("Bind"))?;
+                    if body.remaining() < len {
+                        return Err(ProtocolError::Malformed("Bind"));
                     }
+                    params.push(Some(body.split_to(len).to_vec()));
                 }
             }
-            Some(FrontendMessage::Bind {
+            let result_formats = read_formats(&mut body, "Bind")?;
+            FrontendMessage::Bind {
                 portal,
                 statement,
+                param_formats,
                 params,
-            })
+                result_formats,
+            }
         }
         b'D' => {
             let kind = if body.remaining() > 0 {
@@ -229,7 +294,7 @@ pub fn decode_message(buf: &mut BytesMut) -> Option<FrontendMessage> {
                 b'S'
             };
             let name = read_cstring(&mut body).unwrap_or_default();
-            Some(FrontendMessage::Describe { kind, name })
+            FrontendMessage::Describe { kind, name }
         }
         b'E' => {
             let portal = read_cstring(&mut body).unwrap_or_default();
@@ -238,10 +303,10 @@ pub fn decode_message(buf: &mut BytesMut) -> Option<FrontendMessage> {
             } else {
                 0
             };
-            Some(FrontendMessage::Execute { portal, max_rows })
+            FrontendMessage::Execute { portal, max_rows }
         }
-        b'S' => Some(FrontendMessage::Sync),
-        b'H' => Some(FrontendMessage::Flush),
+        b'S' => FrontendMessage::Sync,
+        b'H' => FrontendMessage::Flush,
         b'C' => {
             let kind = if body.remaining() > 0 {
                 body.get_u8()
@@ -249,18 +314,18 @@ pub fn decode_message(buf: &mut BytesMut) -> Option<FrontendMessage> {
                 b'S'
             };
             let name = read_cstring(&mut body).unwrap_or_default();
-            Some(FrontendMessage::Close { kind, name })
+            FrontendMessage::Close { kind, name }
         }
-        b'p' => {
-            let password = read_cstring(&mut body).unwrap_or_default();
-            Some(FrontendMessage::PasswordMessage(password))
+        // Password, SASLInitialResponse and SASLResponse all share type 'p';
+        // the session interprets the raw body according to the auth stage.
+        b'p' => FrontendMessage::PasswordMessage(body.to_vec()),
+        b'X' => FrontendMessage::Terminate,
+        other => {
+            tracing::warn!(msg_type = other, "unknown frontend message type");
+            FrontendMessage::Unknown(other)
         }
-        b'X' => Some(FrontendMessage::Terminate),
-        _ => {
-            tracing::warn!(msg_type = msg_type, "unknown frontend message type");
-            None
-        }
-    }
+    };
+    Ok(Some(message))
 }
 
 // --- Encoding ---
@@ -278,6 +343,35 @@ impl BackendMessage {
                 buf.put_u8(b'R');
                 buf.put_i32(8);
                 buf.put_i32(3); // cleartext password
+            }
+            BackendMessage::AuthenticationMd5Password { salt } => {
+                buf.put_u8(b'R');
+                buf.put_i32(12);
+                buf.put_i32(5); // MD5 password
+                buf.extend_from_slice(salt);
+            }
+            BackendMessage::AuthenticationSasl { mechanisms } => {
+                let mut body = BytesMut::new();
+                body.put_i32(10); // SASL
+                for mechanism in mechanisms {
+                    put_cstring(&mut body, mechanism);
+                }
+                body.put_u8(0);
+                buf.put_u8(b'R');
+                buf.put_i32(4 + body.len() as i32);
+                buf.extend_from_slice(&body);
+            }
+            BackendMessage::AuthenticationSaslContinue { data } => {
+                buf.put_u8(b'R');
+                buf.put_i32(8 + data.len() as i32);
+                buf.put_i32(11); // SASL continue
+                buf.extend_from_slice(data);
+            }
+            BackendMessage::AuthenticationSaslFinal { data } => {
+                buf.put_u8(b'R');
+                buf.put_i32(8 + data.len() as i32);
+                buf.put_i32(12); // SASL final
+                buf.extend_from_slice(data);
             }
             BackendMessage::ParameterStatus { name, value } => {
                 let len = 4 + name.len() + 1 + value.len() + 1;
@@ -343,20 +437,30 @@ impl BackendMessage {
                 buf.put_u8(b'I');
                 buf.put_i32(4);
             }
-            BackendMessage::ErrorResponse {
-                severity,
-                code,
-                message,
-            } => {
+            BackendMessage::ErrorResponse { severity, error } => {
                 let mut body = BytesMut::new();
-                body.put_u8(b'S');
-                put_cstring(&mut body, severity);
-                body.put_u8(b'V');
-                put_cstring(&mut body, severity);
+                for (field, value) in [(b'S', severity.as_str()), (b'V', severity.as_str())] {
+                    body.put_u8(field);
+                    put_cstring(&mut body, value);
+                }
                 body.put_u8(b'C');
-                put_cstring(&mut body, code);
+                put_cstring(&mut body, &error.code);
                 body.put_u8(b'M');
-                put_cstring(&mut body, message);
+                put_cstring(&mut body, &error.message);
+                let optional = [
+                    (b'D', &error.detail),
+                    (b'H', &error.hint),
+                    (b's', &error.table.as_ref().map(|_| "public".to_owned())),
+                    (b't', &error.table),
+                    (b'c', &error.column),
+                    (b'n', &error.constraint),
+                ];
+                for (field, value) in optional {
+                    if let Some(value) = value {
+                        body.put_u8(field);
+                        put_cstring(&mut body, value);
+                    }
+                }
                 body.put_u8(0); // terminator
                 buf.put_u8(b'E');
                 buf.put_i32(4 + body.len() as i32);
@@ -383,6 +487,18 @@ impl BackendMessage {
             }
             BackendMessage::NoData => {
                 buf.put_u8(b'n');
+                buf.put_i32(4);
+            }
+            BackendMessage::ParameterDescription { oids } => {
+                buf.put_u8(b't');
+                buf.put_i32(6 + 4 * oids.len() as i32);
+                buf.put_i16(oids.len() as i16);
+                for oid in oids {
+                    buf.put_i32(*oid);
+                }
+            }
+            BackendMessage::PortalSuspended => {
+                buf.put_u8(b's');
                 buf.put_i32(4);
             }
             BackendMessage::CloseComplete => {
@@ -432,8 +548,7 @@ mod tests {
         let mut buf = BytesMut::new();
         BackendMessage::ErrorResponse {
             severity: "ERROR".into(),
-            code: "42601".into(),
-            message: "syntax error".into(),
+            error: PgError::new("42601", "syntax error"),
         }
         .encode(&mut buf);
         assert_eq!(buf[0], b'E');
@@ -460,7 +575,7 @@ mod tests {
         buf.put_i32(4 + query.len() as i32);
         buf.extend_from_slice(query);
 
-        let msg = decode_message(&mut buf).unwrap();
+        let msg = decode_message(&mut buf).unwrap().unwrap();
         match msg {
             FrontendMessage::Query(q) => assert_eq!(q, "SELECT 1;"),
             _ => panic!("expected Query message"),
@@ -473,7 +588,7 @@ mod tests {
         buf.put_u8(b'X');
         buf.put_i32(4);
 
-        let msg = decode_message(&mut buf).unwrap();
+        let msg = decode_message(&mut buf).unwrap().unwrap();
         assert!(matches!(msg, FrontendMessage::Terminate));
     }
 
@@ -483,7 +598,7 @@ mod tests {
         buf.put_i32(8); // length = 8
         buf.put_i32(80_877_103); // SSL request code
 
-        let msg = decode_startup(&mut buf).unwrap();
+        let msg = decode_startup(&mut buf).unwrap().unwrap();
         assert!(matches!(msg, FrontendMessage::SslRequest));
     }
 
@@ -513,5 +628,135 @@ mod tests {
         }
         .encode(&mut buf);
         assert_eq!(buf[0], b'D');
+    }
+
+    #[test]
+    fn decode_rejects_invalid_lengths() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'Q');
+        buf.put_i32(2); // shorter than the length word itself
+        assert_eq!(
+            decode_message(&mut buf).unwrap_err(),
+            ProtocolError::InvalidLength(2)
+        );
+
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'Q');
+        buf.put_i32(-1);
+        assert!(decode_message(&mut buf).is_err());
+
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'Q');
+        buf.put_i32(i32::MAX);
+        assert!(matches!(
+            decode_message(&mut buf),
+            Err(ProtocolError::TooLarge(..))
+        ));
+
+        let mut buf = BytesMut::new();
+        buf.put_i32(3);
+        assert!(decode_startup(&mut buf).is_err());
+
+        let mut buf = BytesMut::new();
+        buf.put_i32(1_000_000);
+        assert!(matches!(
+            decode_startup(&mut buf),
+            Err(ProtocolError::TooLarge(..))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_negative_bind_counts_without_panicking() {
+        let mut body = BytesMut::new();
+        put_cstring(&mut body, "");
+        put_cstring(&mut body, "");
+        body.put_i16(0); // format codes
+        body.put_i16(-1); // parameter count
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'B');
+        buf.put_i32(4 + body.len() as i32);
+        buf.extend_from_slice(&body);
+        assert_eq!(
+            decode_message(&mut buf).unwrap_err(),
+            ProtocolError::Malformed("Bind")
+        );
+
+        let mut body = BytesMut::new();
+        put_cstring(&mut body, "");
+        put_cstring(&mut body, "");
+        body.put_i16(0);
+        body.put_i16(1);
+        body.put_i32(100); // claims 100 bytes but none follow
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'B');
+        buf.put_i32(4 + body.len() as i32);
+        buf.extend_from_slice(&body);
+        assert!(decode_message(&mut buf).is_err());
+    }
+
+    #[test]
+    fn decode_unknown_message_type_is_reported() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'd'); // CopyData
+        buf.put_i32(4);
+        buf.put_u8(b'X');
+        buf.put_i32(4);
+        assert!(matches!(
+            decode_message(&mut buf).unwrap().unwrap(),
+            FrontendMessage::Unknown(b'd')
+        ));
+        assert!(matches!(
+            decode_message(&mut buf).unwrap().unwrap(),
+            FrontendMessage::Terminate
+        ));
+    }
+
+    #[test]
+    fn decode_gssenc_and_cancel_requests() {
+        let mut buf = BytesMut::new();
+        buf.put_i32(8);
+        buf.put_i32(80_877_104);
+        assert!(matches!(
+            decode_startup(&mut buf).unwrap().unwrap(),
+            FrontendMessage::GssEncRequest
+        ));
+
+        let mut buf = BytesMut::new();
+        buf.put_i32(16);
+        buf.put_i32(80_877_102);
+        buf.put_i32(1);
+        buf.put_i32(2);
+        assert!(matches!(
+            decode_startup(&mut buf).unwrap().unwrap(),
+            FrontendMessage::CancelRequest
+        ));
+    }
+
+    #[test]
+    fn decode_password_message_keeps_raw_body() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(b'p');
+        buf.put_i32(4 + 7);
+        buf.extend_from_slice(b"secret\0");
+        match decode_message(&mut buf).unwrap().unwrap() {
+            FrontendMessage::PasswordMessage(body) => assert_eq!(body, b"secret\0"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encode_auth_requests() {
+        let mut buf = BytesMut::new();
+        BackendMessage::AuthenticationMd5Password { salt: [1, 2, 3, 4] }.encode(&mut buf);
+        assert_eq!(&buf[..], &[b'R', 0, 0, 0, 12, 0, 0, 0, 5, 1, 2, 3, 4]);
+
+        let mut buf = BytesMut::new();
+        BackendMessage::AuthenticationSasl {
+            mechanisms: vec!["SCRAM-SHA-256".into()],
+        }
+        .encode(&mut buf);
+        assert_eq!(buf[0], b'R');
+        assert_eq!((&buf[1..5]).get_i32() as usize, buf.len() - 1);
+        assert!(buf.ends_with(b"SCRAM-SHA-256\0\0"));
     }
 }
