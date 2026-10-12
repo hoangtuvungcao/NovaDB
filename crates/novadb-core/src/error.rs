@@ -4,7 +4,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("SQLite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    Sqlite(rusqlite::Error),
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
@@ -62,6 +62,58 @@ pub enum Error {
 
     #[error("numeric value is outside SQLite's supported range")]
     NumericRange,
+
+    /// `PRAGMA foreign_key_check` found dangling references after a schema
+    /// rebuild; the rebuild was rolled back.
+    #[error("foreign key violation after schema rebuild: {0}")]
+    ForeignKeyViolation(String),
+
+    /// The SQL uses a construct NovaDB cannot execute faithfully. Returned
+    /// instead of silently ignoring or approximating the construct.
+    #[error("unsupported SQL: {0}")]
+    Unsupported(String),
+
+    /// A T-SQL run-time error (undeclared variable, failed conversion,
+    /// unbalanced transaction, ...).
+    #[error("T-SQL error: {0}")]
+    Tsql(String),
+
+    /// An error raised by `THROW` or `RAISERROR` (severity >= 11).
+    #[error("error {number} (severity {severity}, state {state}): {message}")]
+    Raised {
+        number: i64,
+        severity: i64,
+        state: i64,
+        message: String,
+    },
+}
+
+/// Prefix of a user-function error message that must surface as
+/// [`Error::Unsupported`] instead of a generic SQLite error.
+pub(crate) const UNSUPPORTED_PREFIX: &str = "novadb-unsupported: ";
+/// Builds the user-function error for a construct that cannot be computed
+/// faithfully (mapped to [`Error::Unsupported`]).
+pub(crate) fn unsupported_function_error(message: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::UserFunctionError(format!("{UNSUPPORTED_PREFIX}{}", message.into()).into())
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(error: rusqlite::Error) -> Self {
+        // SQLite reports a failing user function either as the original
+        // `UserFunctionError` or, once the statement has been stepped, as a
+        // plain failure carrying the message text.
+        let text = match &error {
+            rusqlite::Error::UserFunctionError(inner) => Some(inner.to_string()),
+            rusqlite::Error::SqliteFailure(_, Some(message)) => Some(message.clone()),
+            _ => None,
+        };
+        if let Some(text) = text {
+            if let Some(rest) = text.strip_prefix(UNSUPPORTED_PREFIX) {
+                return Error::Unsupported(rest.to_string());
+            }
+        }
+        Error::Sqlite(error)
+    }
 }
 
 /// Result type used throughout `novadb-core`.

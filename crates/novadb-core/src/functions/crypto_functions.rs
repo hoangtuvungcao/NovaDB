@@ -39,26 +39,35 @@ pub fn register(connection: &Connection) -> Result<()> {
     connection.create_scalar_function("hashbytes", 2, deterministic, |ctx| {
         let algo: String = ctx.get(0)?;
         let val = ctx.get_raw(1);
-        let bytes = match val {
+        // Text is hashed as its UTF-8 bytes (equals SQL Server's VARCHAR
+        // hashing for ASCII; NVARCHAR would hash UTF-16 code units).
+        let numeric_text;
+        let bytes: &[u8] = match val {
             ValueRef::Blob(b) => b,
             ValueRef::Text(t) => t,
             ValueRef::Null => return Ok(None::<Vec<u8>>),
             ValueRef::Integer(_) | ValueRef::Real(_) => {
-                let s = ctx.get::<String>(1)?;
-                return Ok(Some(Sha256::digest(s.as_bytes()).to_vec()));
+                numeric_text = ctx.get::<String>(1)?;
+                numeric_text.as_bytes()
             }
         };
         let hash = match algo
             .to_uppercase()
-            .replace('_', "")
-            .replace('-', "")
+            .replace(['_', '-'], "")
             .as_str()
         {
             "MD5" => md5::Md5::digest(bytes).to_vec(),
             "SHA" | "SHA1" => sha1::Sha1::digest(bytes).to_vec(),
             "SHA2256" | "SHA256" => sha2::Sha256::digest(bytes).to_vec(),
             "SHA2512" | "SHA512" => sha2::Sha512::digest(bytes).to_vec(),
-            _ => sha2::Sha256::digest(bytes).to_vec(),
+            _ => {
+                return Err(rusqlite::Error::UserFunctionError(
+                    format!(
+                        "HASHBYTES: unsupported algorithm '{algo}' (use MD5, SHA1, SHA2_256 or SHA2_512)"
+                    )
+                    .into(),
+                ));
+            }
         };
         Ok(Some(hash))
     })?;
@@ -190,27 +199,6 @@ pub fn register(connection: &Connection) -> Result<()> {
         }
         s.truncate(len);
         Ok(s)
-    })?;
-
-    // CHECKSUM(val) -> 32-bit signed integer (SQL Server compatible)
-    connection.create_scalar_function("checksum", 1, deterministic, |ctx| {
-        let val = ctx.get_raw(0);
-        let bytes = match val {
-            ValueRef::Blob(b) => b,
-            ValueRef::Text(t) => t,
-            ValueRef::Null => return Ok(0i64),
-            _ => {
-                let s = ctx.get::<String>(0)?;
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                use std::hash::Hasher;
-                hasher.write(s.as_bytes());
-                return Ok((hasher.finish() as i32) as i64);
-            }
-        };
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        use std::hash::Hasher;
-        hasher.write(bytes);
-        Ok((hasher.finish() as i32) as i64)
     })?;
 
     Ok(())

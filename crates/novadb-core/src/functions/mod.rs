@@ -10,6 +10,9 @@ pub mod datetime_functions;
 pub mod json_functions;
 pub mod math_functions;
 pub mod string_functions;
+pub mod tsql_datetime;
+pub mod tsql_functions;
+pub mod tsql_misc;
 pub mod uuid_functions;
 pub mod vector_functions;
 
@@ -27,5 +30,6 @@ pub fn register_all(connection: &Connection) -> Result<()> {
     vector_functions::register(connection)?;
     math_functions::register(connection)?;
     crypto_functions::register(connection)?;
+    tsql_functions::register(connection)?;
     Ok(())
 }

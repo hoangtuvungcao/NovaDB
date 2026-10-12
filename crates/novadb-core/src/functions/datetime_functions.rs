@@ -398,7 +398,7 @@ pub fn register(connection: &Connection) -> Result<()> {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as i64;
-            Ok(format!("{}+07:00", epoch_ms_to_iso(now)))
+            Ok(format!("{}+00:00", epoch_ms_to_iso(now)))
         },
     )?;
 
@@ -438,11 +438,6 @@ pub fn register(connection: &Connection) -> Result<()> {
             }
         },
     )?;
-
-    // DB_NAME() -> 'NovaSqlServerLab'
-    connection.create_scalar_function("db_name", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
-        Ok("NovaSqlServerLab".to_string())
-    })?;
 
     // SERVERPROPERTY(prop) -> property string
     connection.create_scalar_function("serverproperty", 1, FunctionFlags::SQLITE_UTF8, |ctx| {
@@ -620,6 +615,15 @@ fn epoch_ms_to_iso(ms: i64) -> String {
     let seconds = time_secs % 60;
     let (year, month, day) = days_to_ymd(days);
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{frac_ms:03}Z")
+}
+
+/// Registers T-SQL `DB_NAME()` for one connection; it reports the real
+/// database name (file stem, or `main` for in-memory databases).
+pub fn register_db_name(connection: &Connection, name: String) -> crate::Result<()> {
+    connection.create_scalar_function("db_name", 0, FunctionFlags::SQLITE_UTF8, move |_ctx| {
+        Ok(name.clone())
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
