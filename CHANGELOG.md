@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/). Changes marked **planned** are
 roadmap items and are **not** available in the current release.
 
-## Unreleased
+## 0.2.0 - 2026-10-12
 
 ### Security
 

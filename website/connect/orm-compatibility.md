@@ -4,7 +4,7 @@ NovaDB ships a compatibility suite in [`tests/compat`](https://github.com/hoangt
 (run it with `tests/compat/run.sh`). It starts a `novadbd` with the PostgreSQL and MySQL gateways and runs a
 **mini-app** per ORM or driver: DDL, CRUD, relations, constraints and their error codes, transactions, `RETURNING` /
 insert ids, and (for ORMs) reflection or migrations. Results below were produced on the 2026-10-12 development
-build (0.1.2 workspace tree). Both gateways were still being changed at the time; treat the tables as "verified on
+build (0.2.0 release tree). Both gateways were still being changed at the time; treat the tables as "verified on
 that build", not as a guarantee, and re-run the suite against your version.
 
 ::: warning What this does and does not show

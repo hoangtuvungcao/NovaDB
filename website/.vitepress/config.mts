@@ -38,7 +38,7 @@ export default defineConfig({
       { text: 'Deploy', link: '/deployment/binary-systemd', activeMatch: '/deployment/' },
       { text: 'Reference', link: '/reference/sql-dialect', activeMatch: '/reference/' },
       {
-        text: 'v0.1.2',
+        text: 'v0.2.0',
         items: [
           { text: 'Changelog', link: `${repo}/blob/master/CHANGELOG.md` },
           { text: 'Releases', link: `${repo}/releases` },

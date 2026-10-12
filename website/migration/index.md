@@ -34,7 +34,7 @@ fail when sent to the read-only `query` endpoint. Details: [From SQL Server](/mi
 
 ## Known pitfalls
 
-Observed on the current 0.1.2 development build. Check the
+Observed on the 0.2.0 release build. Check the
 [changelog](https://github.com/hoangtuvungcao/NovaDB/blob/master/CHANGELOG.md) for fixes.
 
 - `ROWVERSION` becomes `BLOB DEFAULT (randomblob(8))` and is not updated on writes. A column declared `TIMESTAMP`

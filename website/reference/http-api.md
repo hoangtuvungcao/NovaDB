@@ -10,7 +10,7 @@ Base URL: `http://<host>:8787`. JSON in, JSON out. When a bearer token is config
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | public | `{"status":"ok","version":"0.1.2"}` |
+| `GET` | `/health` | public | `{"status":"ok","version":"0.2.0"}` |
 | `GET` | `/`, `/studio`, `/studio/` | public | Web Studio page (its API calls still need the token) |
 | `GET` | `/v1/admin/databases` | token | List databases: `{"databases":[DatabaseMetadata...]}` |
 | `POST` | `/v1/admin/databases/{db}` | token | Create or open a database; returns `DatabaseMetadata` |

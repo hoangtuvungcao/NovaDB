@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "novadb-cli"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -936,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "novadb-core"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
@@ -957,7 +957,7 @@ dependencies = [
 
 [[package]]
 name = "novadb-e2e"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "novadb-core",
  "novadb-server",
@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "novadb-mysql"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "novadb-core",
@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "novadb-server"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1006,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "novadb-wire"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",

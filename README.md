@@ -7,7 +7,7 @@
   <a href="https://github.com/hoangtuvungcao/NovaDB/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/hoangtuvungcao/NovaDB/ci.yml?branch=master&style=flat-square&label=CI" alt="CI"></a>
   <a href="https://hoangtuvungcao.github.io/NovaDB/"><img src="https://img.shields.io/badge/docs-website-22D3EE?style=flat-square" alt="Documentation"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-0B1026?style=flat-square" alt="License: Apache-2.0"></a>
-  <img src="https://img.shields.io/badge/status-experimental%20(v0.1.x)-FFC857?style=flat-square" alt="Status: experimental">
+  <img src="https://img.shields.io/badge/status-experimental%20(v0.2.x)-FFC857?style=flat-square" alt="Status: experimental">
 </p>
 
 <p align="center">

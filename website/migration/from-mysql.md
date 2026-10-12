@@ -18,7 +18,7 @@ also run through the MySQL gateway with PyMySQL and behave differently there; th
 
 ## Compatibility matrix
 
-Re-tested on the current 0.1.2 development build.
+Re-tested on the 0.2.0 release build.
 
 | Feature | Core / HTTP / console | Gateway (\*) | Notes / what to do |
 |---|---|---|---|

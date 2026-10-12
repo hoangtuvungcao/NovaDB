@@ -54,7 +54,7 @@ Verified on the 2026-10-12 development build; behaviour of edge cases may still 
 
 ## Compatibility matrix
 
-Re-tested on the current 0.1.2 development build ("Works" = produced the expected result when we ran it; always
+Re-tested on the 0.2.0 release build ("Works" = produced the expected result when we ran it; always
 test your own statements).
 
 ### Schema and types
