@@ -1438,13 +1438,75 @@
         cur += src.slice(i, j + 1); i = j + 1; continue;
       }
       if (ch === "[") { const j = src.indexOf("]", i); const end = j < 0 ? src.length : j + 1; cur += src.slice(i, end); i = end; continue; }
-      if (ch === ";") { if (stripComments(cur).trim()) out.push(cur.trim()); cur = ""; i++; continue; }
+      if (ch === ";") {
+        if (insideBlock(cur)) { cur += ch; i++; continue; }
+        if (stripComments(cur).trim()) out.push(cur.trim());
+        cur = ""; i++; continue;
+      }
       cur += ch; i++;
     }
     if (stripComments(cur).trim()) out.push(cur.trim());
     return out;
   }
+  /** True while a CREATE TRIGGER body (BEGIN ... END, CASE ... END nest) is still open, so its inner ';' do not end the statement. */
+  function insideBlock(cur) {
+    const body = stripComments(cur).replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]/g, " ");
+    if (!/^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\b/i.test(body)) return false;
+    let depth = 0, seenBegin = false, m;
+    const re = /\b(BEGIN|CASE|END)\b/gi;
+    while ((m = re.exec(body))) {
+      const w = m[1].toUpperCase();
+      if (w === "END") depth--; else { depth++; if (w === "BEGIN") seenBegin = true; }
+    }
+    return !seenBegin || depth > 0;
+  }
   function stripComments(s) { return s.replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?(\*\/|$)/g, ""); }
+  // The server rejects any single request whose SQL is over 262144 UTF-8 *bytes*, and accented text
+  // (e.g. Vietnamese) takes 2-3 bytes per character, so sizes must be measured in bytes, not characters.
+  const MAX_REQUEST_SQL_BYTES = 240000;
+  const utf8Len = (str) => new TextEncoder().encode(str).length;
+  const GO_LINE = /^[ \t]*GO[ \t]*;?[ \t]*$/gim;
+  const PROCEDURAL_SQL = /\b(DECLARE|WHILE|BEGIN\s+TRY|BEGIN\s+CATCH|CREATE\s+(?:OR\s+ALTER\s+)?(?:PROC|PROCEDURE|FUNCTION))\b/i;
+  /** Split a script into request-sized chunks: GO batches first, then statements (never inside a trigger body). */
+  function planSqlChunks(sql) {
+    if (utf8Len(sql) <= MAX_REQUEST_SQL_BYTES) return [sql];
+    const units = [];
+    for (const batch of sql.split(GO_LINE)) {
+      if (!batch.trim()) continue;
+      if (utf8Len(batch) <= MAX_REQUEST_SQL_BYTES) { units.push({ text: batch.trim(), sep: "\nGO\n" }); continue; }
+      if (PROCEDURAL_SQL.test(stripComments(batch))) {
+        throw new Error("This batch is larger than the server limit (" + formatBytes(MAX_REQUEST_SQL_BYTES) + ") and contains procedural code (DECLARE, WHILE, TRY, stored procedures) that cannot be split safely. Split it with GO lines or into smaller files. SQLite has no stored procedures, so remove them from MySQL/SQL Server dumps; large MySQL dumps can be imported through the MySQL gateway (mysql -h 127.0.0.1 -P 3306 < dump.sql).");
+      }
+      for (const st of splitSql(batch)) {
+        const text = st.replace(/;?\s*$/, ";");
+        if (utf8Len(text) > MAX_REQUEST_SQL_BYTES) throw new Error("A single statement is " + formatBytes(utf8Len(text)) + ", over the server limit of " + formatBytes(MAX_REQUEST_SQL_BYTES) + " per request.");
+        units.push({ text, sep: "\n" });
+      }
+    }
+    const chunks = [];
+    let cur = "", curBytes = 0;
+    for (const u of units) {
+      const add = (cur ? u.sep : "") + u.text, n = utf8Len(add);
+      if (cur && curBytes + n > MAX_REQUEST_SQL_BYTES) { chunks.push(cur); cur = u.text; curBytes = utf8Len(u.text); }
+      else { cur += add; curBytes += n; }
+    }
+    if (cur) chunks.push(cur);
+    return chunks;
+  }
+  /** Execute SQL of any size by sending it in request-sized chunks. Each chunk is atomic; the whole script is not. */
+  async function executeChunked(sql, opts) {
+    opts = opts || {};
+    const chunks = planSqlChunks(sql);
+    for (let i = 0; i < chunks.length; i++) {
+      try { await execute(chunks[i], opts); }
+      catch (e) {
+        if (chunks.length > 1) e.message += " (request " + (i + 1) + " of " + chunks.length + "; the " + i + " earlier request" + (i === 1 ? " was" : "s were") + " already committed)";
+        throw e;
+      }
+      if (opts.onProgress) opts.onProgress(i + 1, chunks.length);
+    }
+    return chunks.length;
+  }
   function isReadStatement(stmt) {
     const s = stripComments(stmt).trim();
     if (/^PRAGMA\b/i.test(s)) return !/=/.test(s);
@@ -2740,9 +2802,9 @@
           }
         }
       } else {
-        await execute(sql, { db, quiet: true });
+        const requests = await executeChunked(sql, { db, quiet: true });
         wrote = true;
-        res.message = statements.length > 1 ? statements.length + " statements executed successfully." : "Statement executed successfully.";
+        res.message = (statements.length > 1 ? statements.length + " statements executed successfully." : "Statement executed successfully.") + (requests > 1 ? " Sent in " + requests + " requests because the script is larger than the server limit." : "");
       }
     } catch (err) {
       res.error = err.message;
@@ -2964,13 +3026,14 @@
         .replace(/\bCREATE\s+VIEW\s+(?!IF\s+NOT\s+EXISTS\b)/gi, "CREATE VIEW IF NOT EXISTS ")
         .replace(/\bCREATE\s+TRIGGER\s+(?!IF\s+NOT\s+EXISTS\b)/gi, "CREATE TRIGGER IF NOT EXISTS ");
     }
-    const bytes = new Blob([sql]).size;
-    if (bytes > 256 * 1024) { toast("Script is " + formatBytes(bytes) + "; the server accepts at most 256 KB per request. Split it into smaller files.", "error"); return; }
+    const bytes = utf8Len(sql);
     const btn = $("#btn-io-sql"), status = $("#io-sql-status");
     btn.disabled = true;
     status.textContent = "Executing…";
     const started = performance.now();
-    try { await execute(sql, { quiet: true }); }
+    try {
+      await executeChunked(sql, { quiet: true, onProgress: (done, total) => { if (total > 1) status.textContent = "Executed " + done + " / " + total + " requests…"; } });
+    }
     catch (e) {
       status.textContent = "Failed.";
       toast(e.message, "error", { title: "Script failed" });
@@ -3051,9 +3114,11 @@
     };
     try {
       for (const st of statements) {
-        if (size + st.length > 200000) await flush();
+        const n = utf8Len(st) + 1;
+        if (n > MAX_REQUEST_SQL_BYTES) throw new Error("One CSV row is " + formatBytes(n) + ", over the server limit of " + formatBytes(MAX_REQUEST_SQL_BYTES) + " per request.");
+        if (chunk.length && size + n > MAX_REQUEST_SQL_BYTES) await flush();
         chunk.push(st);
-        size += st.length + 1;
+        size += n;
       }
       await flush();
     } catch (e) {
