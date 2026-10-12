@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/hoangtuvungcao/NovaDB/security/advisories/new
+    about: Report security issues privately (see SECURITY.md).
+  - name: Documentation
+    url: https://hoangtuvungcao.github.io/NovaDB/
+    about: Guides, migration notes, FAQ and limitations.

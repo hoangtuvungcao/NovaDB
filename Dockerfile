@@ -12,6 +12,7 @@ USER novadb
 WORKDIR /var/lib/novadb
 VOLUME ["/var/lib/novadb"]
 EXPOSE 8787
+# Listening on 0.0.0.0 requires NOVADB_BEARER_TOKEN (see compose.yaml).
 ENTRYPOINT ["/usr/local/bin/novadbd"]
 CMD ["--listen", "0.0.0.0:8787", "--database-path", "/var/lib/novadb/relay.sqlite3", "--data-dir", "/var/lib/novadb/databases"]
 

@@ -1,0 +1,6 @@
+sqlalchemy>=2.0,<2.2
+pymysql
+psycopg[binary]
+alembic
+cryptography
+psycopg2-binary

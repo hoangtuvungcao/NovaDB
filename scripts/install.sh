@@ -127,6 +127,20 @@ success "NovaDB binaries successfully installed to ${INSTALL_DIR}/novadb and ${I
 # 5. Setup systemd service on Linux if running as root
 if [ "$OS" = "linux" ] && [ "$(id -u)" -eq 0 ] && command -v systemctl >/dev/null 2>&1 && [ -d "/etc/systemd/system" ]; then
     SERVICE_FILE="/etc/systemd/system/novadb.service"
+    ENV_FILE="/etc/novadb/novadb.env"
+    # novadbd refuses to listen on public interfaces without credentials, so
+    # generate them once and keep them across reinstalls.
+    if [ ! -f "$ENV_FILE" ]; then
+        info "Generating credentials at ${ENV_FILE}..."
+        mkdir -p /etc/novadb
+        umask 077
+        cat <<ENVEOF >"$ENV_FILE"
+NOVADB_BEARER_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+NOVADB_PG_USER=novadb
+NOVADB_PG_PASSWORD=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
+ENVEOF
+        chmod 600 "$ENV_FILE"
+    fi
     info "Setting up systemd service at ${SERVICE_FILE}..."
     cat <<EOF | tee "$SERVICE_FILE" >/dev/null
 [Unit]
@@ -138,6 +152,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=${DATA_DIR}
+EnvironmentFile=${ENV_FILE}
 ExecStart=${INSTALL_DIR}/novadbd --listen 0.0.0.0:8787 --pg-listen 0.0.0.0:5432 --data-dir ${DATA_DIR}
 Restart=always
 RestartSec=3
@@ -148,6 +163,7 @@ WantedBy=multi-user.target
 EOF
     $USE_SUDO systemctl daemon-reload || true
     success "Systemd service installed. Start with: sudo systemctl enable --now novadb"
+    info "API token and PostgreSQL password are stored in ${ENV_FILE} (root only)."
 fi
 
 echo ""
@@ -157,11 +173,11 @@ echo "================================================================"
 echo ""
 echo "  ${BOLD}Quick Start:${RESET}"
 echo "    novadb init myapp.novadb                    # Create a database"
-echo "    novadb query myapp.novadb -s \"SELECT 1+1\"    # Run SQL queries"
+echo "    novadb query myapp.novadb \"SELECT 1+1\"       # Run SQL queries"
 echo "    novadb serve --pg-listen 127.0.0.1:5432     # Start PostgreSQL server"
 echo ""
 echo "  ${BOLD}Connect via PostgreSQL tools:${RESET}"
-echo "    psql -h 127.0.0.1 -p 5432 -d default"
+echo "    psql -h 127.0.0.1 -p 5432 -U novadb -d default"
 echo ""
 echo "  ${BOLD}Documentation:${RESET}"
 echo "    Visit https://hoangtuvungcao.github.io/NovaDB or see /docs/ in repository."

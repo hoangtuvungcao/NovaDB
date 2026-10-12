@@ -268,19 +268,6 @@ pub fn register(connection: &Connection) -> Result<()> {
         }
     })?;
 
-    // CHECKSUM(arg1, arg2, ...)
-    connection.create_scalar_function("checksum", -1, deterministic, |ctx| {
-        let mut hash: u64 = 14695981039346656037;
-        for i in 0..ctx.len() {
-            let s = ctx.get::<String>(i).unwrap_or_default();
-            for byte in s.bytes() {
-                hash ^= byte as u64;
-                hash = hash.wrapping_mul(1099511628211);
-            }
-        }
-        Ok((hash as i32) as i64)
-    })?;
-
     // ISNULL(val, default_val)
     connection.create_scalar_function("isnull", 2, deterministic, |ctx| {
         let val: rusqlite::types::Value = ctx.get(0)?;
@@ -292,11 +279,6 @@ pub fn register(connection: &Connection) -> Result<()> {
             other => Ok(other),
         }
     })?;
-
-    // RAND() / RAND(seed)
-    let non_deterministic = FunctionFlags::SQLITE_UTF8;
-    connection.create_scalar_function("rand", 0, non_deterministic, |_ctx| Ok(0.54321f64))?;
-    connection.create_scalar_function("rand", 1, deterministic, |_ctx| Ok(0.54321f64))?;
 
     // ISNUMERIC(val)
     connection.create_scalar_function("isnumeric", 1, deterministic, |ctx| {
@@ -314,21 +296,60 @@ pub fn register(connection: &Connection) -> Result<()> {
     })?;
 
     // T-SQL System Metadata Functions
-    connection
-        .create_scalar_function("databasepropertyex", -1, deterministic, |_ctx| Ok("ONLINE"))?;
-    connection.create_scalar_function("sessionproperty", -1, deterministic, |_ctx| Ok(1i64))?;
-    connection.create_scalar_function("object_id", -1, deterministic, |_ctx| Ok(1001i64))?;
-    connection.create_scalar_function("object_name", -1, deterministic, |_ctx| Ok("Customers"))?;
-    connection.create_scalar_function("columnproperty", -1, deterministic, |_ctx| Ok(1i64))?;
-    connection.create_scalar_function("indexproperty", -1, deterministic, |_ctx| Ok(1i64))?;
-    connection.create_scalar_function("file_name", -1, deterministic, |_ctx| Ok("master.mdf"))?;
-    connection.create_scalar_function("file_idex", -1, deterministic, |_ctx| Ok(1i64))?;
-    connection.create_scalar_function("type_id", -1, deterministic, |_ctx| Ok(1i64))?;
-    connection.create_scalar_function("type_name", -1, deterministic, |_ctx| Ok("INT"))?;
+    connection.create_scalar_function("databasepropertyex", -1, deterministic, |_ctx| {
+        Err::<i64, _>(rusqlite::Error::UserFunctionError(
+            "DATABASEPROPERTYEX is not supported by NovaDB".into(),
+        ))
+    })?;
+    connection.create_scalar_function("sessionproperty", -1, deterministic, |_ctx| {
+        Err::<i64, _>(rusqlite::Error::UserFunctionError(
+            "SESSIONPROPERTY is not supported by NovaDB".into(),
+        ))
+    })?;
+    connection.create_scalar_function("object_id", -1, deterministic, |_ctx| {
+        Err::<i64, _>(rusqlite::Error::UserFunctionError(
+            "OBJECT_ID is not supported by NovaDB".into(),
+        ))
+    })?;
+    connection.create_scalar_function("object_name", -1, deterministic, |_ctx| {
+        Err::<i64, _>(rusqlite::Error::UserFunctionError(
+            "OBJECT_NAME is not supported by NovaDB".into(),
+        ))
+    })?;
+    connection.create_scalar_function("columnproperty", -1, deterministic, |_ctx| {
+        Err::<i64, _>(rusqlite::Error::UserFunctionError(
+            "COLUMNPROPERTY is not supported by NovaDB".into(),
+        ))
+    })?;
+    connection.create_scalar_function("indexproperty", -1, deterministic, |_ctx| {
+        Err::<i64, _>(rusqlite::Error::UserFunctionError(
+            "INDEXPROPERTY is not supported by NovaDB".into(),
+        ))
+    })?;
+    connection.create_scalar_function("file_name", -1, deterministic, |_ctx| {
+        Err::<i64, _>(rusqlite::Error::UserFunctionError(
+            "FILE_NAME is not supported by NovaDB".into(),
+        ))
+    })?;
+    connection.create_scalar_function("file_idex", -1, deterministic, |_ctx| {
+        Err::<i64, _>(rusqlite::Error::UserFunctionError(
+            "FILE_IDEX is not supported by NovaDB".into(),
+        ))
+    })?;
+    connection.create_scalar_function("type_id", -1, deterministic, |_ctx| {
+        Err::<i64, _>(rusqlite::Error::UserFunctionError(
+            "TYPE_ID is not supported by NovaDB".into(),
+        ))
+    })?;
+    connection.create_scalar_function("type_name", -1, deterministic, |_ctx| {
+        Err::<i64, _>(rusqlite::Error::UserFunctionError(
+            "TYPE_NAME is not supported by NovaDB".into(),
+        ))
+    })?;
     connection.create_scalar_function("schema_id", -1, deterministic, |_ctx| Ok(1i64))?;
     connection.create_scalar_function("schema_name", -1, deterministic, |_ctx| Ok("dbo"))?;
     connection.create_scalar_function("original_db_name", 0, deterministic, |_ctx| Ok("master"))?;
-    connection.create_scalar_function("current_timezone", 0, deterministic, |_ctx| Ok("+07:00"))?;
+    connection.create_scalar_function("current_timezone", 0, deterministic, |_ctx| Ok("UTC"))?;
 
     Ok(())
 }

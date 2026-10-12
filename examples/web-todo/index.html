@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NovaDB Todo</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color-scheme: light dark; }
+    body { max-width: 560px; margin: 3rem auto; padding: 0 1rem; }
+    form { display: flex; gap: .5rem; margin-bottom: 1rem; }
+    input[type=text] { flex: 1; padding: .5rem; font-size: 1rem; }
+    button { padding: .5rem .9rem; font-size: 1rem; cursor: pointer; }
+    ul { list-style: none; padding: 0; }
+    li { display: flex; align-items: center; gap: .6rem; padding: .45rem 0; border-bottom: 1px solid #8884; }
+    li span { flex: 1; overflow-wrap: anywhere; }
+    li.done span { text-decoration: line-through; opacity: .6; }
+    #status { min-height: 1.4em; font-size: .9rem; color: #c0392b; }
+    details { margin-bottom: 1rem; font-size: .9rem; }
+    details label { display: block; margin: .3rem 0; }
+    details input { width: 100%; padding: .3rem; }
+  </style>
+</head>
+<body>
+  <h1>NovaDB Todo</h1>
+
+  <details>
+    <summary>Connection</summary>
+    <label>Server URL <input id="url" value="http://127.0.0.1:8787"></label>
+    <label>Bearer token (local development only) <input id="token" type="password"></label>
+    <label>Database <input id="database" value="todo"></label>
+    <button id="connect" type="button">Connect</button>
+  </details>
+
+  <form id="add">
+    <input id="title" type="text" placeholder="What needs to be done?" autocomplete="off" required maxlength="500">
+    <button>Add</button>
+  </form>
+  <div id="status" role="status"></div>
+  <ul id="list"></ul>
+  <p><small id="count"></small></p>
+
+  <script type="module">
+    // Built ESM output of the SDK (run `npm run build` in sdks/javascript first).
+    import { NovaDB, NovaDBError, NetworkError, UnauthorizedError } from "../../sdks/javascript/dist/esm/index.js";
+
+    const $ = (id) => document.getElementById(id);
+    const saved = JSON.parse(localStorage.getItem("novadb-todo") ?? "{}");
+    for (const key of ["url", "token", "database"]) if (saved[key] !== undefined) $(key).value = saved[key];
+
+    let db;
+
+    function showError(error) {
+      if (error instanceof UnauthorizedError) $("status").textContent = "Wrong or missing bearer token.";
+      else if (error instanceof NetworkError) $("status").textContent = "Cannot reach NovaDB. Is it running with --cors-origin for this page's origin?";
+      else if (error instanceof NovaDBError) $("status").textContent = `${error.code}: ${error.message}`;
+      else $("status").textContent = String(error);
+    }
+
+    async function connect() {
+      $("status").textContent = "";
+      const settings = { url: $("url").value.trim(), token: $("token").value || undefined, database: $("database").value.trim() };
+      localStorage.setItem("novadb-todo", JSON.stringify(settings));
+      try {
+        db = new NovaDB({ ...settings, timeoutMs: 10_000 });
+        await db.createDatabase();
+        await db.migrate([{
+          version: 1,
+          name: "todos",
+          sql: `CREATE TABLE IF NOT EXISTS todos (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  title TEXT NOT NULL,
+                  done INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL
+                )`,
+        }]);
+        await render();
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    async function render() {
+      const todos = await db.table("todos").orderBy("done").orderBy("id", "desc").limit(200).get();
+      const list = $("list");
+      list.replaceChildren();
+      for (const todo of todos) {
+        const li = document.createElement("li");
+        li.className = todo.done ? "done" : "";
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = Boolean(todo.done);
+        box.addEventListener("change", () => run(() => db.table("todos").update({ done: box.checked }).where({ id: todo.id })));
+        const text = document.createElement("span");
+        text.textContent = todo.title; // textContent: never inject user data as HTML
+        const remove = document.createElement("button");
+        remove.textContent = "Delete";
+        remove.addEventListener("click", () => run(() => db.table("todos").delete().where({ id: todo.id })));
+        li.append(box, text, remove);
+        list.append(li);
+      }
+      const open = todos.filter((t) => !t.done).length;
+      $("count").textContent = `${open} open / ${todos.length} total`;
+    }
+
+    async function run(action) {
+      $("status").textContent = "";
+      try {
+        await action();
+        await render();
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    $("add").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const title = $("title").value.trim();
+      if (!title) return;
+      $("title").value = "";
+      run(() => db.table("todos").insert({ title, done: false, created_at: new Date() }));
+    });
+    $("connect").addEventListener("click", connect);
+    connect();
+  </script>
+</body>
+</html>

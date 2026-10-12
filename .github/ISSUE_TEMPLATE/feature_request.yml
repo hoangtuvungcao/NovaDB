@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest an improvement or a new capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and why is it hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should NovaDB do? Include example SQL, CLI commands or API calls if useful.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Core engine / SQL
+        - Compatibility (SQL Server, MySQL, PostgreSQL)
+        - HTTP API / Web Studio
+        - Wire protocols
+        - Sync
+        - CLI / console
+        - SDKs
+        - Deployment / operations
+        - Documentation
+        - Other
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to work on this (see CONTRIBUTING.md).

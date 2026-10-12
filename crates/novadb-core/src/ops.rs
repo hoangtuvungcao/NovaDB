@@ -111,8 +111,11 @@ impl NovaDb {
         validate_manifest(migrations)?;
         let changes_and_report = {
             let mut connection = self.inner.connection.lock();
-            let before = max_change_sequence(&connection)?;
-            let transaction = connection.transaction()?;
+            let _gate = self.inner.write_gate()?;
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let before = max_change_sequence(&transaction)?;
+            let state = self.inner.schema_state(&transaction)?;
             let applied = load_applied_migrations(&transaction)?;
             validate_applied_manifest(&applied, migrations)?;
             let highest_applied = applied.keys().next_back().copied();
@@ -134,7 +137,13 @@ impl NovaDb {
                     });
                 }
 
-                execute_guarded_sql(&transaction, migration.sql)?;
+                execute_guarded_sql(
+                    &transaction,
+                    migration.sql,
+                    crate::DialectMode::TSql,
+                    &self.inner.auth,
+                    &state.trusted,
+                )?;
                 transaction.execute(
                     "INSERT INTO _novadb_migrations(version, name, checksum, applied_at_ms) \
                      VALUES (?1, ?2, ?3, ?4)",

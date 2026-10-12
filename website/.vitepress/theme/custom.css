@@ -1,0 +1,117 @@
+/* NovaDB brand theme. Palette: see assets/brand/BRAND.md */
+:root {
+  --nova-violet: #5b4bf5;
+  --nova-lavender: #a99fff;
+  --nova-cyan: #22d3ee;
+  --nova-amber: #ffc857;
+  --nova-ink: #0b1026;
+
+  --vp-c-brand-1: #5b4bf5;
+  --vp-c-brand-2: #4b3ee6;
+  --vp-c-brand-3: #3b2fd9;
+  --vp-c-brand-soft: rgba(91, 75, 245, 0.12);
+
+  --vp-font-family-base: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #3b2fd9 10%, #7c6cff 55%, #22d3ee 100%);
+  --vp-home-hero-image-background-image: radial-gradient(circle, rgba(124, 108, 255, 0.45) 0%, rgba(34, 211, 238, 0.18) 55%, transparent 72%);
+  --vp-home-hero-image-filter: blur(56px);
+
+  --vp-button-brand-bg: #5b4bf5;
+  --vp-button-brand-hover-bg: #4b3ee6;
+  --vp-button-brand-active-bg: #3b2fd9;
+}
+
+.dark {
+  --vp-c-brand-1: #a99fff;
+  --vp-c-brand-2: #8e82ff;
+  --vp-c-brand-3: #7c6cff;
+  --vp-c-brand-soft: rgba(169, 159, 255, 0.16);
+  --vp-c-bg: #0b1026;
+  --vp-c-bg-alt: #0e1430;
+  --vp-c-bg-elv: #121a3a;
+  --vp-c-bg-soft: #121a3a;
+  --vp-button-brand-bg: #5b4bf5;
+  --vp-button-brand-text: #ffffff;
+}
+
+.VPHero .image-src {
+  width: 200px;
+  height: 200px;
+  max-width: 200px;
+  max-height: 200px;
+  border-radius: 44px;
+  box-shadow: 0 24px 60px rgba(59, 47, 217, 0.35);
+}
+@media (min-width: 960px) {
+  .VPHero .image-src {
+    width: 280px;
+    height: 280px;
+    max-width: 280px;
+    max-height: 280px;
+    border-radius: 62px;
+  }
+}
+
+/* Home page sections below the feature grid */
+.nova-section {
+  max-width: 1152px;
+  margin: 0 auto;
+  padding: 48px 24px 0;
+}
+.nova-section h2 {
+  border-top: none !important;
+  margin-top: 0 !important;
+  font-size: 28px;
+  letter-spacing: -0.02em;
+}
+.nova-lead {
+  color: var(--vp-c-text-2);
+  max-width: 720px;
+}
+.nova-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+.nova-card {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  padding: 20px 22px;
+  background: var(--vp-c-bg-soft);
+}
+.nova-card h3 {
+  margin: 0 0 6px !important;
+  font-size: 18px;
+}
+.nova-card p {
+  margin: 0 0 8px;
+  color: var(--vp-c-text-2);
+  font-size: 14.5px;
+}
+.nova-card .tag {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vp-c-brand-1);
+  margin-bottom: 6px;
+}
+.nova-badge-new {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--nova-amber);
+  color: var(--nova-ink);
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.home .vp-doc {
+  padding-bottom: 64px;
+}

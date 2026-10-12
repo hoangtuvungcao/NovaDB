@@ -7,13 +7,18 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 bytes = "1.10"
+hmac.workspace = true
+md-5.workspace = true
 novadb-core = { path = "../novadb-core" }
 regex.workspace = true
 serde_json.workspace = true
+sha2 = "0.10.9"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["net", "io-util", "macros"] }
+tokio = { workspace = true, features = ["net", "io-util", "macros", "rt", "sync", "time"] }
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

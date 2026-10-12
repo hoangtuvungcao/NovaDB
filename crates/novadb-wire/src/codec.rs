@@ -35,18 +35,16 @@ impl PgCodec {
     pub async fn read_message(&mut self) -> Result<Option<FrontendMessage>, std::io::Error> {
         loop {
             // Try to decode from existing buffer
-            let msg = if self.startup_done {
+            let decoded = if self.startup_done {
                 messages::decode_message(&mut self.read_buf)
             } else {
-                let msg = messages::decode_startup(&mut self.read_buf);
-                if msg.is_some() {
-                    match &msg {
-                        Some(FrontendMessage::SslRequest) => {}
-                        _ => self.startup_done = true,
-                    }
-                }
-                msg
+                messages::decode_startup(&mut self.read_buf)
             };
+            let msg = decoded
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            if !self.startup_done && matches!(&msg, Some(FrontendMessage::Startup { .. })) {
+                self.startup_done = true;
+            }
 
             if let Some(m) = msg {
                 return Ok(Some(m));

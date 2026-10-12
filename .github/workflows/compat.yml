@@ -1,0 +1,50 @@
+name: ORM / driver compatibility
+
+# Heavy (builds novadbd, installs npm/pip/go dependencies), so it is NOT run on every push.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat
+  cancel-in-progress: true
+
+jobs:
+  compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          cache: false
+
+      - name: Install PHP with PDO drivers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends php-cli php-mysql php-pgsql
+
+      - name: Run compatibility suites
+        run: tests/compat/run.sh --release
+
+      - name: Show known issues table
+        if: always()
+        run: sed -n '1,60p' tests/compat/KNOWN_ISSUES.md

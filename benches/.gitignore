@@ -1,0 +1,5 @@
+.venv/
+.work/
+embedded/target/
+embedded/Cargo.lock.bak
+__pycache__/

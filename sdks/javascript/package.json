@@ -1,0 +1,30 @@
+{
+  "name": "@novadb/client",
+  "version": "0.1.0",
+  "description": "Official zero-dependency NovaDB HTTP client for browsers, Node.js 18+, Deno and Bun",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": false,
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && node scripts/finalize-dist.mjs",
+    "test": "npm run build && node --test test/",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  },
+  "keywords": ["novadb", "sqlite", "database", "client", "sdk", "sync"]
+}

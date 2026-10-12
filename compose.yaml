@@ -5,12 +5,19 @@ services:
     environment:
       NOVADB_BEARER_TOKEN: ${NOVADB_BEARER_TOKEN:?set NOVADB_BEARER_TOKEN}
       RUST_LOG: novadb_server=info
+      # To enable the PostgreSQL gateway, set a password, publish 5432 and add
+      # `--pg-listen 0.0.0.0:5432` to the command below.
+      # NOVADB_PG_USER: novadb
+      # NOVADB_PG_PASSWORD: ${NOVADB_PG_PASSWORD:?set NOVADB_PG_PASSWORD}
+    # command: ["--listen", "0.0.0.0:8787", "--pg-listen", "0.0.0.0:5432", "--database-path", "/var/lib/novadb/relay.sqlite3", "--data-dir", "/var/lib/novadb/databases"]
     ports:
       - "8787:8787"
+      # - "5432:5432"
     volumes:
       - novadb-data:/var/lib/novadb
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8787/health || exit 1"]
+      # The slim runtime image has no curl/wget; use bash's /dev/tcp.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8787 && printf 'GET /health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '\"status\":\"ok\"' <&3"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
-use crate::{NovaDb, QueryResult, Result};
+use crate::{NovaDb, OpenOptions, QueryResult, Result};
 
 /// Default number of read connections in the pool.
 pub const DEFAULT_POOL_SIZE: usize = 4;
@@ -37,6 +37,8 @@ pub struct PoolConfig {
     pub path: PathBuf,
     /// Number of read connections (default: 4).
     pub read_pool_size: usize,
+    /// Settings applied to the writer and every reader connection.
+    pub options: OpenOptions,
 }
 
 impl PoolConfig {
@@ -44,7 +46,15 @@ impl PoolConfig {
         Self {
             path: path.into(),
             read_pool_size: DEFAULT_POOL_SIZE,
+            options: OpenOptions::default(),
         }
+    }
+
+    /// Overrides the connection settings (e.g. `busy_timeout`).
+    #[must_use]
+    pub fn with_open_options(mut self, options: OpenOptions) -> Self {
+        self.options = options;
+        self
     }
 
     pub fn with_read_pool_size(mut self, size: usize) -> Self {
@@ -65,8 +75,10 @@ pub struct NovaDbPool {
 struct PoolInner {
     /// The single writer connection (serialized via Mutex).
     writer: Mutex<NovaDb>,
-    /// Pool of read-only connections.
-    readers: Vec<Mutex<NovaDb>>,
+    /// Pool of read-only (`query_only`) connections. Each has its own
+    /// `SQLite` connection, so in WAL mode readers run in parallel with each
+    /// other and with the writer.
+    readers: Vec<NovaDb>,
     /// Round-robin index for reader selection.
     reader_index: AtomicUsize,
     /// Original database path.
@@ -78,10 +90,11 @@ struct PoolInner {
 impl NovaDbPool {
     /// Open a connection pool for the database at the given path.
     pub fn open(config: PoolConfig) -> Result<Self> {
-        let writer = NovaDb::open(&config.path)?;
+        let writer = NovaDb::open_with_options(&config.path, &config.options)?;
+        let reader_options = config.options.clone().query_only(true);
         let mut readers = Vec::with_capacity(config.read_pool_size);
         for _ in 0..config.read_pool_size {
-            readers.push(Mutex::new(NovaDb::open(&config.path)?));
+            readers.push(NovaDb::open_with_options(&config.path, &reader_options)?);
         }
 
         Ok(Self {
@@ -102,12 +115,19 @@ impl NovaDbPool {
 
     /// Execute a read-only query using a reader from the pool.
     ///
-    /// Readers are selected round-robin to distribute load.
+    /// The search starts at a rotating position and takes the first idle
+    /// reader, so concurrent callers spread over distinct connections instead
+    /// of queueing behind a busy one. When every reader is busy the caller
+    /// waits for the one it started at.
     pub fn query(&self, sql: &str) -> Result<QueryResult> {
-        let idx =
-            self.inner.reader_index.fetch_add(1, Ordering::Relaxed) % self.inner.read_pool_size;
-        let reader = self.inner.readers[idx].lock();
-        reader.query(sql)
+        let readers = &self.inner.readers;
+        let start = self.inner.reader_index.fetch_add(1, Ordering::Relaxed) % readers.len();
+        for offset in 0..readers.len() {
+            if let Some(result) = readers[(start + offset) % readers.len()].try_query(sql) {
+                return result;
+            }
+        }
+        readers[start].query(sql)
     }
 
     /// Execute a write batch using the exclusive writer connection.
