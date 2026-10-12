@@ -1,0 +1,15 @@
+# Standalone project (NOT a member of the NovaDB workspace) with its own target dir:
+#   cargo run --release --manifest-path benches/embedded/Cargo.toml -- --out result.json
+[package]
+name = "novadb-embedded-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+novadb-core = { path = "../../crates/novadb-core" }
+# Same version / features as the workspace so the SQLite build is identical for the baseline.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde_json = "1"

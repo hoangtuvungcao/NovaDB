@@ -1,0 +1,2767 @@
+{
+ "date": "2026-10-12",
+ "hardware": {
+  "cpu": "13th Gen Intel(R) Core(TM) i5-13420H",
+  "cores": 12,
+  "governor": "performance",
+  "ram": "23.2 GiB",
+  "os": "Pop!_OS 24.04 LTS",
+  "kernel": "7.0.11-76070011-generic",
+  "storage": "/dev/mapper/data-root (ext4); lsblk NAME,ROTA,TYPE (ROTA=0 is SSD/NVMe): zram0      0 disk;nvme0n1    0 disk;",
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+  "profile": "release",
+  "python": "3.12.3",
+  "sqlite": "3.45.1",
+  "git_commit": "c37fa2c",
+  "git_dirty": true,
+  "load_avg_at_start": 2.93017578125
+ },
+ "runs_per_target": {
+  "embedded-novadb": 3,
+  "embedded-rusqlite": 3,
+  "sqlite3-py": 3,
+  "novadb-http": 3,
+  "novadb-pg": 3,
+  "novadb-mysql": 3,
+  "mysql8": 3,
+  "mysql8-relaxed": 3
+ },
+ "results": {
+  "embedded-novadb": {
+   "insert_autocommit.rows_per_s": {
+    "median": 47488.0,
+    "min": 22311.7,
+    "max": 52431.6,
+    "runs": [
+     47488.0,
+     22311.7,
+     52431.6
+    ]
+   },
+   "insert_batched.rows_per_s": {
+    "median": 105094.3,
+    "min": 88117.9,
+    "max": 120800.9,
+    "runs": [
+     105094.3,
+     88117.9,
+     120800.9
+    ]
+   },
+   "point_select.p50_us": {
+    "median": 10.2,
+    "min": 9.8,
+    "max": 10.7,
+    "runs": [
+     10.7,
+     9.8,
+     10.2
+    ]
+   },
+   "point_select.p95_us": {
+    "median": 13.0,
+    "min": 10.4,
+    "max": 16.6,
+    "runs": [
+     16.6,
+     10.4,
+     13.0
+    ]
+   },
+   "point_select.p99_us": {
+    "median": 20.4,
+    "min": 13.3,
+    "max": 22.3,
+    "runs": [
+     20.4,
+     13.3,
+     22.3
+    ]
+   },
+   "point_select.qps": {
+    "median": 93549.8,
+    "min": 84063.0,
+    "max": 100224.2,
+    "runs": [
+     84063.0,
+     100224.2,
+     93549.8
+    ]
+   },
+   "range_agg_10k_rows.p50_us": {
+    "median": 1906.9,
+    "min": 1730.5,
+    "max": 1930.0,
+    "runs": [
+     1906.9,
+     1730.5,
+     1930.0
+    ]
+   },
+   "range_agg_10k_rows.p95_us": {
+    "median": 2324.7,
+    "min": 2249.7,
+    "max": 2535.7,
+    "runs": [
+     2249.7,
+     2535.7,
+     2324.7
+    ]
+   },
+   "range_agg_10k_rows.p99_us": {
+    "median": 2527.2,
+    "min": 2526.3,
+    "max": 2952.2,
+    "runs": [
+     2526.3,
+     2952.2,
+     2527.2
+    ]
+   },
+   "range_agg_10k_rows.qps": {
+    "median": 511.5,
+    "min": 501.9,
+    "max": 551.5,
+    "runs": [
+     511.5,
+     551.5,
+     501.9
+    ]
+   },
+   "full_scan_agg.p50_us": {
+    "median": 24873.9,
+    "min": 23974.7,
+    "max": 25457.5,
+    "runs": [
+     25457.5,
+     23974.7,
+     24873.9
+    ]
+   },
+   "full_scan_agg.p95_us": {
+    "median": 27868.2,
+    "min": 24988.3,
+    "max": 28971.9,
+    "runs": [
+     27868.2,
+     24988.3,
+     28971.9
+    ]
+   },
+   "full_scan_agg.p99_us": {
+    "median": 31451.1,
+    "min": 25205.6,
+    "max": 31594.7,
+    "runs": [
+     31594.7,
+     25205.6,
+     31451.1
+    ]
+   },
+   "full_scan_agg.qps": {
+    "median": 39.6,
+    "min": 39.4,
+    "max": 42.9,
+    "runs": [
+     39.6,
+     42.9,
+     39.4
+    ]
+   },
+   "concurrent_read_qps.1": {
+    "median": 95164.1,
+    "min": 91141.7,
+    "max": 96996.1,
+    "runs": [
+     91141.7,
+     96996.1,
+     95164.1
+    ]
+   },
+   "concurrent_read_qps.4": {
+    "median": 73103.3,
+    "min": 63786.3,
+    "max": 76088.4,
+    "runs": [
+     63786.3,
+     73103.3,
+     76088.4
+    ]
+   },
+   "concurrent_read_qps.16": {
+    "median": 55756.7,
+    "min": 53813.2,
+    "max": 70836.6,
+    "runs": [
+     55756.7,
+     53813.2,
+     70836.6
+    ]
+   },
+   "mixed_90_10_qps.4": {
+    "median": 58291.3,
+    "min": 35958.1,
+    "max": 67104.4,
+    "runs": [
+     58291.3,
+     35958.1,
+     67104.4
+    ]
+   },
+   "mixed_90_10_qps.16": {
+    "median": 36148.7,
+    "min": 24381.9,
+    "max": 38543.9,
+    "runs": [
+     24381.9,
+     38543.9,
+     36148.7
+    ]
+   }
+  },
+  "embedded-rusqlite": {
+   "insert_autocommit.rows_per_s": {
+    "median": 65686.9,
+    "min": 56810.0,
+    "max": 107187.1,
+    "runs": [
+     65686.9,
+     56810.0,
+     107187.1
+    ]
+   },
+   "insert_batched.rows_per_s": {
+    "median": 261357.6,
+    "min": 157886.3,
+    "max": 295750.7,
+    "runs": [
+     261357.6,
+     157886.3,
+     295750.7
+    ]
+   },
+   "point_select.p50_us": {
+    "median": 2.9,
+    "min": 2.7,
+    "max": 3.1,
+    "runs": [
+     2.9,
+     3.1,
+     2.7
+    ]
+   },
+   "point_select.p95_us": {
+    "median": 3.2,
+    "min": 3.0,
+    "max": 3.4,
+    "runs": [
+     3.2,
+     3.4,
+     3.0
+    ]
+   },
+   "point_select.p99_us": {
+    "median": 4.4,
+    "min": 3.9,
+    "max": 4.7,
+    "runs": [
+     4.4,
+     4.7,
+     3.9
+    ]
+   },
+   "point_select.qps": {
+    "median": 335932.1,
+    "min": 309883.0,
+    "max": 354956.6,
+    "runs": [
+     335932.1,
+     309883.0,
+     354956.6
+    ]
+   },
+   "range_agg_10k_rows.p50_us": {
+    "median": 1755.9,
+    "min": 1671.6,
+    "max": 1925.2,
+    "runs": [
+     1755.9,
+     1925.2,
+     1671.6
+    ]
+   },
+   "range_agg_10k_rows.p95_us": {
+    "median": 2012.3,
+    "min": 1763.7,
+    "max": 2124.7,
+    "runs": [
+     2124.7,
+     2012.3,
+     1763.7
+    ]
+   },
+   "range_agg_10k_rows.p99_us": {
+    "median": 2187.3,
+    "min": 1824.1,
+    "max": 2198.3,
+    "runs": [
+     2187.3,
+     2198.3,
+     1824.1
+    ]
+   },
+   "range_agg_10k_rows.qps": {
+    "median": 552.4,
+    "min": 517.7,
+    "max": 595.0,
+    "runs": [
+     552.4,
+     517.7,
+     595.0
+    ]
+   },
+   "full_scan_agg.p50_us": {
+    "median": 24419.4,
+    "min": 21240.4,
+    "max": 26255.7,
+    "runs": [
+     26255.7,
+     24419.4,
+     21240.4
+    ]
+   },
+   "full_scan_agg.p95_us": {
+    "median": 25255.7,
+    "min": 22175.7,
+    "max": 30765.8,
+    "runs": [
+     30765.8,
+     25255.7,
+     22175.7
+    ]
+   },
+   "full_scan_agg.p99_us": {
+    "median": 27446.1,
+    "min": 22369.4,
+    "max": 33998.0,
+    "runs": [
+     33998.0,
+     27446.1,
+     22369.4
+    ]
+   },
+   "full_scan_agg.qps": {
+    "median": 40.9,
+    "min": 37.7,
+    "max": 47.2,
+    "runs": [
+     37.7,
+     40.9,
+     47.2
+    ]
+   },
+   "concurrent_read_qps.1": {
+    "median": 325255.4,
+    "min": 271887.7,
+    "max": 344221.4,
+    "runs": [
+     325255.4,
+     271887.7,
+     344221.4
+    ]
+   },
+   "concurrent_read_qps.4": {
+    "median": 783966.1,
+    "min": 620666.7,
+    "max": 950195.4,
+    "runs": [
+     783966.1,
+     620666.7,
+     950195.4
+    ]
+   },
+   "concurrent_read_qps.16": {
+    "median": 1411215.9,
+    "min": 1355211.5,
+    "max": 1486537.4,
+    "runs": [
+     1411215.9,
+     1355211.5,
+     1486537.4
+    ]
+   },
+   "mixed_90_10_qps.4": {
+    "median": 130057.0,
+    "min": 108811.8,
+    "max": 176311.8,
+    "runs": [
+     176311.8,
+     108811.8,
+     130057.0
+    ]
+   },
+   "mixed_90_10_qps.16": {
+    "median": 152348.1,
+    "min": 81230.5,
+    "max": 170784.1,
+    "runs": [
+     170784.1,
+     81230.5,
+     152348.1
+    ]
+   }
+  },
+  "sqlite3-py": {
+   "insert_autocommit.rows_per_s": {
+    "median": 75778.7,
+    "min": 59622.6,
+    "max": 77786.2,
+    "runs": [
+     77786.2,
+     59622.6,
+     75778.7
+    ]
+   },
+   "insert_batched.rows_per_s": {
+    "median": 191565.7,
+    "min": 185887.7,
+    "max": 257764.7,
+    "runs": [
+     257764.7,
+     191565.7,
+     185887.7
+    ]
+   },
+   "point_select.p50_us": {
+    "median": 6.8,
+    "min": 6.4,
+    "max": 7.1,
+    "runs": [
+     6.8,
+     6.4,
+     7.1
+    ]
+   },
+   "point_select.p95_us": {
+    "median": 7.3,
+    "min": 7.1,
+    "max": 16.7,
+    "runs": [
+     7.3,
+     7.1,
+     16.7
+    ]
+   },
+   "point_select.p99_us": {
+    "median": 15.0,
+    "min": 10.7,
+    "max": 18.6,
+    "runs": [
+     10.7,
+     15.0,
+     18.6
+    ]
+   },
+   "point_select.qps": {
+    "median": 132831.3,
+    "min": 95317.5,
+    "max": 138388.0,
+    "runs": [
+     132831.3,
+     138388.0,
+     95317.5
+    ]
+   },
+   "range_agg_10k_rows.p50_us": {
+    "median": 2139.8,
+    "min": 1984.9,
+    "max": 2236.3,
+    "runs": [
+     2236.3,
+     1984.9,
+     2139.8
+    ]
+   },
+   "range_agg_10k_rows.p95_us": {
+    "median": 2902.2,
+    "min": 2282.5,
+    "max": 3470.5,
+    "runs": [
+     3470.5,
+     2282.5,
+     2902.2
+    ]
+   },
+   "range_agg_10k_rows.p99_us": {
+    "median": 3364.2,
+    "min": 3120.8,
+    "max": 3671.9,
+    "runs": [
+     3671.9,
+     3120.8,
+     3364.2
+    ]
+   },
+   "range_agg_10k_rows.qps": {
+    "median": 450.0,
+    "min": 423.7,
+    "max": 492.8,
+    "runs": [
+     423.7,
+     492.8,
+     450.0
+    ]
+   },
+   "full_scan_agg.p50_us": {
+    "median": 27119.9,
+    "min": 25717.6,
+    "max": 31464.8,
+    "runs": [
+     27119.9,
+     25717.6,
+     31464.8
+    ]
+   },
+   "full_scan_agg.p95_us": {
+    "median": 28523.9,
+    "min": 27441.6,
+    "max": 37177.0,
+    "runs": [
+     27441.6,
+     28523.9,
+     37177.0
+    ]
+   },
+   "full_scan_agg.p99_us": {
+    "median": 30165.8,
+    "min": 29062.8,
+    "max": 37967.2,
+    "runs": [
+     29062.8,
+     30165.8,
+     37967.2
+    ]
+   },
+   "full_scan_agg.qps": {
+    "median": 37.2,
+    "min": 31.0,
+    "max": 38.2,
+    "runs": [
+     37.2,
+     38.2,
+     31.0
+    ]
+   },
+   "concurrent_read_qps.1": {
+    "median": 123395.5,
+    "min": 108316.2,
+    "max": 134864.4,
+    "runs": [
+     108316.2,
+     134864.4,
+     123395.5
+    ]
+   },
+   "concurrent_read_qps.4": {
+    "median": 289117.8,
+    "min": 287612.9,
+    "max": 360411.1,
+    "runs": [
+     289117.8,
+     360411.1,
+     287612.9
+    ]
+   },
+   "concurrent_read_qps.16": {
+    "median": 515136.9,
+    "min": 500515.7,
+    "max": 549474.7,
+    "runs": [
+     549474.7,
+     515136.9,
+     500515.7
+    ]
+   },
+   "mixed_90_10_qps.4": {
+    "median": 68704.7,
+    "min": 53992.7,
+    "max": 72175.7,
+    "runs": [
+     72175.7,
+     68704.7,
+     53992.7
+    ]
+   },
+   "mixed_90_10_qps.16": {
+    "median": 96456.8,
+    "min": 69738.1,
+    "max": 122679.3,
+    "runs": [
+     122679.3,
+     69738.1,
+     96456.8
+    ]
+   },
+   "mixed_write_errors.total": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "runs": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  "novadb-http": {
+   "insert_autocommit.rows_per_s": {
+    "median": 2646.3,
+    "min": 951.1,
+    "max": 3321.8,
+    "runs": [
+     2646.3,
+     3321.8,
+     951.1
+    ]
+   },
+   "insert_batched.rows_per_s": {
+    "median": 66018.2,
+    "min": 44286.1,
+    "max": 71558.9,
+    "runs": [
+     71558.9,
+     66018.2,
+     44286.1
+    ]
+   },
+   "point_select.p50_us": {
+    "median": 247.7,
+    "min": 179.0,
+    "max": 254.8,
+    "runs": [
+     247.7,
+     179.0,
+     254.8
+    ]
+   },
+   "point_select.p95_us": {
+    "median": 718.2,
+    "min": 349.7,
+    "max": 835.8,
+    "runs": [
+     718.2,
+     349.7,
+     835.8
+    ]
+   },
+   "point_select.p99_us": {
+    "median": 1252.6,
+    "min": 492.7,
+    "max": 1818.6,
+    "runs": [
+     1252.6,
+     492.7,
+     1818.6
+    ]
+   },
+   "point_select.qps": {
+    "median": 3085.0,
+    "min": 1700.9,
+    "max": 3234.4,
+    "runs": [
+     3234.4,
+     3085.0,
+     1700.9
+    ]
+   },
+   "range_agg_10k_rows.p50_us": {
+    "median": 2395.0,
+    "min": 2162.0,
+    "max": 2403.7,
+    "runs": [
+     2162.0,
+     2403.7,
+     2395.0
+    ]
+   },
+   "range_agg_10k_rows.p95_us": {
+    "median": 3972.9,
+    "min": 3773.0,
+    "max": 4948.5,
+    "runs": [
+     3773.0,
+     3972.9,
+     4948.5
+    ]
+   },
+   "range_agg_10k_rows.p99_us": {
+    "median": 4519.8,
+    "min": 4046.3,
+    "max": 6689.0,
+    "runs": [
+     4046.3,
+     4519.8,
+     6689.0
+    ]
+   },
+   "range_agg_10k_rows.qps": {
+    "median": 374.3,
+    "min": 359.8,
+    "max": 424.8,
+    "runs": [
+     424.8,
+     374.3,
+     359.8
+    ]
+   },
+   "full_scan_agg.p50_us": {
+    "median": 24956.3,
+    "min": 23434.5,
+    "max": 26760.6,
+    "runs": [
+     26760.6,
+     23434.5,
+     24956.3
+    ]
+   },
+   "full_scan_agg.p95_us": {
+    "median": 32771.5,
+    "min": 32243.8,
+    "max": 34169.9,
+    "runs": [
+     34169.9,
+     32243.8,
+     32771.5
+    ]
+   },
+   "full_scan_agg.p99_us": {
+    "median": 41718.3,
+    "min": 36838.9,
+    "max": 50680.7,
+    "runs": [
+     41718.3,
+     36838.9,
+     50680.7
+    ]
+   },
+   "full_scan_agg.qps": {
+    "median": 38.0,
+    "min": 36.2,
+    "max": 40.1,
+    "runs": [
+     36.2,
+     40.1,
+     38.0
+    ]
+   },
+   "concurrent_read_qps.1": {
+    "median": 5464.3,
+    "min": 4895.6,
+    "max": 5690.1,
+    "runs": [
+     4895.6,
+     5464.3,
+     5690.1
+    ]
+   },
+   "concurrent_read_qps.4": {
+    "median": 14258.5,
+    "min": 7678.5,
+    "max": 15716.9,
+    "runs": [
+     15716.9,
+     14258.5,
+     7678.5
+    ]
+   },
+   "concurrent_read_qps.16": {
+    "median": 17147.9,
+    "min": 15033.6,
+    "max": 19783.4,
+    "runs": [
+     19783.4,
+     17147.9,
+     15033.6
+    ]
+   },
+   "mixed_90_10_qps.4": {
+    "median": 9543.2,
+    "min": 7350.5,
+    "max": 13459.0,
+    "runs": [
+     13459.0,
+     9543.2,
+     7350.5
+    ]
+   },
+   "mixed_90_10_qps.16": {
+    "median": 8834.5,
+    "min": 8033.9,
+    "max": 12331.6,
+    "runs": [
+     8033.9,
+     12331.6,
+     8834.5
+    ]
+   },
+   "mixed_write_errors.total": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "runs": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  "novadb-pg": {
+   "insert_autocommit.rows_per_s": {
+    "median": 3438.6,
+    "min": 1996.9,
+    "max": 4028.0,
+    "runs": [
+     4028.0,
+     3438.6,
+     1996.9
+    ]
+   },
+   "insert_batched.rows_per_s": {
+    "median": 8050.7,
+    "min": 7852.9,
+    "max": 10516.7,
+    "runs": [
+     7852.9,
+     8050.7,
+     10516.7
+    ]
+   },
+   "point_select.p50_us": {
+    "median": 115.8,
+    "min": 74.9,
+    "max": 118.3,
+    "runs": [
+     118.3,
+     115.8,
+     74.9
+    ]
+   },
+   "point_select.p95_us": {
+    "median": 221.2,
+    "min": 178.5,
+    "max": 235.1,
+    "runs": [
+     221.2,
+     178.5,
+     235.1
+    ]
+   },
+   "point_select.p99_us": {
+    "median": 477.3,
+    "min": 227.0,
+    "max": 825.8,
+    "runs": [
+     477.3,
+     227.0,
+     825.8
+    ]
+   },
+   "point_select.qps": {
+    "median": 8514.0,
+    "min": 7757.7,
+    "max": 8599.9,
+    "runs": [
+     7757.7,
+     8599.9,
+     8514.0
+    ]
+   },
+   "range_agg_10k_rows.p50_us": {
+    "median": 1901.1,
+    "min": 1900.2,
+    "max": 2032.4,
+    "runs": [
+     2032.4,
+     1901.1,
+     1900.2
+    ]
+   },
+   "range_agg_10k_rows.p95_us": {
+    "median": 3345.8,
+    "min": 2616.6,
+    "max": 3427.2,
+    "runs": [
+     3345.8,
+     3427.2,
+     2616.6
+    ]
+   },
+   "range_agg_10k_rows.p99_us": {
+    "median": 3575.3,
+    "min": 3206.6,
+    "max": 3701.5,
+    "runs": [
+     3575.3,
+     3701.5,
+     3206.6
+    ]
+   },
+   "range_agg_10k_rows.qps": {
+    "median": 464.0,
+    "min": 445.4,
+    "max": 504.2,
+    "runs": [
+     445.4,
+     464.0,
+     504.2
+    ]
+   },
+   "full_scan_agg.p50_us": {
+    "median": 23460.7,
+    "min": 22699.7,
+    "max": 23904.8,
+    "runs": [
+     22699.7,
+     23904.8,
+     23460.7
+    ]
+   },
+   "full_scan_agg.p95_us": {
+    "median": 32545.0,
+    "min": 24501.9,
+    "max": 33240.1,
+    "runs": [
+     24501.9,
+     32545.0,
+     33240.1
+    ]
+   },
+   "full_scan_agg.p99_us": {
+    "median": 36764.1,
+    "min": 28817.0,
+    "max": 37016.1,
+    "runs": [
+     28817.0,
+     36764.1,
+     37016.1
+    ]
+   },
+   "full_scan_agg.qps": {
+    "median": 40.6,
+    "min": 40.0,
+    "max": 43.3,
+    "runs": [
+     43.3,
+     40.0,
+     40.6
+    ]
+   },
+   "concurrent_read_qps.1": {
+    "median": 7870.2,
+    "min": 5169.3,
+    "max": 11192.0,
+    "runs": [
+     7870.2,
+     5169.3,
+     11192.0
+    ]
+   },
+   "concurrent_read_qps.4": {
+    "median": 18193.2,
+    "min": 16563.2,
+    "max": 26647.6,
+    "runs": [
+     18193.2,
+     26647.6,
+     16563.2
+    ]
+   },
+   "concurrent_read_qps.16": {
+    "median": 40014.7,
+    "min": 36867.3,
+    "max": 50341.8,
+    "runs": [
+     36867.3,
+     50341.8,
+     40014.7
+    ]
+   },
+   "mixed_90_10_qps.4": {
+    "median": 8357.4,
+    "min": 5125.1,
+    "max": 17988.6,
+    "runs": [
+     5125.1,
+     17988.6,
+     8357.4
+    ]
+   },
+   "mixed_90_10_qps.16": {
+    "median": 11293.5,
+    "min": 7720.5,
+    "max": 21251.4,
+    "runs": [
+     21251.4,
+     7720.5,
+     11293.5
+    ]
+   },
+   "mixed_write_errors.total": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "runs": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  "novadb-mysql": {
+   "insert_autocommit.rows_per_s": {
+    "median": 4469.4,
+    "min": 4011.0,
+    "max": 7205.7,
+    "runs": [
+     7205.7,
+     4011.0,
+     4469.4
+    ]
+   },
+   "insert_batched.rows_per_s": {
+    "median": 7422.1,
+    "min": 7052.5,
+    "max": 9917.4,
+    "runs": [
+     9917.4,
+     7422.1,
+     7052.5
+    ]
+   },
+   "point_select.p50_us": {
+    "median": 165.3,
+    "min": 164.9,
+    "max": 168.3,
+    "runs": [
+     168.3,
+     165.3,
+     164.9
+    ]
+   },
+   "point_select.p95_us": {
+    "median": 254.3,
+    "min": 237.3,
+    "max": 263.2,
+    "runs": [
+     254.3,
+     237.3,
+     263.2
+    ]
+   },
+   "point_select.p99_us": {
+    "median": 335.5,
+    "min": 290.1,
+    "max": 423.3,
+    "runs": [
+     335.5,
+     290.1,
+     423.3
+    ]
+   },
+   "point_select.qps": {
+    "median": 5730.1,
+    "min": 5713.3,
+    "max": 5961.9,
+    "runs": [
+     5713.3,
+     5961.9,
+     5730.1
+    ]
+   },
+   "range_agg_10k_rows.p50_us": {
+    "median": 2440.0,
+    "min": 2212.5,
+    "max": 2530.8,
+    "runs": [
+     2440.0,
+     2530.8,
+     2212.5
+    ]
+   },
+   "range_agg_10k_rows.p95_us": {
+    "median": 3899.4,
+    "min": 3840.7,
+    "max": 3938.4,
+    "runs": [
+     3899.4,
+     3938.4,
+     3840.7
+    ]
+   },
+   "range_agg_10k_rows.p99_us": {
+    "median": 4200.3,
+    "min": 4127.2,
+    "max": 4259.3,
+    "runs": [
+     4127.2,
+     4200.3,
+     4259.3
+    ]
+   },
+   "range_agg_10k_rows.qps": {
+    "median": 372.2,
+    "min": 360.5,
+    "max": 419.1,
+    "runs": [
+     372.2,
+     360.5,
+     419.1
+    ]
+   },
+   "full_scan_agg.p50_us": {
+    "median": 25171.2,
+    "min": 23946.5,
+    "max": 25848.4,
+    "runs": [
+     25171.2,
+     23946.5,
+     25848.4
+    ]
+   },
+   "full_scan_agg.p95_us": {
+    "median": 25964.0,
+    "min": 25544.2,
+    "max": 35112.9,
+    "runs": [
+     25964.0,
+     25544.2,
+     35112.9
+    ]
+   },
+   "full_scan_agg.p99_us": {
+    "median": 26226.5,
+    "min": 25971.8,
+    "max": 41069.2,
+    "runs": [
+     25971.8,
+     26226.5,
+     41069.2
+    ]
+   },
+   "full_scan_agg.qps": {
+    "median": 40.9,
+    "min": 37.4,
+    "max": 41.5,
+    "runs": [
+     40.9,
+     41.5,
+     37.4
+    ]
+   },
+   "concurrent_read_qps.1": {
+    "median": 6034.3,
+    "min": 4337.7,
+    "max": 6626.2,
+    "runs": [
+     6034.3,
+     6626.2,
+     4337.7
+    ]
+   },
+   "concurrent_read_qps.4": {
+    "median": 23790.1,
+    "min": 20714.3,
+    "max": 24454.5,
+    "runs": [
+     23790.1,
+     24454.5,
+     20714.3
+    ]
+   },
+   "concurrent_read_qps.16": {
+    "median": 38677.3,
+    "min": 32072.3,
+    "max": 40674.6,
+    "runs": [
+     38677.3,
+     40674.6,
+     32072.3
+    ]
+   },
+   "mixed_90_10_qps.4": {
+    "median": 13614.6,
+    "min": 9150.3,
+    "max": 17883.5,
+    "runs": [
+     17883.5,
+     13614.6,
+     9150.3
+    ]
+   },
+   "mixed_90_10_qps.16": {
+    "median": 19765.1,
+    "min": 11521.5,
+    "max": 21083.8,
+    "runs": [
+     21083.8,
+     19765.1,
+     11521.5
+    ]
+   },
+   "mixed_write_errors.total": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "runs": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  "mysql8": {
+   "insert_autocommit.rows_per_s": {
+    "median": 331.1,
+    "min": 180.4,
+    "max": 838.9,
+    "runs": [
+     180.4,
+     838.9,
+     331.1
+    ]
+   },
+   "insert_batched.rows_per_s": {
+    "median": 14354.6,
+    "min": 8946.7,
+    "max": 16841.5,
+    "runs": [
+     16841.5,
+     8946.7,
+     14354.6
+    ]
+   },
+   "point_select.p50_us": {
+    "median": 52.2,
+    "min": 48.4,
+    "max": 226.2,
+    "runs": [
+     48.4,
+     226.2,
+     52.2
+    ]
+   },
+   "point_select.p95_us": {
+    "median": 168.1,
+    "min": 136.8,
+    "max": 382.3,
+    "runs": [
+     136.8,
+     382.3,
+     168.1
+    ]
+   },
+   "point_select.p99_us": {
+    "median": 230.5,
+    "min": 194.9,
+    "max": 3347.1,
+    "runs": [
+     194.9,
+     3347.1,
+     230.5
+    ]
+   },
+   "point_select.qps": {
+    "median": 13407.1,
+    "min": 3200.4,
+    "max": 16291.7,
+    "runs": [
+     16291.7,
+     3200.4,
+     13407.1
+    ]
+   },
+   "range_agg_10k_rows.p50_us": {
+    "median": 2672.0,
+    "min": 2538.6,
+    "max": 5988.7,
+    "runs": [
+     2538.6,
+     5988.7,
+     2672.0
+    ]
+   },
+   "range_agg_10k_rows.p95_us": {
+    "median": 3889.2,
+    "min": 2831.9,
+    "max": 17771.6,
+    "runs": [
+     2831.9,
+     17771.6,
+     3889.2
+    ]
+   },
+   "range_agg_10k_rows.p99_us": {
+    "median": 4469.4,
+    "min": 4222.6,
+    "max": 26548.4,
+    "runs": [
+     4222.6,
+     26548.4,
+     4469.4
+    ]
+   },
+   "range_agg_10k_rows.qps": {
+    "median": 362.5,
+    "min": 130.2,
+    "max": 376.5,
+    "runs": [
+     376.5,
+     130.2,
+     362.5
+    ]
+   },
+   "full_scan_agg.p50_us": {
+    "median": 51762.2,
+    "min": 51195.1,
+    "max": 80893.8,
+    "runs": [
+     51195.1,
+     80893.8,
+     51762.2
+    ]
+   },
+   "full_scan_agg.p95_us": {
+    "median": 68847.2,
+    "min": 54603.8,
+    "max": 127951.4,
+    "runs": [
+     68847.2,
+     127951.4,
+     54603.8
+    ]
+   },
+   "full_scan_agg.p99_us": {
+    "median": 105773.4,
+    "min": 56796.1,
+    "max": 128811.3,
+    "runs": [
+     105773.4,
+     128811.3,
+     56796.1
+    ]
+   },
+   "full_scan_agg.qps": {
+    "median": 17.9,
+    "min": 11.5,
+    "max": 19.4,
+    "runs": [
+     17.9,
+     11.5,
+     19.4
+    ]
+   },
+   "concurrent_read_qps.1": {
+    "median": 16943.2,
+    "min": 6420.1,
+    "max": 18009.4,
+    "runs": [
+     16943.2,
+     6420.1,
+     18009.4
+    ]
+   },
+   "concurrent_read_qps.4": {
+    "median": 41330.5,
+    "min": 26469.3,
+    "max": 44002.8,
+    "runs": [
+     41330.5,
+     26469.3,
+     44002.8
+    ]
+   },
+   "concurrent_read_qps.16": {
+    "median": 69005.9,
+    "min": 48089.8,
+    "max": 70030.5,
+    "runs": [
+     70030.5,
+     48089.8,
+     69005.9
+    ]
+   },
+   "mixed_90_10_qps.4": {
+    "median": 8956.4,
+    "min": 2927.8,
+    "max": 16261.8,
+    "runs": [
+     16261.8,
+     2927.8,
+     8956.4
+    ]
+   },
+   "mixed_90_10_qps.16": {
+    "median": 36142.3,
+    "min": 6058.0,
+    "max": 39410.3,
+    "runs": [
+     36142.3,
+     6058.0,
+     39410.3
+    ]
+   },
+   "mixed_write_errors.total": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "runs": [
+     0,
+     0,
+     0
+    ]
+   }
+  },
+  "mysql8-relaxed": {
+   "insert_autocommit.rows_per_s": {
+    "median": 19623.8,
+    "min": 12963.7,
+    "max": 20979.4,
+    "runs": [
+     19623.8,
+     20979.4,
+     12963.7
+    ]
+   },
+   "insert_batched.rows_per_s": {
+    "median": 26307.8,
+    "min": 20260.0,
+    "max": 26866.0,
+    "runs": [
+     26866.0,
+     26307.8,
+     20260.0
+    ]
+   },
+   "point_select.p50_us": {
+    "median": 47.5,
+    "min": 46.8,
+    "max": 56.9,
+    "runs": [
+     46.8,
+     47.5,
+     56.9
+    ]
+   },
+   "point_select.p95_us": {
+    "median": 143.7,
+    "min": 70.8,
+    "max": 176.9,
+    "runs": [
+     70.8,
+     143.7,
+     176.9
+    ]
+   },
+   "point_select.p99_us": {
+    "median": 221.5,
+    "min": 122.2,
+    "max": 246.4,
+    "runs": [
+     122.2,
+     221.5,
+     246.4
+    ]
+   },
+   "point_select.qps": {
+    "median": 15851.4,
+    "min": 11859.8,
+    "max": 19316.6,
+    "runs": [
+     19316.6,
+     15851.4,
+     11859.8
+    ]
+   },
+   "range_agg_10k_rows.p50_us": {
+    "median": 2619.2,
+    "min": 2547.4,
+    "max": 2841.8,
+    "runs": [
+     2547.4,
+     2619.2,
+     2841.8
+    ]
+   },
+   "range_agg_10k_rows.p95_us": {
+    "median": 3038.8,
+    "min": 2966.5,
+    "max": 3515.5,
+    "runs": [
+     2966.5,
+     3038.8,
+     3515.5
+    ]
+   },
+   "range_agg_10k_rows.p99_us": {
+    "median": 3558.3,
+    "min": 3319.3,
+    "max": 4581.8,
+    "runs": [
+     3558.3,
+     3319.3,
+     4581.8
+    ]
+   },
+   "range_agg_10k_rows.qps": {
+    "median": 377.4,
+    "min": 343.2,
+    "max": 385.6,
+    "runs": [
+     385.6,
+     377.4,
+     343.2
+    ]
+   },
+   "full_scan_agg.p50_us": {
+    "median": 50232.5,
+    "min": 48955.2,
+    "max": 62576.3,
+    "runs": [
+     48955.2,
+     50232.5,
+     62576.3
+    ]
+   },
+   "full_scan_agg.p95_us": {
+    "median": 60114.5,
+    "min": 56851.5,
+    "max": 108956.7,
+    "runs": [
+     56851.5,
+     60114.5,
+     108956.7
+    ]
+   },
+   "full_scan_agg.p99_us": {
+    "median": 78176.1,
+    "min": 68139.5,
+    "max": 228833.1,
+    "runs": [
+     78176.1,
+     68139.5,
+     228833.1
+    ]
+   },
+   "full_scan_agg.qps": {
+    "median": 19.0,
+    "min": 13.6,
+    "max": 19.6,
+    "runs": [
+     19.6,
+     19.0,
+     13.6
+    ]
+   },
+   "concurrent_read_qps.1": {
+    "median": 15553.5,
+    "min": 10519.8,
+    "max": 15758.4,
+    "runs": [
+     15758.4,
+     15553.5,
+     10519.8
+    ]
+   },
+   "concurrent_read_qps.4": {
+    "median": 42510.4,
+    "min": 26229.1,
+    "max": 42927.7,
+    "runs": [
+     42510.4,
+     42927.7,
+     26229.1
+    ]
+   },
+   "concurrent_read_qps.16": {
+    "median": 64977.8,
+    "min": 39717.0,
+    "max": 68247.2,
+    "runs": [
+     64977.8,
+     68247.2,
+     39717.0
+    ]
+   },
+   "mixed_90_10_qps.4": {
+    "median": 31884.8,
+    "min": 8625.2,
+    "max": 32445.9,
+    "runs": [
+     31884.8,
+     32445.9,
+     8625.2
+    ]
+   },
+   "mixed_90_10_qps.16": {
+    "median": 50540.0,
+    "min": 13649.8,
+    "max": 57313.4,
+    "runs": [
+     57313.4,
+     50540.0,
+     13649.8
+    ]
+   },
+   "mixed_write_errors.total": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "runs": [
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "raw": {
+  "embedded-novadb": [
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.1053,
+     "rows_per_s": 47488.0
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 0.4758,
+     "rows_per_s": 105094.3
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 10.7,
+     "p95_us": 16.6,
+     "p99_us": 20.4,
+     "mean_us": 11.8,
+     "qps": 84063.0
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 1906.9,
+     "p95_us": 2249.7,
+     "p99_us": 2526.3,
+     "mean_us": 1954.3,
+     "qps": 511.5
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 25457.5,
+     "p95_us": 27868.2,
+     "p99_us": 31594.7,
+     "mean_us": 25249.7,
+     "qps": 39.6
+    },
+    "concurrent_read_qps": {
+     "1": 91141.7,
+     "4": 63786.3,
+     "16": 55756.7
+    },
+    "mixed_90_10_qps": {
+     "4": 58291.3,
+     "16": 24381.9
+    }
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.2241,
+     "rows_per_s": 22311.7
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 0.5674,
+     "rows_per_s": 88117.9
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 9.8,
+     "p95_us": 10.4,
+     "p99_us": 13.3,
+     "mean_us": 9.9,
+     "qps": 100224.2
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 1730.5,
+     "p95_us": 2535.7,
+     "p99_us": 2952.2,
+     "mean_us": 1812.7,
+     "qps": 551.5
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 23974.7,
+     "p95_us": 24988.3,
+     "p99_us": 25205.6,
+     "mean_us": 23310.9,
+     "qps": 42.9
+    },
+    "concurrent_read_qps": {
+     "1": 96996.1,
+     "4": 73103.3,
+     "16": 53813.2
+    },
+    "mixed_90_10_qps": {
+     "4": 35958.1,
+     "16": 38543.9
+    }
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.0954,
+     "rows_per_s": 52431.6
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 0.4139,
+     "rows_per_s": 120800.9
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 10.2,
+     "p95_us": 13.0,
+     "p99_us": 22.3,
+     "mean_us": 10.6,
+     "qps": 93549.8
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 1930.0,
+     "p95_us": 2324.7,
+     "p99_us": 2527.2,
+     "mean_us": 1991.8,
+     "qps": 501.9
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 24873.9,
+     "p95_us": 28971.9,
+     "p99_us": 31451.1,
+     "mean_us": 25354.7,
+     "qps": 39.4
+    },
+    "concurrent_read_qps": {
+     "1": 95164.1,
+     "4": 76088.4,
+     "16": 70836.6
+    },
+    "mixed_90_10_qps": {
+     "4": 67104.4,
+     "16": 36148.7
+    }
+   }
+  ],
+  "embedded-rusqlite": [
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.0761,
+     "rows_per_s": 65686.9
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 0.1913,
+     "rows_per_s": 261357.6
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 2.9,
+     "p95_us": 3.2,
+     "p99_us": 4.4,
+     "mean_us": 2.9,
+     "qps": 335932.1
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 1755.9,
+     "p95_us": 2124.7,
+     "p99_us": 2187.3,
+     "mean_us": 1808.9,
+     "qps": 552.4
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 26255.7,
+     "p95_us": 30765.8,
+     "p99_us": 33998.0,
+     "mean_us": 26548.9,
+     "qps": 37.7
+    },
+    "concurrent_read_qps": {
+     "1": 325255.4,
+     "4": 783966.1,
+     "16": 1411215.9
+    },
+    "mixed_90_10_qps": {
+     "4": 176311.8,
+     "16": 170784.1
+    }
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.088,
+     "rows_per_s": 56810.0
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 0.3167,
+     "rows_per_s": 157886.3
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 3.1,
+     "p95_us": 3.4,
+     "p99_us": 4.7,
+     "mean_us": 3.2,
+     "qps": 309883.0
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 1925.2,
+     "p95_us": 2012.3,
+     "p99_us": 2198.3,
+     "mean_us": 1930.1,
+     "qps": 517.7
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 24419.4,
+     "p95_us": 25255.7,
+     "p99_us": 27446.1,
+     "mean_us": 24461.8,
+     "qps": 40.9
+    },
+    "concurrent_read_qps": {
+     "1": 271887.7,
+     "4": 620666.7,
+     "16": 1355211.5
+    },
+    "mixed_90_10_qps": {
+     "4": 108811.8,
+     "16": 81230.5
+    }
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.0466,
+     "rows_per_s": 107187.1
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 0.1691,
+     "rows_per_s": 295750.7
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 2.7,
+     "p95_us": 3.0,
+     "p99_us": 3.9,
+     "mean_us": 2.8,
+     "qps": 354956.6
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 1671.6,
+     "p95_us": 1763.7,
+     "p99_us": 1824.1,
+     "mean_us": 1679.9,
+     "qps": 595.0
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 21240.4,
+     "p95_us": 22175.7,
+     "p99_us": 22369.4,
+     "mean_us": 21180.8,
+     "qps": 47.2
+    },
+    "concurrent_read_qps": {
+     "1": 344221.4,
+     "4": 950195.4,
+     "16": 1486537.4
+    },
+    "mixed_90_10_qps": {
+     "4": 130057.0,
+     "16": 152348.1
+    }
+   }
+  ],
+  "sqlite3-py": [
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.0643,
+     "rows_per_s": 77786.2
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 0.194,
+     "rows_per_s": 257764.7
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 6.8,
+     "p95_us": 7.3,
+     "p99_us": 10.7,
+     "mean_us": 6.9,
+     "qps": 132831.3
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2236.3,
+     "p95_us": 3470.5,
+     "p99_us": 3671.9,
+     "mean_us": 2350.5,
+     "qps": 423.7
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 27119.9,
+     "p95_us": 27441.6,
+     "p99_us": 29062.8,
+     "mean_us": 26848.5,
+     "qps": 37.2
+    },
+    "concurrent_read_qps": {
+     "1": 108316.2,
+     "4": 289117.8,
+     "16": 549474.7
+    },
+    "mixed_90_10_qps": {
+     "4": 72175.7,
+     "16": 122679.3
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.0839,
+     "rows_per_s": 59622.6
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 0.261,
+     "rows_per_s": 191565.7
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 6.4,
+     "p95_us": 7.1,
+     "p99_us": 15.0,
+     "mean_us": 6.6,
+     "qps": 138388.0
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 1984.9,
+     "p95_us": 2282.5,
+     "p99_us": 3120.8,
+     "mean_us": 2024.2,
+     "qps": 492.8
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 25717.6,
+     "p95_us": 28523.9,
+     "p99_us": 30165.8,
+     "mean_us": 26204.8,
+     "qps": 38.2
+    },
+    "concurrent_read_qps": {
+     "1": 134864.4,
+     "4": 360411.1,
+     "16": 515136.9
+    },
+    "mixed_90_10_qps": {
+     "4": 68704.7,
+     "16": 69738.1
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.066,
+     "rows_per_s": 75778.7
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 0.269,
+     "rows_per_s": 185887.7
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 7.1,
+     "p95_us": 16.7,
+     "p99_us": 18.6,
+     "mean_us": 9.6,
+     "qps": 95317.5
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2139.8,
+     "p95_us": 2902.2,
+     "p99_us": 3364.2,
+     "mean_us": 2214.1,
+     "qps": 450.0
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 31464.8,
+     "p95_us": 37177.0,
+     "p99_us": 37967.2,
+     "mean_us": 32304.8,
+     "qps": 31.0
+    },
+    "concurrent_read_qps": {
+     "1": 123395.5,
+     "4": 287612.9,
+     "16": 500515.7
+    },
+    "mixed_90_10_qps": {
+     "4": 53992.7,
+     "16": 96456.8
+    },
+    "mixed_write_errors": {}
+   }
+  ],
+  "novadb-http": [
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 1.8894,
+     "rows_per_s": 2646.3
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 0.6987,
+     "rows_per_s": 71558.9
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 247.7,
+     "p95_us": 718.2,
+     "p99_us": 1252.6,
+     "mean_us": 305.8,
+     "qps": 3234.4
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2162.0,
+     "p95_us": 3773.0,
+     "p99_us": 4046.3,
+     "mean_us": 2348.4,
+     "qps": 424.8
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 26760.6,
+     "p95_us": 34169.9,
+     "p99_us": 41718.3,
+     "mean_us": 27641.1,
+     "qps": 36.2
+    },
+    "concurrent_read_qps": {
+     "1": 4895.6,
+     "4": 15716.9,
+     "16": 19783.4
+    },
+    "mixed_90_10_qps": {
+     "4": 13459.0,
+     "16": 8033.9
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 1.5052,
+     "rows_per_s": 3321.8
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 0.7574,
+     "rows_per_s": 66018.2
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 179.0,
+     "p95_us": 349.7,
+     "p99_us": 492.7,
+     "mean_us": 321.4,
+     "qps": 3085.0
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2403.7,
+     "p95_us": 3972.9,
+     "p99_us": 4519.8,
+     "mean_us": 2664.7,
+     "qps": 374.3
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 23434.5,
+     "p95_us": 32243.8,
+     "p99_us": 36838.9,
+     "mean_us": 24960.9,
+     "qps": 40.1
+    },
+    "concurrent_read_qps": {
+     "1": 5464.3,
+     "4": 14258.5,
+     "16": 17147.9
+    },
+    "mixed_90_10_qps": {
+     "4": 9543.2,
+     "16": 12331.6
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 5.2572,
+     "rows_per_s": 951.1
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 1.129,
+     "rows_per_s": 44286.1
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 254.8,
+     "p95_us": 835.8,
+     "p99_us": 1818.6,
+     "mean_us": 584.4,
+     "qps": 1700.9
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2395.0,
+     "p95_us": 4948.5,
+     "p99_us": 6689.0,
+     "mean_us": 2772.8,
+     "qps": 359.8
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 24956.3,
+     "p95_us": 32771.5,
+     "p99_us": 50680.7,
+     "mean_us": 26294.2,
+     "qps": 38.0
+    },
+    "concurrent_read_qps": {
+     "1": 5690.1,
+     "4": 7678.5,
+     "16": 15033.6
+    },
+    "mixed_90_10_qps": {
+     "4": 7350.5,
+     "16": 8834.5
+    },
+    "mixed_write_errors": {}
+   }
+  ],
+  "novadb-pg": [
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 1.2413,
+     "rows_per_s": 4028.0
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 6.3671,
+     "rows_per_s": 7852.9
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 118.3,
+     "p95_us": 221.2,
+     "p99_us": 477.3,
+     "mean_us": 126.6,
+     "qps": 7757.7
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2032.4,
+     "p95_us": 3345.8,
+     "p99_us": 3575.3,
+     "mean_us": 2240.1,
+     "qps": 445.4
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 22699.7,
+     "p95_us": 24501.9,
+     "p99_us": 28817.0,
+     "mean_us": 23107.2,
+     "qps": 43.3
+    },
+    "concurrent_read_qps": {
+     "1": 7870.2,
+     "4": 18193.2,
+     "16": 36867.3
+    },
+    "mixed_90_10_qps": {
+     "4": 5125.1,
+     "16": 21251.4
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 1.4541,
+     "rows_per_s": 3438.6
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 6.2107,
+     "rows_per_s": 8050.7
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 115.8,
+     "p95_us": 178.5,
+     "p99_us": 227.0,
+     "mean_us": 114.0,
+     "qps": 8599.9
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 1901.1,
+     "p95_us": 3427.2,
+     "p99_us": 3701.5,
+     "mean_us": 2151.6,
+     "qps": 464.0
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 23904.8,
+     "p95_us": 32545.0,
+     "p99_us": 36764.1,
+     "mean_us": 25006.8,
+     "qps": 40.0
+    },
+    "concurrent_read_qps": {
+     "1": 5169.3,
+     "4": 26647.6,
+     "16": 50341.8
+    },
+    "mixed_90_10_qps": {
+     "4": 17988.6,
+     "16": 7720.5
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 2.5038,
+     "rows_per_s": 1996.9
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 4.7543,
+     "rows_per_s": 10516.7
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 74.9,
+     "p95_us": 235.1,
+     "p99_us": 825.8,
+     "mean_us": 115.6,
+     "qps": 8514.0
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 1900.2,
+     "p95_us": 2616.6,
+     "p99_us": 3206.6,
+     "mean_us": 1979.3,
+     "qps": 504.2
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 23460.7,
+     "p95_us": 33240.1,
+     "p99_us": 37016.1,
+     "mean_us": 24652.6,
+     "qps": 40.6
+    },
+    "concurrent_read_qps": {
+     "1": 11192.0,
+     "4": 16563.2,
+     "16": 40014.7
+    },
+    "mixed_90_10_qps": {
+     "4": 8357.4,
+     "16": 11293.5
+    },
+    "mixed_write_errors": {}
+   }
+  ],
+  "novadb-mysql": [
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.6939,
+     "rows_per_s": 7205.7
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 5.0417,
+     "rows_per_s": 9917.4
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 168.3,
+     "p95_us": 254.3,
+     "p99_us": 335.5,
+     "mean_us": 172.5,
+     "qps": 5713.3
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2440.0,
+     "p95_us": 3899.4,
+     "p99_us": 4127.2,
+     "mean_us": 2681.9,
+     "qps": 372.2
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 25171.2,
+     "p95_us": 25964.0,
+     "p99_us": 25971.8,
+     "mean_us": 24443.6,
+     "qps": 40.9
+    },
+    "concurrent_read_qps": {
+     "1": 6034.3,
+     "4": 23790.1,
+     "16": 38677.3
+    },
+    "mixed_90_10_qps": {
+     "4": 17883.5,
+     "16": 21083.8
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 1.2466,
+     "rows_per_s": 4011.0
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 6.7366,
+     "rows_per_s": 7422.1
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 165.3,
+     "p95_us": 237.3,
+     "p99_us": 290.1,
+     "mean_us": 165.4,
+     "qps": 5961.9
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2530.8,
+     "p95_us": 3938.4,
+     "p99_us": 4200.3,
+     "mean_us": 2767.4,
+     "qps": 360.5
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 23946.5,
+     "p95_us": 25544.2,
+     "p99_us": 26226.5,
+     "mean_us": 24107.1,
+     "qps": 41.5
+    },
+    "concurrent_read_qps": {
+     "1": 6626.2,
+     "4": 24454.5,
+     "16": 40674.6
+    },
+    "mixed_90_10_qps": {
+     "4": 13614.6,
+     "16": 19765.1
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 1.1187,
+     "rows_per_s": 4469.4
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 7.0896,
+     "rows_per_s": 7052.5
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 164.9,
+     "p95_us": 263.2,
+     "p99_us": 423.3,
+     "mean_us": 172.1,
+     "qps": 5730.1
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2212.5,
+     "p95_us": 3840.7,
+     "p99_us": 4259.3,
+     "mean_us": 2381.6,
+     "qps": 419.1
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 25848.4,
+     "p95_us": 35112.9,
+     "p99_us": 41069.2,
+     "mean_us": 26762.1,
+     "qps": 37.4
+    },
+    "concurrent_read_qps": {
+     "1": 4337.7,
+     "4": 20714.3,
+     "16": 32072.3
+    },
+    "mixed_90_10_qps": {
+     "4": 9150.3,
+     "16": 11521.5
+    },
+    "mixed_write_errors": {}
+   }
+  ],
+  "mysql8": [
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 27.7197,
+     "rows_per_s": 180.4
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 2.9689,
+     "rows_per_s": 16841.5
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 48.4,
+     "p95_us": 136.8,
+     "p99_us": 194.9,
+     "mean_us": 60.3,
+     "qps": 16291.7
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2538.6,
+     "p95_us": 2831.9,
+     "p99_us": 4222.6,
+     "mean_us": 2652.6,
+     "qps": 376.5
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 51195.1,
+     "p95_us": 68847.2,
+     "p99_us": 105773.4,
+     "mean_us": 55789.1,
+     "qps": 17.9
+    },
+    "concurrent_read_qps": {
+     "1": 16943.2,
+     "4": 41330.5,
+     "16": 70030.5
+    },
+    "mixed_90_10_qps": {
+     "4": 16261.8,
+     "16": 36142.3
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 5.9602,
+     "rows_per_s": 838.9
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 5.5886,
+     "rows_per_s": 8946.7
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 226.2,
+     "p95_us": 382.3,
+     "p99_us": 3347.1,
+     "mean_us": 308.5,
+     "qps": 3200.4
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 5988.7,
+     "p95_us": 17771.6,
+     "p99_us": 26548.4,
+     "mean_us": 7668.2,
+     "qps": 130.2
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 80893.8,
+     "p95_us": 127951.4,
+     "p99_us": 128811.3,
+     "mean_us": 86771.8,
+     "qps": 11.5
+    },
+    "concurrent_read_qps": {
+     "1": 6420.1,
+     "4": 26469.3,
+     "16": 48089.8
+    },
+    "mixed_90_10_qps": {
+     "4": 2927.8,
+     "16": 6058.0
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 15.0994,
+     "rows_per_s": 331.1
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 3.4832,
+     "rows_per_s": 14354.6
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 52.2,
+     "p95_us": 168.1,
+     "p99_us": 230.5,
+     "mean_us": 73.3,
+     "qps": 13407.1
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2672.0,
+     "p95_us": 3889.2,
+     "p99_us": 4469.4,
+     "mean_us": 2755.9,
+     "qps": 362.5
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 51762.2,
+     "p95_us": 54603.8,
+     "p99_us": 56796.1,
+     "mean_us": 51668.9,
+     "qps": 19.4
+    },
+    "concurrent_read_qps": {
+     "1": 18009.4,
+     "4": 44002.8,
+     "16": 69005.9
+    },
+    "mixed_90_10_qps": {
+     "4": 8956.4,
+     "16": 39410.3
+    },
+    "mixed_write_errors": {}
+   }
+  ],
+  "mysql8-relaxed": [
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.2548,
+     "rows_per_s": 19623.8
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 1.8611,
+     "rows_per_s": 26866.0
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 46.8,
+     "p95_us": 70.8,
+     "p99_us": 122.2,
+     "mean_us": 50.9,
+     "qps": 19316.6
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2547.4,
+     "p95_us": 2966.5,
+     "p99_us": 3558.3,
+     "mean_us": 2590.7,
+     "qps": 385.6
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 48955.2,
+     "p95_us": 56851.5,
+     "p99_us": 78176.1,
+     "mean_us": 50898.5,
+     "qps": 19.6
+    },
+    "concurrent_read_qps": {
+     "1": 15758.4,
+     "4": 42510.4,
+     "16": 64977.8
+    },
+    "mixed_90_10_qps": {
+     "4": 31884.8,
+     "16": 57313.4
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.2383,
+     "rows_per_s": 20979.4
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 1.9006,
+     "rows_per_s": 26307.8
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 47.5,
+     "p95_us": 143.7,
+     "p99_us": 221.5,
+     "mean_us": 62.0,
+     "qps": 15851.4
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2619.2,
+     "p95_us": 3038.8,
+     "p99_us": 3319.3,
+     "mean_us": 2646.8,
+     "qps": 377.4
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 50232.5,
+     "p95_us": 60114.5,
+     "p99_us": 68139.5,
+     "mean_us": 52682.9,
+     "qps": 19.0
+    },
+    "concurrent_read_qps": {
+     "1": 15553.5,
+     "4": 42927.7,
+     "16": 68247.2
+    },
+    "mixed_90_10_qps": {
+     "4": 32445.9,
+     "16": 50540.0
+    },
+    "mixed_write_errors": {}
+   },
+   {
+    "insert_autocommit": {
+     "rows": 5000,
+     "seconds": 0.3857,
+     "rows_per_s": 12963.7
+    },
+    "insert_batched": {
+     "rows": 50000,
+     "batch": 1000,
+     "seconds": 2.4679,
+     "rows_per_s": 20260.0
+    },
+    "point_select": {
+     "n": 20000,
+     "p50_us": 56.9,
+     "p95_us": 176.9,
+     "p99_us": 246.4,
+     "mean_us": 82.9,
+     "qps": 11859.8
+    },
+    "range_agg_10k_rows": {
+     "n": 200,
+     "p50_us": 2841.8,
+     "p95_us": 3515.5,
+     "p99_us": 4581.8,
+     "mean_us": 2910.1,
+     "qps": 343.2
+    },
+    "full_scan_agg": {
+     "n": 20,
+     "p50_us": 62576.3,
+     "p95_us": 108956.7,
+     "p99_us": 228833.1,
+     "mean_us": 73727.7,
+     "qps": 13.6
+    },
+    "concurrent_read_qps": {
+     "1": 10519.8,
+     "4": 26229.1,
+     "16": 39717.0
+    },
+    "mixed_90_10_qps": {
+     "4": 8625.2,
+     "16": 13649.8
+    },
+    "mixed_write_errors": {}
+   }
+  ]
+ }
+}

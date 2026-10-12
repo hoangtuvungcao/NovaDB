@@ -1,0 +1,6 @@
+.venv/
+.node/
+.gocache/
+.gopath/
+.node-prisma/
+__pycache__/

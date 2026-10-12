@@ -1,0 +1,1 @@
+{ "name": "novadb-compat-prisma", "private": true, "dependencies": { "prisma": "^6.0.0", "@prisma/client": "^6.0.0" } }
