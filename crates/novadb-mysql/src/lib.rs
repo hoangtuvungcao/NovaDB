@@ -3,7 +3,7 @@
 //! Lets standard MySQL clients and drivers (the `mysql` CLI, `mysql2`,
 //! PyMySQL, PHP `mysqli`/PDO, Go `go-sql-driver/mysql`, JDBC, ...) connect
 //! to NovaDB databases. Each connection gets its own SQLite connection; MySQL
-//! SQL is translated to SQLite on a token stream (see [`translate`]).
+//! SQL is translated to SQLite on a token stream (see the `translate` module).
 //!
 //! ```text
 //! Client                            NovaDB MySQL gateway
