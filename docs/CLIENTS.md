@@ -1,6 +1,55 @@
 # NovaDB: Multi-Language Client Integration Guide
 
-Because NovaDB exposes the standard **PostgreSQL Wire Protocol v3** on port `5432` and an **HTTP REST API** on port `8787`, you can use official PostgreSQL drivers and HTTP clients across all modern programming languages.
+> Maintained versions: [SDKs](https://hoangtuvungcao.github.io/NovaDB/sdks/), [PostgreSQL wire](https://hoangtuvungcao.github.io/NovaDB/connect/postgresql), [HTTP API](https://hoangtuvungcao.github.io/NovaDB/connect/http-api).
+> In the examples below, `admin` / `secret` stand for the server's `--pg-user` / `--pg-password` (the installer uses
+> user `novadb` and a generated password in `/etc/novadb/novadb.env`). The `default` database name falls back to
+> `__default__.novadb` unless a database called `default` exists.
+
+Because NovaDB exposes the standard **PostgreSQL Wire Protocol v3** on port `5432` and an **HTTP REST API** on port `8787`, PostgreSQL drivers and HTTP clients can connect from all modern programming languages. The SQL still runs on SQLite, so driver features that depend on PostgreSQL behaviour may not work: `SET ...`/`SHOW ...` statements, `BEGIN TRANSACTION` (plain `BEGIN` works), `RETURNING` rows, `::` casts, `pg_catalog` introspection and several statements in one simple query are not supported. Only the Python `pg8000` driver was exercised end to end for this review; test your driver and ORM before relying on them. See [PostgreSQL wire](https://hoangtuvungcao.github.io/NovaDB/connect/postgresql).
+
+---
+
+## 0. Official NovaDB HTTP SDKs (recommended for web, backends and games)
+
+The repository ships zero-dependency SDKs for the HTTP API. Use them when a PostgreSQL driver is not an option: in browsers, on Unity/WebGL, in serverless functions, or when you want migrations, backups and sync push/pull without writing raw HTTP calls.
+
+| Language | Path | Install |
+|---|---|---|
+| JavaScript / TypeScript | [`sdks/javascript`](../sdks/javascript) | `npm install && npm run build` in the folder, then `npm install <path>` (not published to npm yet) |
+| Python | [`sdks/python`](../sdks/python) | `pip install -e sdks/python` (the PyPI package named `novadb` is unrelated) |
+| C# / .NET / Unity | [`sdks/csharp`](../sdks/csharp) | reference `sdks/csharp/src/NovaDB.Client` or copy the DLL into `Assets/Plugins` |
+| Go | [`sdks/go`](../sdks/go) | `go get github.com/hoangtuvungcao/NovaDB/sdks/go` |
+
+```ts
+import { NovaDB } from "@novadb/client";
+const db = new NovaDB({ url: "http://127.0.0.1:8787", token: "dev-secret", database: "app" });
+const { rows } = await db.query("SELECT * FROM users WHERE email = ?", ["a@example.com"]);
+await db.table("users").update({ name: "Ann" }).where({ id: 1 });
+```
+
+```python
+from novadb import NovaDB
+db = NovaDB("http://127.0.0.1:8787", "dev-secret", "app")
+rows = db.query("SELECT * FROM users WHERE email = :email", {"email": "a@example.com"}).rows
+```
+
+```csharp
+var db = new NovaDBClient("http://127.0.0.1:8787", "dev-secret", "game");
+var top = await db.Table("scores").OrderByDescending("best_score").Limit(10).GetAsync();
+```
+
+```go
+db, _ := novadb.New(novadb.Options{URL: "http://127.0.0.1:8787", Token: "dev-secret", Database: "app"})
+res, err := db.Query(ctx, "SELECT * FROM users WHERE id = ?", 42)
+```
+
+The HTTP API has no server-side parameters, so the SDKs bind them on the client with strict escaping. Strings are hex-encoded by default; see [sdks/README.md](../sdks/README.md#parameter-binding) for the reason. Browser apps need the server started with `--cors-origin <origin>`.
+
+Sample apps:
+
+- [`examples/web-todo`](../examples/web-todo)
+- [`examples/backend-python`](../examples/backend-python)
+- [`examples/game-leaderboard`](../examples/game-leaderboard)
 
 ---
 

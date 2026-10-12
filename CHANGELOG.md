@@ -5,6 +5,98 @@ All notable changes to this project are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/). Changes marked **planned** are
 roadmap items and are **not** available in the current release.
 
+## Unreleased
+
+### Security
+
+- **Fixed SQL injection in the T-SQL dialect layer.** The rewriter ran regex passes over raw SQL, so a correctly
+  escaped string such as `'); DROP TABLE x; --` following a literal containing `WAITFOR`/`PRINT`/`EXEC` could become
+  executable SQL. String literals, quoted identifiers and comments are now masked before any rewrite pass.
+- String literal contents (e.g. `'a@x.vn'`, `'COMMIT'`, `'GO'`) are no longer altered by the dialect layer.
+- Fixed SQL injection through PostgreSQL extended-protocol parameters (values containing `$n` were re-substituted).
+- Servers refuse to listen on non-loopback addresses without a bearer token / password unless `--allow-insecure`.
+- PostgreSQL gateway: SCRAM-SHA-256 (default) and MD5 authentication, constant-time comparison, startup deadline,
+  connection limit (`--pg-max-connections`), bounded message sizes; malformed messages close only that connection.
+- Optional CORS (`--cors-origin`) and per-request timeout (`--request-timeout-secs`) for the HTTP API.
+- `scripts/install.sh` generates credentials in `/etc/novadb/novadb.env` for the systemd service.
+
+### Concurrency
+
+- Writes use `BEGIN IMMEDIATE` behind an in-process per-file write gate, so concurrent writers queue instead of
+  failing with `database is locked`. Busy timeout defaults to 10 s (`OpenOptions::busy_timeout`,
+  `NOVADB_BUSY_TIMEOUT_MS`). `NovaDbPool` readers are `query_only` connections. Every connection uses WAL,
+  `synchronous=NORMAL`, `foreign_keys=ON`, `wal_autocheckpoint=1000`. A mixed workload with 16 concurrent HTTP clients
+  had 0 write failures. 213 unit tests and 4 concurrency tests.
+- `unsafe` policy: `novadb-core` has its own lint table with `unsafe_code = "deny"` and exactly one
+  `#[allow(unsafe_code)]` (`tune_lookaside`, `SQLITE_DBCONFIG_LOOKASIDE`, about 600 KiB per connection; 100
+  connections cost roughly 60 MB extra).
+
+### Performance
+
+- Official benchmarks are in progress (`benches/`); no numbers are claimed here yet.
+- Dialect rewriting compiles each regex once: `SELECT 1` dropped from about 233 ms to about 40 us (release), and the
+  core test suite from about 9 minutes to about 10 seconds.
+
+### Fixed
+
+- **Fixed an infinite loop** in the T-SQL `CROSS APPLY` rewrite: a correlated subquery whose alias matched the APPLY
+  alias grew exponentially and pinned the CPU. All rewrite loops are now capped and return `unsupported SQL`; a
+  watchdog test runs about 10,000 fixture-derived and mangled inputs with a 10 second limit each.
+- `DB_NAME()` returns the real database name; `DATABASEPROPERTYEX` and every T-SQL `CREATE TRIGGER` form now fail
+  with `unsupported SQL`. Added `PARSENAME`, `ISDATE`, `COL_LENGTH` and `APPROX_COUNT_DISTINCT`.
+- `vector_*` SQL functions were rewritten to `TEXT_*`; type-name rewrites now respect word boundaries.
+- `TIMESTAMP` columns were rewritten to a random blob default (only `ROWVERSION` is rewritten now).
+- `COLLATE BINARY` and SQLite `CREATE TRIGGER` statements were mishandled by the transpiler.
+- `OPENJSON ... WITH`, `CROSS/OUTER APPLY OPENJSON`, `PIVOT`, `STRING_SPLIT` ordinals, `SET @n += 1`.
+- PostgreSQL gateway: `COMMIT` of a failed transaction now rolls back; missing `ReadyForQuery` after failed `BEGIN`.
+- `SERIAL`/`BIGSERIAL`/`IDENTITY` primary keys now generate ids; `MERGE` now performs real `DELETE`/`UPDATE`/`INSERT`
+  statements; `UPDATE alias ... FROM ... JOIN`, `[dbo].[t]`, `IF NOT EXISTS (...) INSERT`, `CROSS/OUTER APPLY
+  STRING_SPLIT/OPENJSON/(SELECT ...)`, `TRY_CAST`/`TRY_CONVERT`/`TRY_PARSE` (NULL on failure) and `FORMAT` work.
+- Multi-line SQLite `CREATE TRIGGER ... BEGIN ... END` bodies work.
+
+### Added
+
+- New embedder APIs in `novadb-core`: `DialectMode::{TSql, Passthrough}`, `execute_batch_with`,
+  `execute_uncommitted_with`, `query_with`, `query_typed` (`TypedQueryResult` with `declared_types`),
+  `execute_returning` / `execute_returning_uncommitted` (`(TypedQueryResult, ExecStats)`), `execute_with_stats`,
+  `execute_schema_rebuild(_with)`, `OpenOptions { busy_timeout, query_only, write_gate }`, `open_session`,
+  `open_with_options`, and the errors `Error::{Unsupported, Tsql, Raised, ForeignKeyViolation}`.
+- T-SQL functions now implemented (previously stubs or wrong): `HASHBYTES` (MD5/SHA1/SHA2_256/SHA2_512, text as UTF-8),
+  `DATEPART`, `DATENAME`, `DATEADD`, `DATEDIFF(_BIG)`, `EOMONTH`, `DATETRUNC`, `DATE_BUCKET`, `CONVERT` styles (0-14,
+  20-25, 100-114, 120, 121, 125-127), `RAND([seed])`, `CHECKSUM`/`BINARY_CHECKSUM` (not SQL Server's algorithm),
+  `CHECKSUM_AGG`, `TRANSLATE`, `STRING_ESCAPE('json')`, `CONCAT_WS`, `COMPRESS`/`DECOMPRESS` (real GZIP), `STDEV(P)`,
+  `VAR(P)`, `PRODUCT`, `PERCENTILE_CONT/DISC`, `APPROX_PERCENTILE_*` (exact), `PERCENT_RANK`, `geometry/geography::Point`,
+  `SESSION_CONTEXT` + `sp_set_session_context`, `OBJECT_ID`/`OBJECT_NAME`/`IDENT_CURRENT`, `REGEXP_*`, `PATINDEX`,
+  `UNISTR`, `STRING_AGG ... WITHIN GROUP (ORDER BY ...)`; real `sys.objects/tables/views/columns/indexes/schemas` and
+  `information_schema.tables/columns`; `UNPIVOT` keeps pass-through columns; `DELETE alias FROM ... JOIN`, `DELETE TOP (n)`,
+  simple correlated `CROSS/OUTER APPLY`; `GO` always ends a batch; `COLLATE *_CI_*` is `NOCASE`, `*_CS_*`/`*_BIN*` is `BINARY`.
+- Deliberately unsupported (clear `unsupported SQL` error instead of wrong results): `GROUP BY ROLLUP/CUBE/GROUPING
+  SETS`, `GROUPING()`, `DEFAULT NEXT VALUE FOR`, `CREATE SCHEMA`, `*_AI` collations, `sys.fn_*`, spatial methods,
+  `SWITCHOFFSET`/`TODATETIMEOFFSET`/`AT TIME ZONE`, `REGEXP_MATCHES`, `EDIT_DISTANCE*`/`JARO_WINKLER_*`,
+  `VECTOR_DISTANCE`, `DATABASEPROPERTYEX`-style metadata functions, `EXECUTE AS`, `CREATE USER`, complex `APPLY`
+  forms (including `UNION`/`INTERSECT`/`EXCEPT` inside `APPLY`), every T-SQL `CREATE TRIGGER` form, `sys.types`/`sys.foreign_keys`/`sys.check_constraints`.
+- PostgreSQL gateway: extended protocol (text and binary), `RETURNING` with exact tags, `SET`/`SHOW`, `::` casts,
+  `E''` strings, `ON CONFLICT`, `SAVEPOINT`, real SQLSTATEs, `pg_catalog`/`information_schema` emulation (current
+  database, schema `public`), multi-statement simple queries. Arrays and many extensions return `0A000`. SQLAlchemy 2,
+  Knex, Sequelize, PDO pgsql, pgx and psycopg 2/3 pass the mini-app suite in `tests/compat`; `psql` is untested.
+- MySQL wire gateway (see `docs/MYSQL.md`); SQLAlchemy/Alembic, Knex, Sequelize, Prisma, PDO, Go, PyMySQL and mysql2 pass
+  the compatibility suite, JDBC smoke-tested by hand.
+- ORM and driver compatibility page on the website, and `tests/compat/KNOWN_ISSUES.md`.
+- T-SQL interpreter for batches that use variables and control flow: `DECLARE`/`SET`, `IF/ELSE`, `WHILE/BREAK/CONTINUE`,
+  `GOTO`, cursors, `TRY/CATCH` with `ERROR_*()`, `THROW`/`RAISERROR`, `EXEC sp_executesql`/`EXEC (...)`, `BEGIN TRAN`
+  with savepoint-based `ROLLBACK` inside one call, sequences (`_novadb_sequences`, `NEXT VALUE FOR`) and alias types
+  (`_novadb_types`). Stored procedures are still not executed (`CREATE PROCEDURE` is discarded, `EXEC proc` is a no-op).
+- Unsupported T-SQL (temporal tables, XML methods, row-level security, T-SQL triggers, users/roles/`GRANT`, data
+  masking, encryption keys, Service Broker, `TOP ... WITH TIES/PERCENT`, `EXEC @procvar`, `FETCH ABSOLUTE/RELATIVE`,
+  long `WAITFOR`) now returns an `unsupported SQL` error instead of reporting success.
+- Web Studio rewrite: table editor with inline editing, structure view, create-table builder, multi-tab SQL editor,
+  maintenance tools, dark/light themes, new branding.
+- Interactive console (`novadb console`): history, completion, highlighting, box tables, psql-style commands,
+  `.import`/`.export`, correct statement splitting, script mode from stdin.
+- Official SDKs for JavaScript/TypeScript, Python, C#/Unity and Go (`sdks/`), with example apps.
+- PostgreSQL gateway can serve a managed database selected by the startup `database` parameter.
+- Documentation website (VitePress), Kubernetes manifests, contributing/security docs, new logo and brand guide.
+
 ## 0.1.0 — Initial experimental release
 
 ### Embedded engine (`novadb-core`)
@@ -74,4 +166,4 @@ roadmap items and are **not** available in the current release.
 - No automatic schema replication, compaction, or cluster bootstrap protocol.
 - No built-in native TLS; reverse proxy (NGINX, Caddy) or VPN recommended for public network exposure.
 - Vector functions use exact sequential compute (no ANN index like HNSW/IVF).
-- T-SQL compatibility focuses on procedural parsing and commonly used syntax transformations rather than full native SQL Server engine execution.
+- T-SQL compatibility is a syntax rewriter plus a small interpreter for variables and control flow, not native SQL Server execution: stored procedures are not run, and several system functions are stubs.

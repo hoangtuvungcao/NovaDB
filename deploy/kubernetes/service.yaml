@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: novadb
+  namespace: novadb
+  labels:
+    app.kubernetes.io/name: novadb
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: novadb
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http
+      protocol: TCP
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP
+---
+# Headless service required by the StatefulSet (stable DNS: novadb-0.novadb-headless.novadb.svc).
+apiVersion: v1
+kind: Service
+metadata:
+  name: novadb-headless
+  namespace: novadb
+  labels:
+    app.kubernetes.io/name: novadb
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: novadb
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http

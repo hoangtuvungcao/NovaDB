@@ -39,10 +39,10 @@ New-Item -ItemType Directory -Path $tempDir | Out-Null
 
 try {
     $archivePath = Join-Path $tempDir $archive
-    $checksumsPath = Join-Path $tempDir "SHA256SUMS"
+    $checksumsPath = Join-Path $tempDir "SHA256SUMS.txt"
     Write-Host "Downloading $archive ..."
     Invoke-WebRequest -Uri "$releaseBase/$archive" -OutFile $archivePath
-    Invoke-WebRequest -Uri "$releaseBase/SHA256SUMS" -OutFile $checksumsPath
+    Invoke-WebRequest -Uri "$releaseBase/SHA256SUMS.txt" -OutFile $checksumsPath
 
     $escapedArchive = [regex]::Escape($archive)
     $checksumPattern = "^[0-9a-fA-F]{64}\s+\*?${escapedArchive}$"

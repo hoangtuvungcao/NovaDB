@@ -1,0 +1,9 @@
+# kubectl apply -k deploy/kubernetes
+# The Secret is NOT included: create it yourself first (see secret.example.yaml).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - service.yaml
+  - statefulset.yaml
+  # - ingress.example.yaml
