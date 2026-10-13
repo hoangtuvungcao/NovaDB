@@ -1,4 +1,7 @@
 mod catalog;
+#[cfg(test)]
+mod http_tests;
+mod sqlapi;
 mod store;
 
 use std::{
@@ -20,10 +23,7 @@ use axum::{
     routing::{get, post},
 };
 use novadb_core::protocol::{HealthResponse, PullResponse, PushRequest, PushResponse};
-use novadb_core::{
-    DialectMode, IntegrityReport, Migration, MigrationReport, NovaDb, NovaDbPool, QueryResult,
-    TypedQueryResult, WalCheckpointReport,
-};
+use novadb_core::{DialectMode, Migration, NovaDb, NovaDbPool, QueryResult, TypedQueryResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -39,8 +39,8 @@ use tower_http::{
 };
 
 pub use catalog::{
-    BackupReport, CatalogError, DatabaseCatalog, DatabaseMetadata, ManagedDatabase,
-    default_read_pool_size,
+    BackupReport, CatalogError, DatabaseCatalog, DatabaseHandle, DatabaseMetadata, ManagedDatabase,
+    ShardedDatabase, default_read_pool_size,
 };
 pub use store::{RelayStore, StoreError};
 
@@ -68,6 +68,12 @@ pub const HARD_MAX_GATEWAY_CONNECTIONS: usize = 100_000;
 pub const MAX_MIGRATIONS: usize = 1_000;
 pub const MAX_MIGRATION_NAME_BYTES: usize = 512;
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
+/// Default `--statement-timeout-ms`.
+pub const DEFAULT_STATEMENT_TIMEOUT_MS: u64 = 30_000;
+/// Default `--max-write-transaction-ms`.
+pub const DEFAULT_MAX_WRITE_TRANSACTION_MS: u64 = 60_000;
+/// Default `--slow-query-ms`.
+pub const DEFAULT_SLOW_QUERY_MS: u64 = 500;
 
 /// Capacity and throughput tuning for the multi-user case. Kept separate from
 /// [`ServerConfig`] so existing struct-literal users keep compiling; every
@@ -95,6 +101,16 @@ pub struct ServerTuning {
     /// Fixed SQLite lookaside memory per connection in KiB; `None` scales
     /// automatically with the number of open connections.
     pub lookaside_kib: Option<usize>,
+    /// Longest one statement may run before it is interrupted with
+    /// [`novadb_core::Error::Timeout`] (`ZERO` = off).
+    pub statement_timeout: Duration,
+    /// Longest an explicit transaction (gateway sessions) may hold a
+    /// database's write gate before it is rolled back (`ZERO` = off).
+    pub max_write_transaction: Duration,
+    /// Statements slower than this are logged at `warn` (`ZERO` = off).
+    pub slow_query: Duration,
+    /// Serve `GET /metrics` without the bearer token.
+    pub metrics_public: bool,
 }
 
 impl Default for ServerTuning {
@@ -109,6 +125,10 @@ impl Default for ServerTuning {
             max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
             group_commit: novadb_core::GroupCommitConfig::default(),
             lookaside_kib: None,
+            statement_timeout: Duration::from_millis(DEFAULT_STATEMENT_TIMEOUT_MS),
+            max_write_transaction: Duration::from_millis(DEFAULT_MAX_WRITE_TRANSACTION_MS),
+            slow_query: Duration::from_millis(DEFAULT_SLOW_QUERY_MS),
+            metrics_public: false,
         }
     }
 }
@@ -120,6 +140,9 @@ impl ServerTuning {
         self.validate()?;
         novadb_core::set_group_commit(self.group_commit);
         novadb_core::set_lookaside_kib(self.lookaside_kib);
+        novadb_core::set_statement_timeout(Some(self.statement_timeout));
+        novadb_core::set_max_write_transaction(Some(self.max_write_transaction));
+        novadb_core::metrics::set_slow_query_threshold(Some(self.slow_query));
         Ok(())
     }
 
@@ -194,6 +217,26 @@ pub struct TuningArgs {
     #[arg(long, env = "NOVADB_LOOKASIDE_KIB")]
     pub lookaside_kib: Option<usize>,
 
+    /// Interrupt any statement running longer than this many milliseconds (0 = off).
+    /// The statement fails with a timeout error (HTTP 408); other clients and the
+    /// connection are unaffected.
+    #[arg(long, env = "NOVADB_STATEMENT_TIMEOUT_MS", default_value_t = DEFAULT_STATEMENT_TIMEOUT_MS)]
+    pub statement_timeout_ms: u64,
+
+    /// Roll back explicit transactions (gateway sessions) that hold the write lock longer
+    /// than this many milliseconds (0 = off); the session's next statement reports the error.
+    #[arg(long, env = "NOVADB_MAX_WRITE_TRANSACTION_MS", default_value_t = DEFAULT_MAX_WRITE_TRANSACTION_MS)]
+    pub max_write_transaction_ms: u64,
+
+    /// Log statements slower than this many milliseconds at warn level, with literals
+    /// removed from the text (0 = off).
+    #[arg(long, env = "NOVADB_SLOW_QUERY_MS", default_value_t = DEFAULT_SLOW_QUERY_MS)]
+    pub slow_query_ms: u64,
+
+    /// Serve GET /metrics (Prometheus) without the bearer token.
+    #[arg(long, env = "NOVADB_METRICS_PUBLIC")]
+    pub metrics_public: bool,
+
     /// Tokio worker threads (default: CPU count).
     #[arg(long, env = "NOVADB_WORKER_THREADS")]
     pub worker_threads: Option<usize>,
@@ -222,6 +265,10 @@ impl TuningArgs {
                 max_wait: Duration::from_micros(self.group_commit_max_wait_us),
             },
             lookaside_kib: self.lookaside_kib,
+            statement_timeout: Duration::from_millis(self.statement_timeout_ms),
+            max_write_transaction: Duration::from_millis(self.max_write_transaction_ms),
+            slow_query: Duration::from_millis(self.slow_query_ms),
+            metrics_public: self.metrics_public,
         }
     }
 
@@ -425,6 +472,7 @@ struct AppState {
     max_pull_limit: usize,
     max_sql_bytes: usize,
     result_limit: novadb_core::ResultLimit,
+    metrics_public: bool,
 }
 
 /// Creates the complete HTTP router and database catalog around an existing
@@ -482,17 +530,23 @@ pub fn router_with_catalog_and_tuning(
             max_rows: tuning.max_result_rows,
             max_bytes: tuning.max_result_bytes,
         },
+        metrics_public: tuning.metrics_public,
     });
 
     let router = Router::new()
         .route("/", get(studio))
         .route("/health", get(health))
+        .route("/metrics", get(metrics))
         .route("/studio", get(studio))
         .route("/studio/", get(studio))
         .route("/v1/admin/databases", get(list_databases))
         .route("/v1/admin/databases/{database}", post(create_database))
         .route("/v1/admin/databases/{database}/query", post(sql_query))
         .route("/v1/admin/databases/{database}/execute", post(sql_execute))
+        .route(
+            "/v1/admin/databases/{database}/batch",
+            post(sqlapi::sql_batch),
+        )
         .route("/v1/admin/databases/{database}/schema", get(schema))
         .route("/v1/admin/databases/{database}/backup", post(backup))
         .route(
@@ -507,6 +561,10 @@ pub fn router_with_catalog_and_tuning(
         .route("/v1/databases/{database}/pull", get(pull))
         .route("/v1/databases/{database}/sql/query", post(sql_query))
         .route("/v1/databases/{database}/sql/execute", post(sql_execute))
+        .route(
+            "/v1/databases/{database}/sql/batch",
+            post(sqlapi::sql_batch),
+        )
         .route("/v1/databases/{database}/schema", get(schema))
         .route(
             "/v1/databases/{database}/maintenance/integrity",
@@ -675,6 +733,7 @@ struct LimitedListener {
 struct LimitedIo {
     stream: TcpStream,
     _slot: OwnedSemaphorePermit,
+    _gauge: novadb_core::metrics::ConnectionGuard,
 }
 
 impl AsyncRead for LimitedIo {
@@ -735,6 +794,9 @@ impl axum::serve::Listener for LimitedListener {
                         LimitedIo {
                             stream,
                             _slot: slot,
+                            _gauge: novadb_core::metrics::connection_opened(
+                                novadb_core::metrics::Protocol::Http,
+                            ),
                         },
                         addr,
                     );
@@ -798,6 +860,32 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
+/// Prometheus scrape endpoint. Token-protected like the rest of the API
+/// unless `--metrics-public`.
+async fn metrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    if !state.metrics_public {
+        authorize(&headers, state.bearer_token.as_deref())?;
+    }
+    let catalog = Arc::clone(&state.catalog);
+    let body = run_blocking(move || {
+        let mut text = novadb_core::metrics::render_prometheus();
+        catalog.render_metrics(&mut text);
+        Ok(text)
+    })
+    .await?;
+    Ok((
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+        )],
+        body,
+    )
+        .into_response())
+}
+
 async fn studio() -> Html<&'static str> {
     Html(include_str!("studio.html"))
 }
@@ -816,14 +904,51 @@ async fn list_databases(
     Ok(Json(DatabaseListResponse { databases }))
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateQuery {
+    /// Create a sharded database with this many shard files.
+    shards: Option<usize>,
+}
+
 async fn create_database(
     State(state): State<Arc<AppState>>,
     Path(database): Path<String>,
+    Query(query): Query<CreateQuery>,
     _authorized: Authorized,
 ) -> Result<Json<DatabaseMetadata>, ApiError> {
     validate_database_id(&database)?;
     let catalog = Arc::clone(&state.catalog);
     let metadata = run_blocking(move || {
+        if let Some(shards) = query.shards {
+            if shards == 0 || shards > novadb_core::shard::MAX_SHARDS {
+                return Err(ApiError::bad_request(format!(
+                    "shards must be between 1 and {}",
+                    novadb_core::shard::MAX_SHARDS
+                )));
+            }
+            catalog.create_sharded(&database, shards)?;
+            return catalog
+                .list()?
+                .into_iter()
+                .find(|metadata| metadata.id == database)
+                .ok_or_else(|| ApiError::internal("sharded database vanished"));
+        }
+        if catalog.cached_sharded(&database).is_some() {
+            return Err(ApiError::conflict(format!(
+                "database `{database}` is sharded"
+            )));
+        }
+        match catalog.open_any(&database) {
+            Ok(DatabaseHandle::Sharded(_)) => {
+                return catalog
+                    .list()?
+                    .into_iter()
+                    .find(|metadata| metadata.id == database)
+                    .ok_or_else(|| ApiError::internal("sharded database vanished"));
+            }
+            Ok(DatabaseHandle::Single(_)) | Err(CatalogError::NotFound(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
         catalog.create_or_open(&database)?;
         catalog.metadata(&database).map_err(ApiError::from)
     })
@@ -831,10 +956,29 @@ async fn create_database(
     Ok(Json(metadata))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SqlRequest {
     pub sql: String,
+    /// Bound parameters: a JSON array for `?` / `?NNN` placeholders or an
+    /// object for `:name` / `$name` placeholders. The SQL must then be a
+    /// single statement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+    /// Sharded databases: any string; the statement runs on the shard that
+    /// owns it (also accepted as the `X-NovaDB-Shard-Key` header).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard_key: Option<String>,
+    /// Sharded databases: explicit shard index (wins over `shard_key`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<usize>,
+    /// `/sql/query` on a sharded database: `"all"` fans the query out to
+    /// every shard and adds a `shard` column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shards: Option<String>,
+    /// With `"shards":"all"`: k-way merge of the per-shard (pre-sorted) results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge: Option<sqlapi::MergeSpec>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -846,20 +990,6 @@ pub struct ExecuteResponse {
     /// Rowid of the most recent `INSERT` of the request.
     #[serde(default)]
     pub last_insert_rowid: i64,
-}
-
-/// Looks up (or, once, opens) a database without blocking the async runtime
-/// on the hot path.
-async fn database_handle(
-    state: &AppState,
-    database: &str,
-) -> Result<Arc<ManagedDatabase>, ApiError> {
-    if let Some(handle) = state.catalog.cached(database) {
-        return Ok(handle);
-    }
-    let catalog = Arc::clone(&state.catalog);
-    let database = database.to_owned();
-    run_blocking(move || catalog.open_existing(&database).map_err(ApiError::from)).await
 }
 
 /// Runs a read on the database's reader pool. A permit per reader connection
@@ -886,16 +1016,31 @@ async fn sql_query(
     State(state): State<Arc<AppState>>,
     Path(database): Path<String>,
     _authorized: Authorized,
+    headers: sqlapi::RouteHeaders,
     Json(request): Json<SqlRequest>,
 ) -> Result<Json<QueryResult>, ApiError> {
     validate_database_id(&database)?;
     validate_sql_body(&request.sql, state.max_sql_bytes)?;
-    let handle = database_handle(&state, &database).await?;
+    let params = sqlapi::parse_params(request.params.as_ref())?;
+    let spec = sqlapi::RouteSpec::new(&headers, request.shard_key.as_deref(), request.shard);
+    if request.shards.is_some() || request.merge.is_some() {
+        if let Some(result) =
+            sqlapi::fan_out_query(&state, &database, &request, params.as_ref()).await?
+        {
+            return Ok(Json(result));
+        }
+    }
+    let handle = sqlapi::target(&state, &database, &spec).await?;
     let limit = state.result_limit;
     let result = read_blocking(handle, move |pool| {
-        pool.query_limited(&request.sql, DialectMode::TSql, limit)
-            .map(TypedQueryResult::into_query_result)
-            .map_err(|error| ApiError::database(&error))
+        match &params {
+            Some(params) => {
+                pool.query_limited_params(&request.sql, params, DialectMode::TSql, limit)
+            }
+            None => pool.query_limited(&request.sql, DialectMode::TSql, limit),
+        }
+        .map(TypedQueryResult::into_query_result)
+        .map_err(|error| ApiError::database(&error))
     })
     .await?;
     Ok(Json(result))
@@ -905,22 +1050,33 @@ async fn sql_execute(
     State(state): State<Arc<AppState>>,
     Path(database): Path<String>,
     _authorized: Authorized,
+    headers: sqlapi::RouteHeaders,
     Json(request): Json<SqlRequest>,
-) -> Result<Json<ExecuteResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     validate_database_id(&database)?;
     validate_execute_sql(&request.sql, state.max_sql_bytes)?;
-    let handle = database_handle(&state, &database).await?;
+    let params = sqlapi::parse_params(request.params.as_ref())?;
+    let spec = sqlapi::RouteSpec::new(&headers, request.shard_key.as_deref(), request.shard);
+    let handle = match sqlapi::target_or_fan_out(&state, &database, &spec, &request).await? {
+        sqlapi::Target::One(handle) => handle,
+        sqlapi::Target::Done(response) => return Ok(response),
+    };
     // Writes never occupy a blocking thread: the statement joins the
     // database's group-commit queue and this task awaits the commit.
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    handle.writer().submit_write(
-        request.sql,
-        DialectMode::TSql,
-        false,
-        Box::new(move |result| {
-            let _ = sender.send(result);
-        }),
-    );
+    let done = Box::new(move |result| {
+        let _ = sender.send(result);
+    });
+    match params {
+        Some(params) => {
+            handle
+                .writer()
+                .submit_write_params(request.sql, params, DialectMode::TSql, false, done)
+        }
+        None => handle
+            .writer()
+            .submit_write(request.sql, DialectMode::TSql, false, done),
+    }
     let outcome = receiver
         .await
         .map_err(|_| ApiError::internal("write queue stopped"))?
@@ -929,7 +1085,8 @@ async fn sql_execute(
         ok: true,
         changes: outcome.stats.changes,
         last_insert_rowid: outcome.stats.last_insert_rowid,
-    }))
+    })
+    .into_response())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -950,9 +1107,13 @@ async fn schema(
     State(state): State<Arc<AppState>>,
     Path(database): Path<String>,
     _authorized: Authorized,
+    headers: sqlapi::RouteHeaders,
 ) -> Result<Json<SchemaResponse>, ApiError> {
     validate_database_id(&database)?;
-    let handle = database_handle(&state, &database).await?;
+    // Every shard has the same schema; a sharded database answers from shard
+    // 0 unless a shard is selected.
+    let spec = sqlapi::RouteSpec::new(&headers, None, None).default_shard(0);
+    let handle = sqlapi::target(&state, &database, &spec).await?;
     let response = read_blocking(handle, load_schema).await?;
     Ok(Json(response))
 }
@@ -961,45 +1122,51 @@ async fn integrity_check(
     State(state): State<Arc<AppState>>,
     Path(database): Path<String>,
     _authorized: Authorized,
-) -> Result<Json<IntegrityReport>, ApiError> {
+) -> Result<Response, ApiError> {
     validate_database_id(&database)?;
-    let handle = database_handle(&state, &database).await?;
-    let report = run_blocking(move || {
-        handle
-            .writer()
+    sqlapi::maintenance(&state, &database, |db| {
+        db.writer()
             .integrity_check()
-            .map_err(|error| ApiError::database(&error))
+            .map_err(|e| ApiError::database(&e))
     })
-    .await?;
-    Ok(Json(report))
+    .await
 }
 
 async fn wal_checkpoint(
     State(state): State<Arc<AppState>>,
     Path(database): Path<String>,
     _authorized: Authorized,
-) -> Result<Json<WalCheckpointReport>, ApiError> {
+) -> Result<Response, ApiError> {
     validate_database_id(&database)?;
-    let handle = database_handle(&state, &database).await?;
-    let report = run_blocking(move || {
-        handle
-            .writer()
+    sqlapi::maintenance(&state, &database, |db| {
+        db.writer()
             .wal_checkpoint()
-            .map_err(|error| ApiError::database(&error))
+            .map_err(|e| ApiError::database(&e))
     })
-    .await?;
-    Ok(Json(report))
+    .await
 }
 
 async fn backup(
     State(state): State<Arc<AppState>>,
     Path(database): Path<String>,
     _authorized: Authorized,
-) -> Result<Json<BackupReport>, ApiError> {
+) -> Result<Response, ApiError> {
     validate_database_id(&database)?;
     let catalog = Arc::clone(&state.catalog);
-    let report = run_blocking(move || catalog.backup(&database).map_err(ApiError::from)).await?;
-    Ok(Json(report))
+    run_blocking(move || {
+        if matches!(catalog.open_any(&database)?, DatabaseHandle::Sharded(_)) {
+            let reports = catalog.backup_sharded(&database)?;
+            let size_bytes: u64 = reports.iter().map(|report| report.size_bytes).sum();
+            return Ok(Json(serde_json::json!({
+                "size_bytes": size_bytes,
+                "shards": reports,
+            }))
+            .into_response());
+        }
+        let report = catalog.backup(&database)?;
+        Ok(Json(report).into_response())
+    })
+    .await
 }
 
 /// Owned migration representation accepted over HTTP.
@@ -1022,23 +1189,22 @@ async fn run_migrations(
     Path(database): Path<String>,
     _authorized: Authorized,
     Json(request): Json<MigrationRequest>,
-) -> Result<Json<MigrationReport>, ApiError> {
+) -> Result<Response, ApiError> {
     validate_database_id(&database)?;
     validate_migration_request(&request, state.max_sql_bytes)?;
-    let handle = database_handle(&state, &database).await?;
-    let report = run_blocking(move || {
+    // Sharded databases apply the manifest to every shard (the ledger makes
+    // re-applying to shards that already have it a no-op).
+    sqlapi::maintenance(&state, &database, move |db| {
         let migrations: Vec<_> = request
             .migrations
             .iter()
             .map(|migration| Migration::new(migration.version, &migration.name, &migration.sql))
             .collect();
-        handle
-            .writer()
+        db.writer()
             .run_migrations(&migrations)
             .map_err(|error| ApiError::database(&error))
     })
-    .await?;
-    Ok(Json(report))
+    .await
 }
 
 fn validate_migration_request(
@@ -1376,6 +1542,21 @@ impl ApiError {
             novadb_core::Error::MigrationDrift { .. }
             | novadb_core::Error::BackupDestinationExists(_) => Self::conflict(error.to_string()),
             novadb_core::Error::ResultTooLarge(_) => Self::payload_too_large(error.to_string()),
+            novadb_core::Error::Timeout(_) => Self {
+                status: StatusCode::REQUEST_TIMEOUT,
+                code: "statement_timeout",
+                message: error.to_string(),
+            },
+            novadb_core::Error::TransactionExpired(_) => Self {
+                status: StatusCode::CONFLICT,
+                code: "transaction_expired",
+                message: error.to_string(),
+            },
+            novadb_core::Error::Batch { source, index } => {
+                let mut mapped = Self::database(source);
+                mapped.message = format!("statement #{index}: {}", mapped.message);
+                mapped
+            }
             _ => Self::bad_request(error.to_string()),
         }
     }
@@ -1524,6 +1705,7 @@ mod tests {
     async fn sql_response(app: &Router, database: &str, action: &str, sql: &str) -> Response {
         let request = SqlRequest {
             sql: sql.to_owned(),
+            ..SqlRequest::default()
         };
         app.clone()
             .oneshot(
@@ -1964,6 +2146,7 @@ mod tests {
             sql: "CREATE TABLE notes(id INTEGER PRIMARY KEY, title TEXT); \
                   INSERT INTO notes(title) VALUES ('hello');"
                 .to_owned(),
+            ..SqlRequest::default()
         };
         let executed = app
             .clone()
@@ -1980,6 +2163,7 @@ mod tests {
 
         let query = SqlRequest {
             sql: "SELECT id, title FROM notes".to_owned(),
+            ..SqlRequest::default()
         };
         let queried = app
             .clone()
@@ -1999,6 +2183,7 @@ mod tests {
         let escaped_path = directory.path().join("escaped.sqlite3");
         let attach = SqlRequest {
             sql: format!("ATTACH DATABASE '{}' AS escaped", escaped_path.display()),
+            ..SqlRequest::default()
         };
         let rejected_attach = app
             .clone()
@@ -2097,6 +2282,7 @@ mod tests {
         let setup = SqlRequest {
             sql: "CREATE TABLE records(value TEXT); INSERT INTO records VALUES ('safe');"
                 .to_owned(),
+            ..SqlRequest::default()
         };
         let setup = app
             .clone()

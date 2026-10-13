@@ -8,7 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use novadb_core::{NovaDbPool, PoolConfig};
+use novadb_core::{NovaDbPool, NovaDbSharded, PoolConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::Semaphore;
@@ -42,6 +42,9 @@ pub struct DatabaseMetadata {
     pub modified_at_ms: Option<u64>,
     pub open: bool,
     pub device_id: Option<String>,
+    /// Number of shard files; absent for ordinary (unsharded) databases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shards: Option<usize>,
 }
 
 /// Metadata for a server-owned, no-clobber online backup.
@@ -68,7 +71,7 @@ pub struct ManagedDatabase {
 }
 
 impl ManagedDatabase {
-    fn new(pool: NovaDbPool) -> Self {
+    pub(crate) fn new(pool: NovaDbPool) -> Self {
         let permits = pool.read_pool_size();
         Self {
             pool,
@@ -97,6 +100,58 @@ impl Deref for ManagedDatabase {
     }
 }
 
+/// A logical database spread over N shard files. Every shard is a complete
+/// [`ManagedDatabase`] (own pool, committer thread and write gate).
+pub struct ShardedDatabase {
+    logical: NovaDbSharded,
+    members: Vec<Arc<ManagedDatabase>>,
+}
+
+impl ShardedDatabase {
+    fn new(logical: NovaDbSharded) -> Self {
+        let members = logical
+            .pools()
+            .iter()
+            .map(|pool| Arc::new(ManagedDatabase::new(pool.clone())))
+            .collect();
+        Self { logical, members }
+    }
+
+    #[must_use]
+    pub fn shard_count(&self) -> usize {
+        self.members.len()
+    }
+
+    /// Shard `index`.
+    #[must_use]
+    pub fn member(&self, index: usize) -> Option<&Arc<ManagedDatabase>> {
+        self.members.get(index)
+    }
+
+    #[must_use]
+    pub fn members(&self) -> &[Arc<ManagedDatabase>] {
+        &self.members
+    }
+
+    /// Shard that owns `key` (frozen FNV-1a 64 + jump consistent hash).
+    #[must_use]
+    pub fn shard_index(&self, key: &str) -> usize {
+        self.logical.shard_index(key)
+    }
+
+    #[must_use]
+    pub fn logical(&self) -> &NovaDbSharded {
+        &self.logical
+    }
+}
+
+/// An opened database: ordinary or sharded.
+#[derive(Clone)]
+pub enum DatabaseHandle {
+    Single(Arc<ManagedDatabase>),
+    Sharded(Arc<ShardedDatabase>),
+}
+
 /// Maps validated database IDs to direct children of one data directory and
 /// keeps at most one open [`NovaDbPool`] (writer + parallel readers) per
 /// database in this process.
@@ -104,6 +159,7 @@ pub struct DatabaseCatalog {
     data_dir: PathBuf,
     read_pool_size: usize,
     databases: RwLock<HashMap<String, Arc<ManagedDatabase>>>,
+    sharded: RwLock<HashMap<String, Arc<ShardedDatabase>>>,
 }
 
 impl std::fmt::Debug for DatabaseCatalog {
@@ -141,6 +197,7 @@ impl DatabaseCatalog {
             data_dir,
             read_pool_size: read_pool_size.max(1),
             databases: RwLock::new(HashMap::new()),
+            sharded: RwLock::new(HashMap::new()),
         })
     }
 
@@ -180,6 +237,50 @@ impl DatabaseCatalog {
             )?);
         }
 
+        for entry in fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let Some(id) = file_name
+                .to_str()
+                .and_then(|name| name.strip_suffix(".shards.json"))
+            else {
+                continue;
+            };
+            if !entry.file_type()?.is_file() || validate_database_id(id).is_err() {
+                continue;
+            }
+            let Some(count) = novadb_core::shard::read_shard_manifest(&self.data_dir, id)? else {
+                continue;
+            };
+            let open = self.sharded_read()?.get(id).cloned();
+            let mut size_bytes = 0;
+            let mut modified_at_ms = None;
+            for index in 0..count {
+                let path = self
+                    .data_dir
+                    .join(novadb_core::shard::shard_file_name(id, index));
+                if let Ok(metadata) = fs::metadata(&path) {
+                    size_bytes += metadata.len();
+                    let modified = metadata
+                        .modified()
+                        .ok()
+                        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+                    modified_at_ms = modified_at_ms.max(modified);
+                }
+            }
+            databases.push(DatabaseMetadata {
+                id: id.to_owned(),
+                size_bytes,
+                modified_at_ms,
+                open: open.is_some(),
+                device_id: open
+                    .as_ref()
+                    .and_then(|db| db.member(0))
+                    .map(|member| member.device_id()),
+                shards: Some(count),
+            });
+        }
         databases.sort_unstable_by(|left, right| left.id.cmp(&right.id));
         Ok(databases)
     }
@@ -187,6 +288,86 @@ impl DatabaseCatalog {
     /// Creates a missing database or returns the cached/opened existing one.
     pub fn create_or_open(&self, database_id: &str) -> Result<Arc<ManagedDatabase>, CatalogError> {
         self.open_inner(database_id, true)
+    }
+
+    /// Creates (or opens) the sharded database `database_id` with `shards`
+    /// shard files. Fails when it exists with a different shard count or as
+    /// an unsharded database.
+    pub fn create_sharded(
+        &self,
+        database_id: &str,
+        shards: usize,
+    ) -> Result<Arc<ShardedDatabase>, CatalogError> {
+        validate_database_id(database_id)?;
+        if self.databases_has(database_id)?
+            || self.data_dir.join(format!("{database_id}.novadb")).exists()
+        {
+            return Err(CatalogError::Database(novadb_core::Error::Unsupported(
+                format!("database `{database_id}` already exists and is not sharded"),
+            )));
+        }
+        let mut sharded = self.sharded_write()?;
+        if let Some(existing) = sharded.get(database_id) {
+            if existing.shard_count() != shards {
+                return Err(CatalogError::Database(novadb_core::Error::Unsupported(
+                    format!(
+                        "database `{database_id}` already has {} shards; resharding is not supported",
+                        existing.shard_count()
+                    ),
+                )));
+            }
+            return Ok(Arc::clone(existing));
+        }
+        let logical = NovaDbSharded::open_with(
+            &self.data_dir,
+            database_id,
+            shards,
+            self.read_pool_size,
+            &novadb_core::OpenOptions::new().protocol(novadb_core::metrics::Protocol::Http),
+        )?;
+        let database = Arc::new(ShardedDatabase::new(logical));
+        sharded.insert(database_id.to_owned(), Arc::clone(&database));
+        Ok(database)
+    }
+
+    /// The sharded database when it is already open (no file I/O).
+    #[must_use]
+    pub fn cached_sharded(&self, database_id: &str) -> Option<Arc<ShardedDatabase>> {
+        self.sharded
+            .read()
+            .ok()
+            .and_then(|map| map.get(database_id).cloned())
+    }
+
+    /// Opens whichever kind of database `database_id` is; fails when it does
+    /// not exist.
+    pub fn open_any(&self, database_id: &str) -> Result<DatabaseHandle, CatalogError> {
+        validate_database_id(database_id)?;
+        if let Some(database) = self.cached_sharded(database_id) {
+            return Ok(DatabaseHandle::Sharded(database));
+        }
+        if let Some(count) = novadb_core::shard::read_shard_manifest(&self.data_dir, database_id)? {
+            return self
+                .create_sharded(database_id, count)
+                .map(DatabaseHandle::Sharded);
+        }
+        self.open_existing(database_id).map(DatabaseHandle::Single)
+    }
+
+    fn databases_has(&self, database_id: &str) -> Result<bool, CatalogError> {
+        Ok(self.read()?.contains_key(database_id))
+    }
+
+    fn sharded_read(
+        &self,
+    ) -> Result<RwLockReadGuard<'_, HashMap<String, Arc<ShardedDatabase>>>, CatalogError> {
+        self.sharded.read().map_err(|_| CatalogError::LockPoisoned)
+    }
+
+    fn sharded_write(
+        &self,
+    ) -> Result<RwLockWriteGuard<'_, HashMap<String, Arc<ShardedDatabase>>>, CatalogError> {
+        self.sharded.write().map_err(|_| CatalogError::LockPoisoned)
     }
 
     /// Opens an existing database without implicitly creating it.
@@ -231,6 +412,60 @@ impl DatabaseCatalog {
         })
     }
 
+    /// Appends per-database gauges to a Prometheus text body.
+    pub fn render_metrics(&self, out: &mut String) {
+        use std::fmt::Write as _;
+        let Ok(databases) = self.read() else {
+            return;
+        };
+        let sharded = self.sharded.read().map(|map| map.len()).unwrap_or(0);
+        let _ = writeln!(
+            out,
+            "# HELP novadb_open_sharded_databases Sharded databases currently open.\n# TYPE novadb_open_sharded_databases gauge\nnovadb_open_sharded_databases {sharded}"
+        );
+        let _ = writeln!(
+            out,
+            "# HELP novadb_open_databases Databases currently open.\n# TYPE novadb_open_databases gauge\nnovadb_open_databases {}",
+            databases.len()
+        );
+        let _ = writeln!(
+            out,
+            "# HELP novadb_database_readers_open Reader connections opened, per database.\n# TYPE novadb_database_readers_open gauge"
+        );
+        let mut names: Vec<_> = databases.keys().collect();
+        names.sort();
+        for name in &names {
+            let database = &databases[*name];
+            let _ = writeln!(
+                out,
+                "novadb_database_readers_open{{database=\"{name}\"}} {}",
+                database.open_readers()
+            );
+        }
+    }
+
+    /// Backs up every shard of a sharded database (one file per shard under
+    /// `.backups`).
+    pub fn backup_sharded(&self, database_id: &str) -> Result<Vec<BackupReport>, CatalogError> {
+        let DatabaseHandle::Sharded(database) = self.open_any(database_id)? else {
+            return Err(CatalogError::NotFound(database_id.to_owned()));
+        };
+        let backup_directory = self.ensure_backup_directory()?;
+        let timestamp = unix_time_ms();
+        let batch = Uuid::new_v4();
+        let mut reports = Vec::new();
+        for (index, member) in database.members().iter().enumerate() {
+            let filename = format!("{database_id}.shard-{index:04}-{timestamp}-{batch}.novadb");
+            let path = backup_directory.join(&filename);
+            member.writer().backup_to(&path)?;
+            reports.push(BackupReport {
+                backup_id: format!(".backups/{filename}"),
+                size_bytes: fs::metadata(&path)?.len(),
+            });
+        }
+        Ok(reports)
+    }
+
     fn open_inner(
         &self,
         database_id: &str,
@@ -259,8 +494,13 @@ impl DatabaseCatalog {
 
         // Keep the catalog lock while opening so concurrent first access cannot
         // create two independent `NovaDb` handles for the same file.
-        let pool =
-            NovaDbPool::open(PoolConfig::new(path).with_read_pool_size(self.read_pool_size))?;
+        let pool = NovaDbPool::open(
+            PoolConfig::new(path)
+                .with_read_pool_size(self.read_pool_size)
+                .with_open_options(
+                    novadb_core::OpenOptions::new().protocol(novadb_core::metrics::Protocol::Http),
+                ),
+        )?;
         let database = Arc::new(ManagedDatabase::new(pool));
         databases.insert(database_id.to_owned(), Arc::clone(&database));
         Ok(database)
@@ -349,6 +589,7 @@ fn metadata_for(
         modified_at_ms,
         open: device_id.is_some(),
         device_id: device_id.map(str::to_owned),
+        shards: None,
     })
 }
 

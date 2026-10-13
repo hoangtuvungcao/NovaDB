@@ -37,6 +37,18 @@ pub(crate) struct WriteGate {
     pub(crate) coalescer: crate::groupcommit::Coalescer,
 }
 
+/// `(writers blocked on a gate, writes queued for committers)` summed over
+/// every database file of this process (for `/metrics`).
+pub(crate) fn aggregate() -> (usize, usize) {
+    let gates: Vec<Arc<WriteGate>> = REGISTRY.lock().values().filter_map(Weak::upgrade).collect();
+    gates.iter().fold((0, 0), |(waiting, queued), gate| {
+        (
+            waiting + gate.waiting(),
+            queued + gate.coalescer.queue_len(),
+        )
+    })
+}
+
 static REGISTRY: LazyLock<Mutex<HashMap<PathBuf, Weak<WriteGate>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 

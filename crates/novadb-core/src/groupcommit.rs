@@ -38,7 +38,8 @@ use parking_lot::{Condvar, Mutex};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use crate::{
-    AuthMode, Change, DialectMode, Error, ExecStats, NovaDb, OpenOptions, Result, TypedQueryResult,
+    AuthMode, Change, Collect, DialectMode, Error, ExecStats, NovaDb, OpenOptions, OwnedParams,
+    Params, Result, ResultLimit, TypedQueryResult, execute_guarded_bound,
     execute_guarded_returning, execute_guarded_sql, gate::WriteGate, load_changes_after,
     max_change_sequence, validate_changes, validate_enabled_sync_profiles,
 };
@@ -135,39 +136,158 @@ pub struct WriteOutcome {
 /// thread, so it must be quick and must not block.
 pub type WriteCallback = Box<dyn FnOnce(Result<WriteOutcome>) + Send + 'static>;
 
+/// One statement of a batch (see [`NovaDb::submit_batch`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchStatement {
+    /// A single SQL statement (see [`crate::Params`] for placeholders).
+    pub sql: String,
+    /// Bound values; `None` runs the text as written.
+    pub params: Option<OwnedParams>,
+}
+
+/// Completion callback of [`NovaDb::submit_batch`]. For an atomic batch the
+/// result is `Err(Error::Batch { index, .. })` when a statement failed (nothing
+/// was applied); otherwise one entry per statement, in order. In a non-atomic
+/// batch a failed statement is rolled back on its own and reported as `Err`
+/// at its position while the others commit. Runs on the committer thread:
+/// keep it quick.
+pub type BatchCallback = Box<dyn FnOnce(Result<Vec<Result<WriteOutcome>>>) + Send + 'static>;
+
+/// Payload of a queued job.
+enum Work {
+    Single {
+        sql: String,
+        params: Option<OwnedParams>,
+        returning: bool,
+    },
+    Batch {
+        statements: Vec<BatchStatement>,
+        atomic: bool,
+        limit: ResultLimit,
+    },
+}
+
+enum Reply {
+    Single(WriteCallback),
+    Batch(BatchCallback),
+}
+
+/// Successful result of one job.
+pub(crate) enum Finished {
+    Single(WriteOutcome),
+    Batch(Vec<Result<WriteOutcome>>),
+}
+
 pub(crate) struct Job {
-    sql: String,
+    work: Work,
     mode: DialectMode,
-    returning: bool,
     owner: NovaDb,
-    done: Option<WriteCallback>,
+    done: Option<Reply>,
     /// DDL, control flow, temp objects, ...: runs in its own transaction
     /// exactly like `execute_batch`, never inside a shared one.
     solo: bool,
+    /// When the job entered the queue (queue-wait and latency metrics).
+    enqueued: Instant,
+    /// A single plain statement that cannot partially apply when it fails
+    /// (see [`single_statement_is_atomic`]); such members skip the savepoint.
+    atomic_statement: bool,
 }
 
 impl Job {
     pub(crate) fn new(
         owner: NovaDb,
         sql: String,
+        params: Option<OwnedParams>,
         mode: DialectMode,
         returning: bool,
+        solo: Option<bool>,
         done: WriteCallback,
     ) -> Self {
-        let solo = !is_coalescible_sql(&sql) || touches_session_state(&sql, mode);
+        let solo =
+            solo.unwrap_or_else(|| !is_coalescible_sql(&sql) || touches_session_state(&sql, mode));
+        let atomic_statement = !solo
+            && match mode {
+                // Bound statements are always exactly one statement (SQLite
+                // refuses trailing text), but T-SQL normalisation may turn a
+                // text into a script, so only Passthrough literals qualify.
+                DialectMode::Passthrough => single_statement_is_atomic(&sql),
+                DialectMode::TSql => params.is_some() && single_statement_is_atomic(&sql),
+            };
         Self {
-            sql,
+            work: Work::Single {
+                sql,
+                params,
+                returning,
+            },
             mode,
-            returning,
             owner,
-            done: Some(done),
+            done: Some(Reply::Single(done)),
             solo,
+            enqueued: Instant::now(),
+            atomic_statement,
         }
     }
 
-    fn finish(mut self, result: Result<WriteOutcome>) {
-        if let Some(done) = self.done.take() {
-            done(result);
+    pub(crate) fn new_batch(
+        owner: NovaDb,
+        statements: Vec<BatchStatement>,
+        atomic: bool,
+        mode: DialectMode,
+        limit: ResultLimit,
+        done: BatchCallback,
+    ) -> Self {
+        // Plain DML and reads share the group transaction; anything else
+        // (DDL, scripts, temp objects) gets its own.
+        let solo = statements.iter().any(|statement| {
+            !is_batch_member_sql(&statement.sql) || touches_session_state(&statement.sql, mode)
+        });
+        Self {
+            work: Work::Batch {
+                statements,
+                atomic,
+                limit,
+            },
+            mode,
+            owner,
+            done: Some(Reply::Batch(done)),
+            solo,
+            enqueued: Instant::now(),
+            atomic_statement: false,
+        }
+    }
+
+    /// Text and statement count used for metrics and the slow-query log.
+    fn describe(&self) -> (&str, u64) {
+        match &self.work {
+            Work::Single { sql, .. } => (sql, 1),
+            Work::Batch { statements, .. } => (
+                statements.first().map_or("", |statement| &statement.sql),
+                statements.len() as u64,
+            ),
+        }
+    }
+
+    fn finish(mut self, result: Result<Finished>, queue_wait: Option<Duration>) {
+        let (sql, statements) = self.describe();
+        self.owner.record_write(
+            sql,
+            statements,
+            self.enqueued.elapsed(),
+            result.as_ref().err(),
+            queue_wait,
+        );
+        match (self.done.take(), result) {
+            (Some(Reply::Single(done)), Ok(Finished::Single(outcome))) => done(Ok(outcome)),
+            (Some(Reply::Batch(done)), Ok(Finished::Batch(outcomes))) => done(Ok(outcomes)),
+            (Some(Reply::Single(done)), Err(error)) => done(Err(error)),
+            (Some(Reply::Batch(done)), Err(error)) => done(Err(error)),
+            (Some(Reply::Single(done)), Ok(_)) => done(Err(Error::Unsupported(
+                "group-commit job kind mismatch".into(),
+            ))),
+            (Some(Reply::Batch(done)), Ok(_)) => done(Err(Error::Unsupported(
+                "group-commit job kind mismatch".into(),
+            ))),
+            (None, _) => {}
         }
     }
 }
@@ -176,10 +296,12 @@ impl Drop for Job {
     fn drop(&mut self) {
         // A job dropped without an answer (committer panic / shutdown) must
         // not leave its client waiting forever.
-        if let Some(done) = self.done.take() {
-            done(Err(Error::Unsupported(
-                "write was abandoned by the group-commit queue".into(),
-            )));
+        let abandoned =
+            || Error::Unsupported("write was abandoned by the group-commit queue".into());
+        match self.done.take() {
+            Some(Reply::Single(done)) => done(Err(abandoned())),
+            Some(Reply::Batch(done)) => done(Err(abandoned())),
+            None => {}
         }
     }
 }
@@ -240,6 +362,10 @@ impl Coalescer {
         self.state.lock().queue.is_empty()
     }
 
+    pub(crate) fn queue_len(&self) -> usize {
+        self.state.lock().queue.len()
+    }
+
     pub(crate) fn add_inflight(&self) {
         self.inflight.fetch_add(1, Ordering::AcqRel);
     }
@@ -287,7 +413,7 @@ fn fail_all(gate: &WriteGate, error: &Error) {
         state.queue.drain(..).collect()
     };
     for job in jobs {
-        job.finish(Err(duplicate_error(error)));
+        job.finish(Err(duplicate_error(error)), None);
     }
 }
 
@@ -302,7 +428,23 @@ pub(crate) fn duplicate_error(error: &Error) -> Error {
     }
 }
 
+struct ActiveCommitter;
+
+impl ActiveCommitter {
+    fn new() -> Self {
+        crate::metrics::global().committers_active.inc();
+        Self
+    }
+}
+
+impl Drop for ActiveCommitter {
+    fn drop(&mut self) {
+        crate::metrics::global().committers_active.dec();
+    }
+}
+
 fn worker_main(gate: &Arc<WriteGate>) {
+    let _active = ActiveCommitter::new();
     let target = gate.coalescer.target.lock().clone();
     let opened = match target {
         Some((path, options)) => NovaDb::open_with_options(path, &options),
@@ -388,7 +530,13 @@ impl Checkpointer {
                         }
                         *pending = false;
                     }
+                    let started = Instant::now();
                     let _ = connection.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
+                    let metrics = crate::metrics::global();
+                    metrics.checkpoints.inc();
+                    metrics
+                        .checkpoint_duration
+                        .observe_duration(started.elapsed());
                     // Rate limit: at most ~10 checkpoints a second.
                     std::thread::sleep(Duration::from_millis(100));
                 }
@@ -435,7 +583,7 @@ fn run_batch(gate: &Arc<WriteGate>, db: &NovaDb) {
             let mut failed = Vec::new();
             drain(gate, &mut failed, limit);
             for job in failed {
-                job.finish(Err(duplicate_error(&error)));
+                job.finish(Err(duplicate_error(&error)), None);
             }
             return;
         }
@@ -463,7 +611,9 @@ fn run_batch(gate: &Arc<WriteGate>, db: &NovaDb) {
     if batch.is_empty() {
         return;
     }
+    let busy_since = Instant::now();
     let outcomes = execute(db, &mut connection, &batch);
+    let commit_time = busy_since.elapsed();
     drop(guard);
     drop(connection);
 
@@ -474,18 +624,33 @@ fn run_batch(gate: &Arc<WriteGate>, db: &NovaDb) {
     let size = batch.len() as u64;
     STATEMENTS.fetch_add(size, Ordering::Relaxed);
     LARGEST.fetch_max(size, Ordering::Relaxed);
+    let metrics = crate::metrics::global();
+    let measuring = crate::metrics::enabled();
+    if measuring {
+        metrics.group_commit_batches.inc();
+        metrics.group_commit_statements.add(size);
+        metrics.batch_size.observe(size);
+        metrics.batch_commit.observe_duration(commit_time);
+    }
     for (job, outcome) in batch.into_iter().zip(outcomes) {
+        let queue_wait = busy_since.saturating_duration_since(job.enqueued);
+        if measuring {
+            metrics.queue_wait.observe_duration(queue_wait);
+        }
         match outcome {
-            Ok((written, changes)) => {
+            Ok((finished, changes)) => {
                 job.owner.publish(&changes);
-                job.finish(Ok(written));
+                job.finish(Ok(finished), Some(queue_wait));
             }
-            Err(error) => job.finish(Err(error)),
+            Err(error) => job.finish(Err(error), Some(queue_wait)),
         }
     }
+    metrics
+        .committer_busy_ns
+        .add(u64::try_from(busy_since.elapsed().as_nanos()).unwrap_or(u64::MAX));
 }
 
-type Member = Result<(WriteOutcome, Vec<Change>)>;
+type Member = Result<(Finished, Vec<Change>)>;
 
 /// Runs `jobs` in arrival order: maximal runs of plain DML share one
 /// transaction, anything else (DDL, scripts) gets its own.
@@ -509,36 +674,107 @@ fn execute(db: &NovaDb, connection: &mut Connection, jobs: &[Job]) -> Vec<Member
 }
 
 fn run_solo(db: &NovaDb, connection: &mut Connection, job: &Job) -> Member {
-    if job.returning {
-        let ((rows, stats), _, changes) =
-            db.atomic_run(connection, false, |transaction, trusted| {
-                execute_guarded_returning(
-                    transaction,
-                    &job.sql,
-                    job.mode,
-                    AuthMode::Batch,
-                    &db.inner.auth,
-                    trusted,
-                )
-            })?;
-        Ok((
-            WriteOutcome {
-                stats,
-                rows: Some(rows),
-            },
-            changes,
-        ))
-    } else {
-        let (stats, changes) = db.atomic_batch(connection, &job.sql, job.mode, false)?;
-        Ok((WriteOutcome { stats, rows: None }, changes))
+    match &job.work {
+        Work::Single {
+            sql,
+            params,
+            returning,
+        } => {
+            let params = params.as_ref().map(OwnedParams::as_params);
+            if *returning {
+                let ((rows, stats), _, changes) =
+                    db.atomic_run(connection, false, |transaction, trusted| {
+                        execute_guarded_returning(
+                            transaction,
+                            sql,
+                            params,
+                            job.mode,
+                            AuthMode::Batch,
+                            &db.inner.auth,
+                            trusted,
+                        )
+                    })?;
+                Ok((
+                    Finished::Single(WriteOutcome {
+                        stats,
+                        rows: Some(rows),
+                    }),
+                    changes,
+                ))
+            } else {
+                let (stats, changes) = db.atomic_batch(connection, sql, params, job.mode, false)?;
+                Ok((
+                    Finished::Single(WriteOutcome { stats, rows: None }),
+                    changes,
+                ))
+            }
+        }
+        Work::Batch {
+            statements,
+            atomic,
+            limit,
+        } => {
+            let (outcomes, _, changes) =
+                db.atomic_run(connection, false, |transaction, trusted| {
+                    run_batch_body(
+                        db,
+                        transaction,
+                        trusted,
+                        statements,
+                        *atomic,
+                        job.mode,
+                        *limit,
+                    )
+                })?;
+            Ok((Finished::Batch(outcomes), changes))
+        }
     }
 }
 
 /// Runs `jobs` in one transaction, one savepoint each; returns one outcome per
 /// job (in order) after the single commit.
+///
+/// A write that hits the statement timeout makes SQLite roll the whole
+/// transaction back (an interrupted write cannot be undone partially). Only
+/// that member fails: the others are run again in a fresh transaction.
 fn execute_group(db: &NovaDb, connection: &mut Connection, jobs: &[Job]) -> Vec<Member> {
-    let fail_all_with = |error: &Error| -> Vec<Member> {
-        jobs.iter().map(|_| Err(duplicate_error(error))).collect()
+    let mut results: Vec<Option<Member>> = (0..jobs.len()).map(|_| None).collect();
+    let mut pending: Vec<usize> = (0..jobs.len()).collect();
+    while !pending.is_empty() {
+        let members: Vec<&Job> = pending.iter().map(|&index| &jobs[index]).collect();
+        match execute_group_once(db, connection, &members) {
+            GroupRun::Done(outcomes) => {
+                for (index, outcome) in pending.iter().zip(outcomes) {
+                    results[*index] = Some(outcome);
+                }
+                break;
+            }
+            GroupRun::TimedOut { position, error } => {
+                results[pending[position]] = Some(Err(error));
+                pending.remove(position);
+            }
+        }
+    }
+    results
+        .into_iter()
+        .map(|result| {
+            result.unwrap_or_else(|| Err(Error::Unsupported("group-commit member lost".into())))
+        })
+        .collect()
+}
+
+enum GroupRun {
+    Done(Vec<Member>),
+    /// Member `position` timed out and took the transaction down with it.
+    TimedOut {
+        position: usize,
+        error: Error,
+    },
+}
+
+fn execute_group_once(db: &NovaDb, connection: &mut Connection, jobs: &[&Job]) -> GroupRun {
+    let fail_all_with = |error: &Error| -> GroupRun {
+        GroupRun::Done(jobs.iter().map(|_| Err(duplicate_error(error))).collect())
     };
     let transaction = match connection.transaction_with_behavior(TransactionBehavior::Immediate) {
         Ok(transaction) => transaction,
@@ -546,15 +782,23 @@ fn execute_group(db: &NovaDb, connection: &mut Connection, jobs: &[Job]) -> Vec<
     };
     let mut outcomes: Vec<Member> = Vec::with_capacity(jobs.len());
     let mut aborted: Option<Error> = None;
-    for job in jobs {
+    // DML cannot change the schema, so one look serves the whole transaction.
+    let state = match db.inner.schema_state(&transaction) {
+        Ok(state) => state,
+        Err(error) => return fail_all_with(&error),
+    };
+    for (position, job) in jobs.iter().enumerate() {
         if let Some(error) = &aborted {
             outcomes.push(Err(duplicate_error(error)));
             continue;
         }
-        let outcome = run_member(db, &transaction, job);
+        let outcome = run_member(db, &transaction, &state, job);
         // An I/O or out-of-memory failure makes SQLite roll the whole
         // transaction back on its own; earlier members are then lost too.
         if transaction.is_autocommit() {
+            if let Err(error @ Error::Timeout(_)) = outcome {
+                return GroupRun::TimedOut { position, error };
+            }
             let error = match &outcome {
                 Err(error) => duplicate_error(error),
                 Ok(_) => Error::Unsupported("transaction was rolled back by SQLite".into()),
@@ -571,42 +815,92 @@ fn execute_group(db: &NovaDb, connection: &mut Connection, jobs: &[Job]) -> Vec<
         outcomes.push(outcome);
     }
     if aborted.is_some() {
-        return outcomes;
+        return GroupRun::Done(outcomes);
     }
     if let Err(error) = transaction.commit() {
         return fail_all_with(&Error::from(error));
     }
-    outcomes
+    GroupRun::Done(outcomes)
 }
 
-fn run_member(db: &NovaDb, transaction: &Transaction<'_>, job: &Job) -> Member {
-    let state = db.inner.schema_state(transaction)?;
+fn run_member(
+    db: &NovaDb,
+    transaction: &Transaction<'_>,
+    state: &Arc<crate::SchemaState>,
+    job: &Job,
+) -> Member {
     let before = if state.trusted.is_empty() {
         None
     } else {
         Some(max_change_sequence(transaction)?)
     };
-    transaction.execute_batch("SAVEPOINT nova_gc")?;
+    // A single plain DML statement that fails is rolled back by SQLite itself
+    // (statement journal), so the savepoint only pays for statements that can
+    // partially apply: scripts and batches, `OR FAIL`, triggers raising
+    // FAIL/ROLLBACK, and change capture (which validates after the fact).
+    let savepoint = !(job.atomic_statement && before.is_none() && !state.partial_failure_triggers);
+    if savepoint {
+        transaction
+            .prepare_cached("SAVEPOINT nova_gc")?
+            .execute([])?;
+    }
     let body = || -> Member {
-        let (rows, stats) = if job.returning {
-            let (rows, stats) = execute_guarded_returning(
+        let finished = match &job.work {
+            Work::Single {
+                sql,
+                params,
+                returning,
+            } => {
+                let params = params.as_ref().map(OwnedParams::as_params);
+                let (rows, stats) = if *returning {
+                    let (rows, stats) = execute_guarded_returning(
+                        transaction,
+                        sql,
+                        params,
+                        job.mode,
+                        AuthMode::Batch,
+                        &db.inner.auth,
+                        &state.trusted,
+                    )?;
+                    (Some(rows), stats)
+                } else {
+                    match params {
+                        Some(params) => {
+                            execute_guarded_bound(
+                                transaction,
+                                sql,
+                                params,
+                                job.mode,
+                                &db.inner.auth,
+                                &state.trusted,
+                                Collect::Discard,
+                            )?;
+                        }
+                        None => execute_guarded_sql(
+                            transaction,
+                            sql,
+                            job.mode,
+                            &db.inner.auth,
+                            &state.trusted,
+                        )?,
+                    }
+                    (None, ExecStats::of(transaction))
+                };
+                Finished::Single(WriteOutcome { stats, rows })
+            }
+            Work::Batch {
+                statements,
+                atomic,
+                limit,
+            } => Finished::Batch(run_batch_body(
+                db,
                 transaction,
-                &job.sql,
-                job.mode,
-                AuthMode::Batch,
-                &db.inner.auth,
                 &state.trusted,
-            )?;
-            (Some(rows), stats)
-        } else {
-            execute_guarded_sql(
-                transaction,
-                &job.sql,
+                statements,
+                *atomic,
                 job.mode,
-                &db.inner.auth,
-                &state.trusted,
-            )?;
-            (None, ExecStats::of(transaction))
+                *limit,
+            )?),
         };
         let changes = match before {
             Some(before) => {
@@ -617,15 +911,17 @@ fn run_member(db: &NovaDb, transaction: &Transaction<'_>, job: &Job) -> Member {
             }
             None => Vec::new(),
         };
-        Ok((WriteOutcome { stats, rows }, changes))
+        Ok((finished, changes))
     };
     match body() {
         Ok(done) => {
-            transaction.execute_batch("RELEASE nova_gc")?;
+            if savepoint {
+                transaction.prepare_cached("RELEASE nova_gc")?.execute([])?;
+            }
             Ok(done)
         }
         Err(error) => {
-            if !transaction.is_autocommit() {
+            if savepoint && !transaction.is_autocommit() {
                 let _ = transaction.execute_batch("ROLLBACK TO nova_gc; RELEASE nova_gc");
             }
             Err(error)
@@ -633,54 +929,186 @@ fn run_member(db: &NovaDb, transaction: &Transaction<'_>, job: &Job) -> Member {
     }
 }
 
+/// Runs the statements of a batch inside an open transaction (and, for a
+/// queued batch, inside its job savepoint). An atomic batch stops at the first
+/// error with [`Error::Batch`]; a non-atomic one isolates every statement in
+/// its own savepoint and reports failures per statement.
+pub(crate) fn run_batch_body(
+    db: &NovaDb,
+    transaction: &Transaction<'_>,
+    trusted: &Arc<std::collections::HashSet<String>>,
+    statements: &[BatchStatement],
+    atomic: bool,
+    mode: DialectMode,
+    limit: ResultLimit,
+) -> Result<Vec<Result<WriteOutcome>>> {
+    let mut outcomes = Vec::with_capacity(statements.len());
+    for (index, statement) in statements.iter().enumerate() {
+        if !atomic {
+            transaction
+                .prepare_cached("SAVEPOINT nova_gcs")?
+                .execute([])?;
+        }
+        let result = run_batch_statement(db, transaction, trusted, statement, mode, limit);
+        match result {
+            Ok(outcome) => {
+                if !atomic {
+                    transaction
+                        .prepare_cached("RELEASE nova_gcs")?
+                        .execute([])?;
+                }
+                outcomes.push(Ok(outcome));
+            }
+            Err(error) if atomic => {
+                return Err(Error::Batch {
+                    index,
+                    source: Box::new(error),
+                });
+            }
+            Err(error) => {
+                if transaction.is_autocommit() {
+                    // SQLite rolled the whole transaction back itself.
+                    return Err(error);
+                }
+                transaction.execute_batch("ROLLBACK TO nova_gcs; RELEASE nova_gcs")?;
+                outcomes.push(Err(error));
+            }
+        }
+    }
+    Ok(outcomes)
+}
+
+fn run_batch_statement(
+    db: &NovaDb,
+    transaction: &Transaction<'_>,
+    trusted: &Arc<std::collections::HashSet<String>>,
+    statement: &BatchStatement,
+    mode: DialectMode,
+    limit: ResultLimit,
+) -> Result<WriteOutcome> {
+    if statement.params.is_some() || is_bound_friendly(&statement.sql) {
+        let params = statement
+            .params
+            .as_ref()
+            .map_or(Params::Positional(&[]), OwnedParams::as_params);
+        let outcome = execute_guarded_bound(
+            transaction,
+            &statement.sql,
+            params,
+            mode,
+            &db.inner.auth,
+            trusted,
+            Collect::Auto(limit),
+        )?;
+        let stats = if outcome.writes {
+            ExecStats::of(transaction)
+        } else {
+            ExecStats {
+                changes: 0,
+                last_insert_rowid: transaction.last_insert_rowid(),
+            }
+        };
+        Ok(WriteOutcome {
+            stats,
+            rows: outcome.rows,
+        })
+    } else {
+        // DDL and scripts without parameters keep the literal-batch semantics.
+        execute_guarded_sql(transaction, &statement.sql, mode, &db.inner.auth, trusted)?;
+        Ok(WriteOutcome {
+            stats: ExecStats::of(transaction),
+            rows: None,
+        })
+    }
+}
+
+/// First keyword is DML or a read: one statement the bound path can prepare.
+fn is_bound_friendly(sql: &str) -> bool {
+    let body = sql.trim().trim_end_matches(';');
+    !body.contains(';')
+        && first_word(sql).is_some_and(|word| {
+            ["INSERT", "UPDATE", "DELETE", "REPLACE", "WITH", "SELECT"]
+                .iter()
+                .any(|keyword| word.eq_ignore_ascii_case(keyword))
+        })
+}
+
+fn first_word(sql: &str) -> Option<&str> {
+    let trimmed = sql.trim_start();
+    let end = trimmed
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(trimmed.len());
+    (end > 0).then(|| &trimmed[..end])
+}
+
+/// Like [`is_coalescible_sql`] but also accepts reads (batch members).
+fn is_batch_member_sql(sql: &str) -> bool {
+    is_coalescible_sql(sql) || is_bound_friendly(sql)
+}
+
 /// True when `sql` consists only of plain data-modification statements, the
 /// kind that may safely run on the committer's connection.
 pub(crate) fn is_coalescible_sql(sql: &str) -> bool {
     let mut any = false;
     for segment in sql.split(';') {
-        let trimmed = segment.trim_start();
+        let trimmed = segment.trim_start().as_bytes();
         if trimmed.is_empty() {
             continue;
         }
         any = true;
-        let word: String = trimmed
-            .chars()
-            .take_while(char::is_ascii_alphabetic)
-            .map(|c| c.to_ascii_uppercase())
-            .collect();
-        if !matches!(
-            word.as_str(),
-            "INSERT" | "UPDATE" | "DELETE" | "REPLACE" | "WITH"
-        ) {
+        let end = trimmed
+            .iter()
+            .position(|b| !b.is_ascii_alphabetic())
+            .unwrap_or(trimmed.len());
+        let word = &trimmed[..end];
+        if !["INSERT", "UPDATE", "DELETE", "REPLACE", "WITH"]
+            .iter()
+            .any(|keyword| word.eq_ignore_ascii_case(keyword.as_bytes()))
+        {
             return false;
         }
     }
     any
 }
 
+/// True when `sql` is ONE statement that SQLite undoes completely if it fails
+/// midway: no second statement and no `FAIL` conflict clause (`INSERT OR FAIL`
+/// keeps the rows written before the error). Conservative: any `;` before the
+/// end or the word `fail` anywhere answers `false`.
+pub(crate) fn single_statement_is_atomic(sql: &str) -> bool {
+    let body = sql.trim_end_matches(|c: char| c.is_whitespace() || c == ';');
+    if body.contains(';') {
+        return false;
+    }
+    !contains_word_ignore_case(body.as_bytes(), b"fail")
+        && !contains_word_ignore_case(body.as_bytes(), b"rollback")
+}
+
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Case-insensitive whole-word search without allocating.
+fn contains_word_ignore_case(haystack: &[u8], word: &[u8]) -> bool {
+    if haystack.len() < word.len() {
+        return false;
+    }
+    (0..=haystack.len() - word.len()).any(|start| {
+        let end = start + word.len();
+        haystack[start..end].eq_ignore_ascii_case(word)
+            && (start == 0 || !is_word_byte(haystack[start - 1]))
+            && (end == haystack.len() || !is_word_byte(haystack[end]))
+    })
+}
+
 /// True when `sql` may create or use connection-local objects (temp tables,
 /// T-SQL `#temp` tables) that only exist on the session's own connection.
 pub(crate) fn touches_session_state(sql: &str, mode: DialectMode) -> bool {
-    if mode == DialectMode::TSql && sql.contains('#') {
+    let bytes = sql.as_bytes();
+    if mode == DialectMode::TSql && bytes.contains(&b'#') {
         return true;
     }
-    let bytes = sql.as_bytes();
-    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    let lower = sql.to_ascii_lowercase();
-    for keyword in ["temp", "temporary"] {
-        let mut from = 0;
-        while let Some(found) = lower[from..].find(keyword) {
-            let start = from + found;
-            let end = start + keyword.len();
-            let before_ok = start == 0 || !is_word(bytes[start - 1]);
-            let after_ok = end >= bytes.len() || !is_word(bytes[end]);
-            if before_ok && after_ok {
-                return true;
-            }
-            from = end;
-        }
-    }
-    false
+    contains_word_ignore_case(bytes, b"temp") || contains_word_ignore_case(bytes, b"temporary")
 }
 
 #[cfg(test)]

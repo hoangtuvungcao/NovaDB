@@ -89,10 +89,16 @@ impl NovaDb {
     /// Checkpoints all possible WAL frames and truncates the WAL on success.
     pub fn wal_checkpoint(&self) -> Result<WalCheckpointReport> {
         let connection = self.inner.connection.lock();
+        let started = std::time::Instant::now();
         let (busy, log_frames, checkpointed_frames) =
             connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?))
             })?;
+        let metrics = crate::metrics::global();
+        metrics.checkpoints.inc();
+        metrics
+            .checkpoint_duration
+            .observe_duration(started.elapsed());
         Ok(WalCheckpointReport {
             busy: busy != 0,
             log_frames,
@@ -109,6 +115,9 @@ impl NovaDb {
     /// transaction boundary.
     pub fn run_migrations(&self, migrations: &[Migration<'_>]) -> Result<MigrationReport> {
         validate_manifest(migrations)?;
+        // Migrations (table rebuilds, backfills) are exempt from the
+        // statement timeout.
+        let _untimed = self.inner.auth.timeout.exempt_scope();
         let changes_and_report = {
             let mut connection = self.inner.connection.lock();
             let _gate = self.inner.write_gate()?;

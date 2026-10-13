@@ -110,7 +110,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
             EnvFilter::new(
-                "novadbd=info,novadb_server=info,novadb_wire=info,novadb_mysql=info,tower_http=info",
+                "novadbd=info,novadb_server=info,novadb_wire=info,novadb_mysql=info,novadb=info,tower_http=info",
             )
         }))
         .try_init()

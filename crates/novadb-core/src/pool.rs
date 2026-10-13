@@ -156,6 +156,7 @@ impl NovaDbPool {
                     // Still the same count: this thread opens the next reader.
                     let reader = NovaDb::open_with_options(&inner.path, &inner.reader_options)?;
                     let _ = inner.readers[now].set(reader);
+                    crate::metrics::global().readers_open.inc();
                     inner.opened.store(now + 1, Ordering::Release);
                 }
                 continue;
@@ -197,6 +198,34 @@ impl NovaDbPool {
             |reader| reader.try_query_typed(sql, mode, limit),
             |reader| reader.query_limited(sql, mode, limit),
         )?
+    }
+
+    /// [`NovaDbPool::query_limited`] with bound parameters (see
+    /// [`crate::Params`]): the SQL text carries no values and is normalised
+    /// and prepared once per reader connection.
+    pub fn query_limited_params<'p>(
+        &self,
+        sql: &str,
+        params: impl Into<crate::Params<'p>>,
+        mode: DialectMode,
+        limit: ResultLimit,
+    ) -> Result<TypedQueryResult> {
+        let params = params.into();
+        self.with_reader(
+            |reader| reader.try_query_typed_params(sql, params, mode, limit),
+            |reader| reader.query_limited_params(sql, params, mode, limit),
+        )?
+    }
+
+    /// [`NovaDbPool::query_with`] with bound parameters.
+    pub fn query_params<'p>(
+        &self,
+        sql: &str,
+        params: impl Into<crate::Params<'p>>,
+        mode: DialectMode,
+    ) -> Result<QueryResult> {
+        self.query_limited_params(sql, params, mode, ResultLimit::UNLIMITED)
+            .map(TypedQueryResult::into_query_result)
     }
 
     /// Execute a write batch on the writer (serialised per file; concurrent
@@ -261,6 +290,13 @@ impl NovaDbPool {
     /// Get changes after a cursor using the writer connection.
     pub fn changes_after(&self, after: i64, limit: usize) -> Result<Vec<crate::Change>> {
         self.inner.writer.changes_after(after, limit)
+    }
+}
+
+impl Drop for PoolInner {
+    fn drop(&mut self) {
+        let opened = i64::try_from(self.opened.load(Ordering::Acquire)).unwrap_or(0);
+        crate::metrics::global().readers_open.add(-opened);
     }
 }
 

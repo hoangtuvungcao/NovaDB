@@ -79,6 +79,33 @@ pub enum Error {
     #[error("unsupported SQL: {0}")]
     Unsupported(String),
 
+    /// Bound parameters do not match the statement (wrong count, unknown or
+    /// missing name, or an unsupported value).
+    #[error("invalid parameters: {0}")]
+    InvalidParameters(String),
+
+    /// The statement ran longer than the configured statement timeout and was
+    /// interrupted. The connection stays usable and the statement's changes
+    /// were rolled back. Gateways map this to their "query execution was
+    /// interrupted" error (MySQL 3024 / PostgreSQL 57014), HTTP to 408.
+    #[error("statement timed out: {0}")]
+    Timeout(String),
+
+    /// An explicit transaction held the write gate longer than
+    /// `max_write_transaction` and was rolled back by the server. Every
+    /// further statement on the session fails with this error until the
+    /// session issues `ROLLBACK` (or `COMMIT`, which reports it too).
+    #[error("transaction expired: {0}")]
+    TransactionExpired(String),
+
+    /// One statement of an atomic batch failed (the whole batch was rolled back).
+    #[error("statement #{index}: {source}")]
+    Batch {
+        /// Zero-based position of the failing statement.
+        index: usize,
+        source: Box<Error>,
+    },
+
     /// A T-SQL run-time error (undeclared variable, failed conversion,
     /// unbalanced transaction, ...).
     #[error("T-SQL error: {0}")]
