@@ -23,7 +23,7 @@ novadb serve --data-dir ./novadb-data --mysql-listen 127.0.0.1:3306 --mysql-user
 | `--mysql-listen <ADDR>` | – | off | Enables the gateway (conventionally port `3306`). |
 | `--mysql-user <NAME>` | `NOVADB_MYSQL_USER` | any user | When set, clients must log in as this user. |
 | `--mysql-password <PW>` | `NOVADB_MYSQL_PASSWORD` | none (trust) | Required password. Without it any client on the listening address can connect. |
-| `--mysql-max-connections <N>` | `NOVADB_MYSQL_MAX_CONNECTIONS` | `100` | Extra clients receive error `1040 Too many connections`. |
+| `--mysql-max-connections <N>` | `NOVADB_MYSQL_MAX_CONNECTIONS` | `1000` | Extra clients receive error `1040 Too many connections`. |
 | `--allow-insecure` | `NOVADB_ALLOW_INSECURE` | off | Required to listen on a non-loopback address without a password. |
 
 * The gateway runs alongside the HTTP API as an independent task; if it fails, HTTP keeps serving.

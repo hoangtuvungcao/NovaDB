@@ -407,7 +407,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
     PayloadTooLarge:
-      description: A canonical change exceeded 65,536 bytes or the 4 MiB framework body limit was exceeded. Framework rejection shape may differ.
+      description: A canonical change exceeded 65,536 bytes the request body exceeded `--max-request-body-bytes` (default 64 MiB), the SQL exceeded `--max-sql-bytes` (default 16 MiB), or a `/sql/query` result exceeded `--max-result-rows` / `--max-result-bytes` (paginate). Framework rejection shape may differ.
       content:
         application/json:
           schema:
@@ -467,8 +467,7 @@ components:
         sql:
           type: string
           minLength: 1
-          maxLength: 262144
-          description: The server enforces byte length; OpenAPI maxLength counts code points.
+          description: SQL text. The server enforces a byte limit that is configurable with `--max-sql-bytes` (default 16 MiB).
     ExecuteResponse:
       type: object
       additionalProperties: false
@@ -574,8 +573,7 @@ components:
         sql:
           type: string
           minLength: 1
-          maxLength: 262144
-          description: Nonblank and at most 262,144 bytes; managed execute token restrictions apply.
+          description: Nonblank; the byte limit is configurable with `--max-sql-bytes` (default 16 MiB); managed execute token restrictions apply.
     MigrationRequest:
       type: object
       additionalProperties: false

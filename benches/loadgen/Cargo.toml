@@ -1,0 +1,12 @@
+# Standalone project (NOT a member of the NovaDB workspace) with its own target dir:
+#   cargo run --release --manifest-path benches/loadgen/Cargo.toml -- --help
+[package]
+name = "novadb-loadgen"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync"] }

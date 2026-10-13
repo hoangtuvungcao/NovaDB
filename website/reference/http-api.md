@@ -10,7 +10,7 @@ Base URL: `http://<host>:8787`. JSON in, JSON out. When a bearer token is config
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | public | `{"status":"ok","version":"0.2.0"}` |
+| `GET` | `/health` | public | `{"status":"ok","version":"0.2.1"}` |
 | `GET` | `/`, `/studio`, `/studio/` | public | Web Studio page (its API calls still need the token) |
 | `GET` | `/v1/admin/databases` | token | List databases: `{"databases":[DatabaseMetadata...]}` |
 | `POST` | `/v1/admin/databases/{db}` | token | Create or open a database; returns `DatabaseMetadata` |
@@ -84,5 +84,5 @@ BLOB values are tagged objects as shown; non-finite floats are tagged too. The S
 | 404 | `not_found` | Database does not exist (create it first) |
 | 408 | | Request exceeded `--request-timeout-secs` |
 | 409 | `conflict` | Migration drift, reused change ID with different content, backup name clash |
-| 413 | `payload_too_large` | Body over 4 MiB, SQL over 256 KiB, change over 64 KiB |
+| 413 | `payload_too_large` | Body over `--max-request-body-bytes` (64 MiB), SQL over `--max-sql-bytes` (16 MiB), `/sql/query` result over `--max-result-rows` / `--max-result-bytes` (paginate), change over 64 KiB |
 | 500 | `internal_error` | Storage or catalog failure |

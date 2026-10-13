@@ -5,6 +5,42 @@ All notable changes to this project are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/). Changes marked **planned** are
 roadmap items and are **not** available in the current release.
 
+## 0.2.1 - 2026-10-13
+
+### Added
+
+- **Large multi-user servers.** HTTP reads use a per-database pool (1 writer + N `query_only` readers, lazily opened,
+  `--read-pool-size`). Autocommit writes (HTTP `/sql/execute`, PG/MySQL autocommit) are group-committed by one committer
+  thread per database file; each client keeps its own result and success is reported after the batch COMMIT
+  (`--no-group-commit`, `--group-commit-max-batch` 128, `--group-commit-max-wait-us` 200). WAL checkpoints run PASSIVE
+  on a background thread. The SQL dialect layer is pre-warmed at startup (first write after boot about 835 ms to about
+  13 ms).
+- New flags on `novadbd` and `novadb serve` (env prefix `NOVADB_`): `--read-pool-size`, `--max-sql-bytes`,
+  `--max-request-body-bytes`, `--max-connections`, `--listen-backlog`, `--max-result-rows`, `--max-result-bytes`,
+  `--no-group-commit`, `--group-commit-max-batch`, `--group-commit-max-wait-us`, `--lookaside-kib`, `--worker-threads`,
+  `--max-blocking-threads`.
+- `NovaDb::set_foreign_keys`; MySQL `SET FOREIGN_KEY_CHECKS` is honoured per session.
+- `/sql/execute` responses include `changes` and `last_insert_rowid`.
+- Multi-user benchmarks (`benches/multiuser.sh`, `benches/loadgen`, `benches/results/LATEST-multiuser.md`) and the
+  website guide "Game and multi-user servers".
+
+### Changed
+
+- Default limits: SQL text per HTTP request 256 KiB to 16 MiB, HTTP body 4 MiB to 64 MiB, HTTP connections 10000,
+  PG/MySQL max connections 100 to 1000 (cap 100000). Per-connection lookaside memory now shrinks as connections grow.
+- Large `/sql/query` results fail with HTTP 413 and a pagination hint instead of being truncated.
+- Measured at 128 clients (old to new, median ops/s): HTTP 90/10 12.9k to 37.3k, HTTP write-only 3.8k to 19.2k,
+  PG write-only 4.6k to 14.1k, MySQL write-only 5.6k to 19.8k (single laptop, loopback, indicative).
+
+### MySQL gateway
+
+- Imports real mysqldump / phpMyAdmin files: versioned comments, `ADD PRIMARY KEY` / `AUTO_INCREMENT` table rebuilds,
+  per-table index names, primary-key-ordered full scans, `SET FOREIGN_KEY_CHECKS`.
+
+### Studio
+
+- Large scripts are split into request-sized chunks measured in bytes, with trigger-safe splitting.
+
 ## 0.2.0 - 2026-10-12
 
 ### Security

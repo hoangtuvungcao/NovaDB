@@ -2,14 +2,16 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     fs, io,
+    ops::Deref,
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use novadb_core::NovaDb;
+use novadb_core::{NovaDbPool, PoolConfig};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use crate::{DatabaseIdError, validate_database_id};
@@ -50,11 +52,58 @@ pub struct BackupReport {
     pub size_bytes: u64,
 }
 
+/// Default number of parallel read connections per database: one per CPU.
+#[must_use]
+pub fn default_read_pool_size() -> usize {
+    std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get)
+}
+
+/// One open database: a writer plus lazily-opened `query_only` readers
+/// ([`NovaDbPool`]), and an async permit pool that keeps the number of
+/// blocking threads running reads at the reader count (excess requests wait
+/// asynchronously instead of occupying blocking-pool threads).
+pub struct ManagedDatabase {
+    pool: NovaDbPool,
+    reads: Arc<Semaphore>,
+}
+
+impl ManagedDatabase {
+    fn new(pool: NovaDbPool) -> Self {
+        let permits = pool.read_pool_size();
+        Self {
+            pool,
+            reads: Arc::new(Semaphore::new(permits)),
+        }
+    }
+
+    /// Permits bounding concurrent blocking reads on this database.
+    #[must_use]
+    pub fn read_permits(&self) -> &Arc<Semaphore> {
+        &self.reads
+    }
+
+    /// The underlying pool (also reachable through `Deref`).
+    #[must_use]
+    pub fn pool(&self) -> &NovaDbPool {
+        &self.pool
+    }
+}
+
+impl Deref for ManagedDatabase {
+    type Target = NovaDbPool;
+
+    fn deref(&self) -> &NovaDbPool {
+        &self.pool
+    }
+}
+
 /// Maps validated database IDs to direct children of one data directory and
-/// keeps at most one open [`NovaDb`] handle per database in this process.
+/// keeps at most one open [`NovaDbPool`] (writer + parallel readers) per
+/// database in this process.
 pub struct DatabaseCatalog {
     data_dir: PathBuf,
-    databases: Mutex<HashMap<String, NovaDb>>,
+    read_pool_size: usize,
+    databases: RwLock<HashMap<String, Arc<ManagedDatabase>>>,
 }
 
 impl std::fmt::Debug for DatabaseCatalog {
@@ -70,6 +119,15 @@ impl DatabaseCatalog {
     /// Creates the data directory when missing and anchors all future paths to
     /// its canonical location.
     pub fn new(data_dir: impl AsRef<Path>) -> Result<Self, CatalogError> {
+        Self::with_read_pool_size(data_dir, default_read_pool_size())
+    }
+
+    /// Like [`DatabaseCatalog::new`] with an explicit maximum number of read
+    /// connections per database.
+    pub fn with_read_pool_size(
+        data_dir: impl AsRef<Path>,
+        read_pool_size: usize,
+    ) -> Result<Self, CatalogError> {
         fs::create_dir_all(data_dir.as_ref())?;
         let metadata = fs::metadata(data_dir.as_ref())?;
         if !metadata.is_dir() {
@@ -81,7 +139,8 @@ impl DatabaseCatalog {
         let data_dir = fs::canonicalize(data_dir.as_ref())?;
         Ok(Self {
             data_dir,
-            databases: Mutex::new(HashMap::new()),
+            read_pool_size: read_pool_size.max(1),
+            databases: RwLock::new(HashMap::new()),
         })
     }
 
@@ -93,9 +152,9 @@ impl DatabaseCatalog {
     /// Lists regular `*.novadb` files whose stems are valid database IDs.
     pub fn list(&self) -> Result<Vec<DatabaseMetadata>, CatalogError> {
         let open_databases: HashMap<String, String> = self
-            .lock()?
+            .read()?
             .iter()
-            .map(|(id, database)| (id.clone(), database.device_id().to_owned()))
+            .map(|(id, database)| (id.clone(), database.device_id()))
             .collect();
         let mut databases = Vec::new();
 
@@ -126,13 +185,23 @@ impl DatabaseCatalog {
     }
 
     /// Creates a missing database or returns the cached/opened existing one.
-    pub fn create_or_open(&self, database_id: &str) -> Result<NovaDb, CatalogError> {
+    pub fn create_or_open(&self, database_id: &str) -> Result<Arc<ManagedDatabase>, CatalogError> {
         self.open_inner(database_id, true)
     }
 
     /// Opens an existing database without implicitly creating it.
-    pub fn open_existing(&self, database_id: &str) -> Result<NovaDb, CatalogError> {
+    pub fn open_existing(&self, database_id: &str) -> Result<Arc<ManagedDatabase>, CatalogError> {
         self.open_inner(database_id, false)
+    }
+
+    /// Returns the database when it is already open, without any file I/O
+    /// (async handlers use this to skip `spawn_blocking` on the hot path).
+    #[must_use]
+    pub fn cached(&self, database_id: &str) -> Option<Arc<ManagedDatabase>> {
+        self.databases
+            .read()
+            .ok()
+            .and_then(|databases| databases.get(database_id).cloned())
     }
 
     /// Returns current metadata for a managed database.
@@ -140,9 +209,9 @@ impl DatabaseCatalog {
         let path = self.database_path(database_id)?;
         ensure_safe_existing_file(database_id, &path)?;
         let device_id = self
-            .lock()?
+            .read()?
             .get(database_id)
-            .map(|database| database.device_id().to_owned());
+            .map(|database| database.device_id());
         metadata_for(database_id, &path, device_id.as_deref())
     }
 
@@ -154,7 +223,7 @@ impl DatabaseCatalog {
         let timestamp = unix_time_ms();
         let filename = format!("{database_id}-{timestamp}-{}.novadb", Uuid::new_v4());
         let path = backup_directory.join(&filename);
-        database.backup_to(&path)?;
+        database.writer().backup_to(&path)?;
         let size_bytes = fs::metadata(&path)?.len();
         Ok(BackupReport {
             backup_id: format!(".backups/{filename}"),
@@ -162,11 +231,18 @@ impl DatabaseCatalog {
         })
     }
 
-    fn open_inner(&self, database_id: &str, create: bool) -> Result<NovaDb, CatalogError> {
+    fn open_inner(
+        &self,
+        database_id: &str,
+        create: bool,
+    ) -> Result<Arc<ManagedDatabase>, CatalogError> {
         let path = self.database_path(database_id)?;
-        let mut databases = self.lock()?;
+        if let Some(database) = self.read()?.get(database_id) {
+            return Ok(Arc::clone(database));
+        }
+        let mut databases = self.write()?;
         if let Some(database) = databases.get(database_id) {
-            return Ok(database.clone());
+            return Ok(Arc::clone(database));
         }
 
         match fs::symlink_metadata(&path) {
@@ -183,8 +259,10 @@ impl DatabaseCatalog {
 
         // Keep the catalog lock while opening so concurrent first access cannot
         // create two independent `NovaDb` handles for the same file.
-        let database = NovaDb::open(path)?;
-        databases.insert(database_id.to_owned(), database.clone());
+        let pool =
+            NovaDbPool::open(PoolConfig::new(path).with_read_pool_size(self.read_pool_size))?;
+        let database = Arc::new(ManagedDatabase::new(pool));
+        databases.insert(database_id.to_owned(), Arc::clone(&database));
         Ok(database)
     }
 
@@ -216,9 +294,19 @@ impl DatabaseCatalog {
         Ok(path)
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, HashMap<String, NovaDb>>, CatalogError> {
+    fn read(
+        &self,
+    ) -> Result<RwLockReadGuard<'_, HashMap<String, Arc<ManagedDatabase>>>, CatalogError> {
         self.databases
-            .lock()
+            .read()
+            .map_err(|_| CatalogError::LockPoisoned)
+    }
+
+    fn write(
+        &self,
+    ) -> Result<RwLockWriteGuard<'_, HashMap<String, Arc<ManagedDatabase>>>, CatalogError> {
+        self.databases
+            .write()
             .map_err(|_| CatalogError::LockPoisoned)
     }
 }

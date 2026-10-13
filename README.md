@@ -117,7 +117,8 @@ var top = await db.QueryAsync("SELECT player_id, best_score FROM scores ORDER BY
 
 Runs on .NET Standard 2.1 / Unity 2021.2+ (WebGL via a `UnityWebRequest` transport). Never ship the admin token
 in a game build; route writes through your game server. Example:
-[`examples/game-leaderboard`](examples/game-leaderboard).
+[`examples/game-leaderboard`](examples/game-leaderboard). Sizing and sharding advice for many clients:
+[Game and multi-user servers](https://hoangtuvungcao.github.io/NovaDB/guides/game-servers).
 
 ## Official SDKs
 
@@ -186,7 +187,7 @@ Legacy Markdown docs remain in [`docs/`](docs/README.md).
 
 NovaDB is **experimental (v0.1.x)**. Know these before you depend on it:
 
-- **Single node, single writer.** SQLite allows one writer per database at a time (writers inside one server queue; busy timeout 10 s by default). There is **no clustering,
+- **Single node, single writer.** SQLite allows one writer per database at a time (writers inside one server queue; busy timeout 10 s by default). Roughly 20-25k autocommit statements/s through the PG/MySQL gateways and 25-50k/s over HTTP per database file on a dev laptop; shard into several databases for more. See [Game and multi-user servers](https://hoangtuvungcao.github.io/NovaDB/guides/game-servers). There is **no clustering,
   replication for high availability, or failover**; LWW sync is for local-first replicas, not server HA.
 - **Not a drop-in replacement** for MySQL, PostgreSQL or SQL Server. The wire gateways speak their protocols and
   pass a mini-app suite with SQLAlchemy, Knex, Sequelize, Prisma (MySQL), PDO, Go and psycopg (see
@@ -207,6 +208,7 @@ NovaDB is **experimental (v0.1.x)**. Know these before you depend on it:
   [known pitfalls](https://hoangtuvungcao.github.io/NovaDB/migration/#known-pitfalls).
 - **Security model:** one bearer token (HTTP) and one user/password (PostgreSQL), each with full access. No
   per-user permissions on the servers yet, no built-in TLS, no encryption at rest.
+- **Default limits** (all configurable, see [Configuration](https://hoangtuvungcao.github.io/NovaDB/reference/configuration)): SQL text 16 MiB per request, HTTP body 64 MiB, 10000 HTTP connections, 1000 PG/MySQL sessions (about 0.4-0.5 MiB each), `/sql/query` results capped at 1,000,000 rows / 512 MiB (`413`, paginate).
 - **Vector search** is an exact scan without an ANN index.
 - **Packaging:** no published container image or registry packages yet.
 
@@ -241,6 +243,27 @@ How to read this honestly:
   many concurrent clients on this machine.
 - One machine, one run configuration, a loaded laptop: treat the numbers as indicative and measure your own
   workload. No claims are made about PostgreSQL, because no PostgreSQL server was installed to compare against.
+
+### Multi-user (128 clients)
+
+Load generator (Rust, one TCP connection per client, closed loop) on the same laptop and CPU as the server, loopback.
+Interleaved 5-round A/B, median ops/s and median p99 latency; "old" is commit 02a589c, "new" is the current tree
+(HTTP read pool, group commit, background checkpoints). Dataset: 100,000-row table, autocommit writes.
+
+| Protocol / workload | Old ops/s | New ops/s | Old p99 (ms) | New p99 (ms) |
+|---|---:|---:|---:|---:|
+| HTTP 90/10 read/write | 12.9k | 37.3k | 157 | 9.9 |
+| HTTP write-only | 3.8k | 19.2k | 423 | 17.3 |
+| PostgreSQL 90/10 | 22.1k | 27.5k | 173 | 23.7 |
+| PostgreSQL write-only | 4.6k | 14.1k | 193 | 30.7 |
+| MySQL 90/10 | 22.9k | 28.1k | 75 | 24.6 |
+| MySQL write-only | 5.6k | 19.8k | 176 | 24.7 |
+
+Indicative only: single laptop, loadgen and server compete for CPU, and individual rounds varied a lot (PG write-only
+new: 3.7k to 21.2k). Eight fresh runs on a quieter machine gave PG write-only 18-28k and MySQL write-only 29-47k ops/s
+with 0 errors. SQLite allows one writer per database file, so the ceiling is roughly 20-25k autocommit statements/s via
+the gateways and 25-50k/s over HTTP per database; shard for more. Details:
+[`benches/results/LATEST-multiuser.md`](benches/results/LATEST-multiuser.md).
 
 ## Contributing
 

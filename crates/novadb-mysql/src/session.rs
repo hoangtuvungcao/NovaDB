@@ -1582,6 +1582,10 @@ impl Session {
         self.database_name = name.to_owned();
         self.legacy_annotations
             .store(LEGACY_UNKNOWN, Ordering::Relaxed);
+        // The new connection inherits the session's FOREIGN_KEY_CHECKS.
+        if let Some(value) = self.variables.get("foreign_key_checks").cloned() {
+            self.apply_foreign_key_checks(Some(&value)).await?;
+        }
         Ok(ok_outcome())
     }
 
@@ -1681,6 +1685,9 @@ impl Session {
                         self.autocommit = enable;
                         continue;
                     }
+                    if name == "foreign_key_checks" {
+                        self.apply_foreign_key_checks(value.as_ref()).await?;
+                    }
                     match value {
                         Some(value) => {
                             self.variables.insert(name, value);
@@ -1694,6 +1701,29 @@ impl Session {
             }
         }
         Ok(ok_outcome())
+    }
+
+    /// Makes `SET FOREIGN_KEY_CHECKS = ...` effective on the session's SQLite
+    /// connection (`None` is `DEFAULT`, i.e. enforcement on). MySQL ignores
+    /// the setting inside a transaction, so it is only remembered then.
+    async fn apply_foreign_key_checks(&self, value: Option<&VarValue>) -> Result<(), MyError> {
+        let enabled = match value {
+            Some(VarValue::Int(number)) => *number != 0,
+            Some(VarValue::Text(text)) => {
+                !matches!(text.to_ascii_lowercase().as_str(), "off" | "false" | "0")
+            }
+            Some(VarValue::Null) => false,
+            _ => true,
+        };
+        if self.in_transaction {
+            return Ok(());
+        }
+        let Some(database) = self.database.clone() else {
+            return Ok(());
+        };
+        self.run_db(database, move |db| db.set_foreign_keys(enabled))
+            .await?
+            .map_err(|error| map_db_error(&error))
     }
 
     /// Evaluates an expression with SQLite and returns it as a SQL literal.

@@ -59,7 +59,7 @@ Rules:
   binding for you.
 - `execute` does not report affected rows, inserted IDs, or rows from `RETURNING` / `OUTPUT` / `SELECT` (the write
   still happens). Read the data back with `query`.
-- SQL text is limited to 256 KiB per request and the request body to 4 MiB. Requests longer than
+- SQL text is limited to 16 MiB per request (`--max-sql-bytes`) and the request body to 64 MiB (`--max-request-body-bytes`); both are configurable. `/sql/query` results larger than `--max-result-rows` (1,000,000) or `--max-result-bytes` (512 MiB) fail with `413` and a message to paginate (`LIMIT`/`OFFSET` or keyset) instead of being truncated. `/sql/execute` responses include `changes` and `last_insert_rowid` of the last statement. Requests longer than
   `--request-timeout-secs` (default 30) receive `408`.
 
 ## Errors

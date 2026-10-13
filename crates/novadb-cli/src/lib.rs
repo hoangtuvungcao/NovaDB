@@ -607,7 +607,7 @@ pub struct ServeArgs {
     pub pg_auth_method: novadb_wire::PgAuthMethod,
 
     /// Maximum number of concurrent PostgreSQL client connections.
-    #[arg(long, env = "NOVADB_PG_MAX_CONNECTIONS", default_value_t = novadb_wire::DEFAULT_MAX_CONNECTIONS)]
+    #[arg(long, env = "NOVADB_PG_MAX_CONNECTIONS", default_value_t = novadb_server::DEFAULT_GATEWAY_MAX_CONNECTIONS)]
     pub pg_max_connections: usize,
 
     /// Username for MySQL wire protocol authentication.
@@ -619,7 +619,7 @@ pub struct ServeArgs {
     pub mysql_password: Option<String>,
 
     /// Maximum number of concurrent MySQL client connections.
-    #[arg(long, env = "NOVADB_MYSQL_MAX_CONNECTIONS", default_value_t = novadb_mysql::DEFAULT_MAX_CONNECTIONS)]
+    #[arg(long, env = "NOVADB_MYSQL_MAX_CONNECTIONS", default_value_t = novadb_server::DEFAULT_GATEWAY_MAX_CONNECTIONS)]
     pub mysql_max_connections: usize,
 
     /// Browser origin allowed to call the HTTP API via CORS (repeatable; `*` allows any).
@@ -637,6 +637,10 @@ pub struct ServeArgs {
     /// Allow listening on non-loopback addresses without a bearer token / PG / MySQL password.
     #[arg(long, env = "NOVADB_ALLOW_INSECURE")]
     pub allow_insecure: bool,
+
+    /// Capacity tuning (read pool, limits, group commit, runtime threads), shared with `novadbd`.
+    #[command(flatten)]
+    pub tuning: Box<novadb_server::TuningArgs>,
 }
 
 /// HTTP configuration plus the optional wire gateway configurations.
@@ -713,9 +717,36 @@ async fn serve(args: &ServeArgs) -> Result<()> {
         );
     }
 
-    novadb_server::serve_with_gateways(config, pg_config, mysql_config)
-        .await
+    let tuning = args.tuning.to_tuning();
+    tuning
+        .validate()
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    for (name, value) in [
+        ("--pg-max-connections", args.pg_max_connections),
+        ("--mysql-max-connections", args.mysql_max_connections),
+    ] {
+        anyhow::ensure!(
+            (1..=novadb_server::HARD_MAX_GATEWAY_CONNECTIONS).contains(&value),
+            "{name} must be between 1 and {}",
+            novadb_server::HARD_MAX_GATEWAY_CONNECTIONS
+        );
+    }
+    // The server runs on a runtime built from --worker-threads /
+    // --max-blocking-threads (the CLI's own runtime has default sizes).
+    let sessions = usize::from(args.pg_listen.is_some()) * args.pg_max_connections
+        + usize::from(args.mysql_listen.is_some()) * args.mysql_max_connections;
+    let runtime = args.tuning.build_runtime(sessions)?;
+    tokio::task::spawn_blocking(move || {
+        runtime.block_on(novadb_server::serve_with_gateways_tuned(
+            config,
+            pg_config,
+            mysql_config,
+            tuning,
+        ))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     Ok(())
 }
 
@@ -753,6 +784,73 @@ mod serve_tests {
         let (config, pg_config, _) = serve_configs(&args).unwrap();
         assert!(config.allow_insecure);
         assert!(pg_config.unwrap().allow_insecure);
+    }
+
+    #[test]
+    fn serve_exposes_capacity_tunables() {
+        let args = parse_serve(&[
+            "--read-pool-size",
+            "3",
+            "--max-sql-bytes",
+            "1000",
+            "--max-connections",
+            "0",
+            "--no-group-commit",
+            "--group-commit-max-batch",
+            "9",
+            "--group-commit-max-wait-us",
+            "7",
+            "--lookaside-kib",
+            "64",
+            "--max-blocking-threads",
+            "99",
+            "--pg-max-connections",
+            "5000",
+        ]);
+        let tuning = args.tuning.to_tuning();
+        assert_eq!(tuning.read_pool_size, 3);
+        assert_eq!(tuning.max_sql_bytes, 1000);
+        assert_eq!(tuning.max_connections, 0);
+        assert!(!tuning.group_commit.enabled);
+        assert_eq!(tuning.group_commit.max_batch, 9);
+        assert_eq!(
+            tuning.group_commit.max_wait,
+            std::time::Duration::from_micros(7)
+        );
+        assert_eq!(tuning.lookaside_kib, Some(64));
+        assert_eq!(args.tuning.blocking_threads(0), 99);
+        assert_eq!(args.pg_max_connections, 5000);
+
+        let defaults = parse_serve(&[]).tuning.to_tuning();
+        assert_eq!(defaults.max_sql_bytes, 16 * 1024 * 1024);
+        assert!(defaults.group_commit.enabled);
+    }
+
+    #[test]
+    fn serve_help_lists_capacity_tunables() {
+        let mut help = Vec::new();
+        let mut command = <Cli as clap::CommandFactory>::command();
+        command
+            .find_subcommand_mut("serve")
+            .unwrap()
+            .write_long_help(&mut help)
+            .unwrap();
+        let help = String::from_utf8(help).unwrap();
+        for flag in [
+            "--read-pool-size",
+            "--max-sql-bytes",
+            "--max-request-body-bytes",
+            "--max-connections",
+            "--listen-backlog",
+            "--max-result-rows",
+            "--group-commit-max-batch",
+            "--no-group-commit",
+            "--lookaside-kib",
+            "--worker-threads",
+            "--max-blocking-threads",
+        ] {
+            assert!(help.contains(flag), "{flag} missing from `serve --help`");
+        }
     }
 
     #[test]

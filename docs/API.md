@@ -27,7 +27,7 @@ The wire protocol gateway enables any standard PostgreSQL client, CLI tool (`psq
 | Flag | Env | Default | Meaning |
 |------|-----|---------|---------|
 | `--pg-auth-method` | `NOVADB_PG_AUTH_METHOD` | `scram-sha-256` | `scram-sha-256`, `md5`, or `password` (cleartext). Used when a password is set. |
-| `--pg-max-connections` | `NOVADB_PG_MAX_CONNECTIONS` | `100` | Extra clients are rejected with SQLSTATE `53300`. |
+| `--pg-max-connections` | `NOVADB_PG_MAX_CONNECTIONS` | `1000` (max `100000`) | Extra clients are rejected with SQLSTATE `53300`. |
 | `--allow-insecure` | `NOVADB_ALLOW_INSECURE` | off | Required to listen on a non-loopback address without `--pg-password`. |
 
 Passwords and usernames are compared in constant time. Clients must finish startup and authentication within 30 seconds.
@@ -74,7 +74,7 @@ Content-Type: application/json
 ```json
 {
   "status": "ok",
-  "version": "0.2.0"
+  "version": "0.2.1"
 }
 ```
 
@@ -87,7 +87,7 @@ Content-Type: application/json
 * **Execute DDL / DML Batch**:
   * `POST /v1/databases/:id/sql/execute` (alias `POST /v1/admin/databases/:id/execute`)
   * Body: `{"sql": "CREATE TABLE users(id TEXT PRIMARY KEY, name TEXT); INSERT INTO users VALUES ('u1', 'Alice');"}`
-  * Response: `{"ok": true}`. The batch runs in one transaction; affected-row counts and result rows (`RETURNING`, `OUTPUT`, `SELECT`) are not reported. Plain `BEGIN`/`COMMIT`/`ROLLBACK` are rejected; a T-SQL `BEGIN TRAN ... COMMIT/ROLLBACK` pair inside the batch works, and an unclosed `BEGIN TRAN`, a bare `COMMIT`/`ROLLBACK`, or any failing statement rolls back the whole request (HTTP `400`). Batches may use T-SQL variables and control flow (`DECLARE`, `IF`, `WHILE`, `TRY/CATCH`, `THROW`, cursors, `EXEC (...)`); unsupported features return `400` with an `unsupported SQL: ...` message.
+  * Response: `{"ok": true, "changes": N, "last_insert_rowid": R}` (counters of the request's last write statement). The batch runs atomically (its own savepoint; concurrent small requests may share one commit, see DEPLOYMENT.md 5.0); result rows (`RETURNING`, `OUTPUT`, `SELECT`) are not reported. SQL text up to `--max-sql-bytes` (16 MiB) is accepted; bodies up to `--max-request-body-bytes` (64 MiB). Plain `BEGIN`/`COMMIT`/`ROLLBACK` are rejected; a T-SQL `BEGIN TRAN ... COMMIT/ROLLBACK` pair inside the batch works, and an unclosed `BEGIN TRAN`, a bare `COMMIT`/`ROLLBACK`, or any failing statement rolls back the whole request (HTTP `400`). Batches may use T-SQL variables and control flow (`DECLARE`, `IF`, `WHILE`, `TRY/CATCH`, `THROW`, cursors, `EXEC (...)`); unsupported features return `400` with an `unsupported SQL: ...` message.
 
 * **Read-Only Query**:
   * `POST /v1/databases/:id/sql/query` (alias `POST /v1/admin/databases/:id/query`), exactly one read-only statement

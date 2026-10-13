@@ -6,7 +6,9 @@ use std::{
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
+    pin::Pin,
     sync::Arc,
+    task::{Context as TaskContext, Poll},
     time::Duration,
 };
 
@@ -19,31 +21,229 @@ use axum::{
 };
 use novadb_core::protocol::{HealthResponse, PullResponse, PushRequest, PushResponse};
 use novadb_core::{
-    IntegrityReport, Migration, MigrationReport, NovaDb, QueryResult, WalCheckpointReport,
+    DialectMode, IntegrityReport, Migration, MigrationReport, NovaDb, NovaDbPool, QueryResult,
+    TypedQueryResult, WalCheckpointReport,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-use tokio::net::TcpListener;
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::{TcpListener, TcpSocket, TcpStream},
+    sync::{OwnedSemaphorePermit, Semaphore},
+};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     timeout::TimeoutLayer,
     trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
 };
 
-pub use catalog::{BackupReport, CatalogError, DatabaseCatalog, DatabaseMetadata};
+pub use catalog::{
+    BackupReport, CatalogError, DatabaseCatalog, DatabaseMetadata, ManagedDatabase,
+    default_read_pool_size,
+};
 pub use store::{RelayStore, StoreError};
 
 pub const DEFAULT_MAX_PUSH_BATCH_SIZE: usize = 1_000;
 pub const DEFAULT_PULL_LIMIT: usize = 100;
 pub const DEFAULT_MAX_PULL_LIMIT: usize = 1_000;
 pub const MAX_DATABASE_ID_LENGTH: usize = 128;
-pub const MAX_SQL_BYTES: usize = 256 * 1_024;
+/// Default maximum size of one SQL text accepted over HTTP (`--max-sql-bytes`).
+pub const MAX_SQL_BYTES: usize = 16 * 1_024 * 1_024;
 pub const MAX_CHANGE_BYTES: usize = novadb_core::MAX_CHANGE_BYTES;
-pub const MAX_REQUEST_BODY_BYTES: usize = 4 * 1_024 * 1_024;
+/// Default maximum HTTP request body (`--max-request-body-bytes`).
+pub const MAX_REQUEST_BODY_BYTES: usize = 64 * 1_024 * 1_024;
+/// Default maximum number of simultaneously open HTTP connections.
+pub const DEFAULT_HTTP_MAX_CONNECTIONS: usize = 10_000;
+/// Default `listen(2)` backlog of every listener.
+pub const DEFAULT_LISTEN_BACKLOG: u32 = 4_096;
+/// Default maximum rows one `/query` may return before failing with `413`.
+pub const DEFAULT_MAX_RESULT_ROWS: usize = 1_000_000;
+/// Default approximate maximum bytes one `/query` result may hold.
+pub const DEFAULT_MAX_RESULT_BYTES: usize = 512 * 1_024 * 1_024;
+/// Default PostgreSQL / MySQL gateway connection cap used by `novadbd`.
+pub const DEFAULT_GATEWAY_MAX_CONNECTIONS: usize = 1_000;
+/// Highest gateway connection cap `novadbd` accepts.
+pub const HARD_MAX_GATEWAY_CONNECTIONS: usize = 100_000;
 pub const MAX_MIGRATIONS: usize = 1_000;
 pub const MAX_MIGRATION_NAME_BYTES: usize = 512;
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// Capacity and throughput tuning for the multi-user case. Kept separate from
+/// [`ServerConfig`] so existing struct-literal users keep compiling; every
+/// field has a generous default.
+#[derive(Debug, Clone)]
+pub struct ServerTuning {
+    /// Read connections per database (opened lazily). Default: CPU count.
+    pub read_pool_size: usize,
+    /// Maximum SQL text size for `/sql/execute` and `/sql/query`.
+    pub max_sql_bytes: usize,
+    /// Maximum HTTP request body size.
+    pub max_request_body_bytes: usize,
+    /// Maximum simultaneously open HTTP connections (`0` = unlimited).
+    /// Connections beyond the cap wait in the kernel accept backlog.
+    pub max_connections: usize,
+    /// `listen(2)` backlog of the HTTP, PostgreSQL and MySQL listeners.
+    pub listen_backlog: u32,
+    /// Maximum rows a `/query` response may contain; larger results fail with
+    /// `413` instead of being truncated.
+    pub max_result_rows: usize,
+    /// Approximate maximum bytes of a `/query` response.
+    pub max_result_bytes: usize,
+    /// Group-commit behaviour for autocommit writes (process-wide).
+    pub group_commit: novadb_core::GroupCommitConfig,
+    /// Fixed SQLite lookaside memory per connection in KiB; `None` scales
+    /// automatically with the number of open connections.
+    pub lookaside_kib: Option<usize>,
+}
+
+impl Default for ServerTuning {
+    fn default() -> Self {
+        Self {
+            read_pool_size: default_read_pool_size(),
+            max_sql_bytes: MAX_SQL_BYTES,
+            max_request_body_bytes: MAX_REQUEST_BODY_BYTES,
+            max_connections: DEFAULT_HTTP_MAX_CONNECTIONS,
+            listen_backlog: DEFAULT_LISTEN_BACKLOG,
+            max_result_rows: DEFAULT_MAX_RESULT_ROWS,
+            max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
+            group_commit: novadb_core::GroupCommitConfig::default(),
+            lookaside_kib: None,
+        }
+    }
+}
+
+impl ServerTuning {
+    /// Checks the values and installs the process-wide settings
+    /// (group commit, lookaside).
+    pub fn apply_process_settings(&self) -> Result<(), ConfigError> {
+        self.validate()?;
+        novadb_core::set_group_commit(self.group_commit);
+        novadb_core::set_lookaside_kib(self.lookaside_kib);
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.read_pool_size == 0 {
+            return Err(ConfigError::ZeroTuning("read_pool_size"));
+        }
+        if self.max_sql_bytes == 0 {
+            return Err(ConfigError::ZeroTuning("max_sql_bytes"));
+        }
+        if self.max_request_body_bytes == 0 {
+            return Err(ConfigError::ZeroTuning("max_request_body_bytes"));
+        }
+        if self.max_result_rows == 0 {
+            return Err(ConfigError::ZeroTuning("max_result_rows"));
+        }
+        if self.max_result_bytes == 0 {
+            return Err(ConfigError::ZeroTuning("max_result_bytes"));
+        }
+        if self.group_commit.max_batch == 0 {
+            return Err(ConfigError::ZeroTuning("group_commit.max_batch"));
+        }
+        Ok(())
+    }
+}
+
+/// Command-line tunables shared by `novadbd` and `novadb serve`
+/// (`#[command(flatten)]` them into a clap parser).
+#[derive(Debug, Clone, clap::Args)]
+pub struct TuningArgs {
+    /// Parallel read connections per database, opened lazily (default: CPU count).
+    #[arg(long, env = "NOVADB_READ_POOL_SIZE")]
+    pub read_pool_size: Option<usize>,
+
+    /// Largest SQL text accepted by HTTP /sql/execute, /sql/query and migrations.
+    #[arg(long, env = "NOVADB_MAX_SQL_BYTES", default_value_t = MAX_SQL_BYTES)]
+    pub max_sql_bytes: usize,
+
+    /// Largest HTTP request body.
+    #[arg(long, env = "NOVADB_MAX_REQUEST_BODY_BYTES", default_value_t = MAX_REQUEST_BODY_BYTES)]
+    pub max_request_body_bytes: usize,
+
+    /// Maximum simultaneous HTTP connections (0 = unlimited); surplus connections wait in the accept backlog.
+    #[arg(long, env = "NOVADB_MAX_CONNECTIONS", default_value_t = DEFAULT_HTTP_MAX_CONNECTIONS)]
+    pub max_connections: usize,
+
+    /// listen(2) backlog of the HTTP, PostgreSQL and MySQL listeners.
+    #[arg(long, env = "NOVADB_LISTEN_BACKLOG", default_value_t = DEFAULT_LISTEN_BACKLOG)]
+    pub listen_backlog: u32,
+
+    /// Rows one HTTP /sql/query may return before failing with 413 (never truncates silently).
+    #[arg(long, env = "NOVADB_MAX_RESULT_ROWS", default_value_t = DEFAULT_MAX_RESULT_ROWS)]
+    pub max_result_rows: usize,
+
+    /// Approximate bytes one HTTP /sql/query result may hold before failing with 413.
+    #[arg(long, env = "NOVADB_MAX_RESULT_BYTES", default_value_t = DEFAULT_MAX_RESULT_BYTES)]
+    pub max_result_bytes: usize,
+
+    /// Most autocommit writes committed together in one transaction (group commit).
+    #[arg(long, env = "NOVADB_GROUP_COMMIT_MAX_BATCH", default_value_t = novadb_core::DEFAULT_GROUP_COMMIT_MAX_BATCH)]
+    pub group_commit_max_batch: usize,
+
+    /// Longest the committer waits for more writers to join a batch, in microseconds.
+    #[arg(long, env = "NOVADB_GROUP_COMMIT_MAX_WAIT_US", default_value_t = 200)]
+    pub group_commit_max_wait_us: u64,
+
+    /// Disable group commit: every autocommit write gets its own transaction.
+    #[arg(long, env = "NOVADB_NO_GROUP_COMMIT")]
+    pub no_group_commit: bool,
+
+    /// Fixed SQLite lookaside memory per connection in KiB (default: scales down as connections grow).
+    #[arg(long, env = "NOVADB_LOOKASIDE_KIB")]
+    pub lookaside_kib: Option<usize>,
+
+    /// Tokio worker threads (default: CPU count).
+    #[arg(long, env = "NOVADB_WORKER_THREADS")]
+    pub worker_threads: Option<usize>,
+
+    /// Tokio blocking-pool threads for database calls of PostgreSQL/MySQL sessions
+    /// (default: at least 4096 and gateway connection caps + 512, so sessions can never starve each other).
+    #[arg(long, env = "NOVADB_MAX_BLOCKING_THREADS")]
+    pub max_blocking_threads: Option<usize>,
+}
+
+impl TuningArgs {
+    /// Converts the parsed flags into a [`ServerTuning`].
+    #[must_use]
+    pub fn to_tuning(&self) -> ServerTuning {
+        ServerTuning {
+            read_pool_size: self.read_pool_size.unwrap_or_else(default_read_pool_size),
+            max_sql_bytes: self.max_sql_bytes,
+            max_request_body_bytes: self.max_request_body_bytes,
+            max_connections: self.max_connections,
+            listen_backlog: self.listen_backlog,
+            max_result_rows: self.max_result_rows,
+            max_result_bytes: self.max_result_bytes,
+            group_commit: novadb_core::GroupCommitConfig {
+                enabled: !self.no_group_commit,
+                max_batch: self.group_commit_max_batch,
+                max_wait: Duration::from_micros(self.group_commit_max_wait_us),
+            },
+            lookaside_kib: self.lookaside_kib,
+        }
+    }
+
+    /// Blocking-pool size: the flag, or at least 4096 and `gateway_sessions + 512`.
+    #[must_use]
+    pub fn blocking_threads(&self, gateway_sessions: usize) -> usize {
+        self.max_blocking_threads
+            .unwrap_or_else(|| (gateway_sessions + 512).max(4_096))
+    }
+
+    /// Builds the tokio runtime these flags describe.
+    pub fn build_runtime(&self, gateway_sessions: usize) -> io::Result<tokio::runtime::Runtime> {
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder
+            .enable_all()
+            .max_blocking_threads(self.blocking_threads(gateway_sessions).max(1));
+        if let Some(workers) = self.worker_threads {
+            builder.worker_threads(workers.max(1));
+        }
+        builder.build()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -179,6 +379,8 @@ pub enum ConfigError {
     EmptyDataDirectory,
     #[error("request_timeout must be greater than zero")]
     ZeroRequestTimeout,
+    #[error("tuning value `{0}` must be greater than zero")]
+    ZeroTuning(&'static str),
     #[error(
         "invalid CORS origin `{0}`: use `*` or `scheme://host[:port]` without a path or \
          trailing slash"
@@ -221,14 +423,31 @@ struct AppState {
     max_push_batch_size: usize,
     default_pull_limit: usize,
     max_pull_limit: usize,
+    max_sql_bytes: usize,
+    result_limit: novadb_core::ResultLimit,
 }
 
 /// Creates the complete HTTP router and database catalog around an existing
 /// relay store.
 pub fn router(store: Arc<RelayStore>, config: &ServerConfig) -> Result<Router, ServerError> {
+    router_with_tuning(store, config, &ServerTuning::default())
+}
+
+/// [`router`] with explicit [`ServerTuning`].
+pub fn router_with_tuning(
+    store: Arc<RelayStore>,
+    config: &ServerConfig,
+    tuning: &ServerTuning,
+) -> Result<Router, ServerError> {
     config.validate()?;
-    let catalog = Arc::new(DatabaseCatalog::new(&config.data_dir)?);
-    Ok(router_with_catalog(store, catalog, config)?)
+    tuning.validate()?;
+    let catalog = Arc::new(DatabaseCatalog::with_read_pool_size(
+        &config.data_dir,
+        tuning.read_pool_size,
+    )?);
+    Ok(router_with_catalog_and_tuning(
+        store, catalog, config, tuning,
+    )?)
 }
 
 /// Creates the HTTP router around caller-provided relay and database stores.
@@ -238,7 +457,18 @@ pub fn router_with_catalog(
     catalog: Arc<DatabaseCatalog>,
     config: &ServerConfig,
 ) -> Result<Router, ConfigError> {
+    router_with_catalog_and_tuning(store, catalog, config, &ServerTuning::default())
+}
+
+/// [`router_with_catalog`] with explicit [`ServerTuning`].
+pub fn router_with_catalog_and_tuning(
+    store: Arc<RelayStore>,
+    catalog: Arc<DatabaseCatalog>,
+    config: &ServerConfig,
+    tuning: &ServerTuning,
+) -> Result<Router, ConfigError> {
     config.validate()?;
+    tuning.validate()?;
     let cors = config.cors_layer()?;
     let state = Arc::new(AppState {
         store,
@@ -247,6 +477,11 @@ pub fn router_with_catalog(
         max_push_batch_size: config.max_push_batch_size,
         default_pull_limit: config.default_pull_limit,
         max_pull_limit: config.max_pull_limit,
+        max_sql_bytes: tuning.max_sql_bytes,
+        result_limit: novadb_core::ResultLimit {
+            max_rows: tuning.max_result_rows,
+            max_bytes: tuning.max_result_bytes,
+        },
     });
 
     let router = Router::new()
@@ -283,7 +518,7 @@ pub fn router_with_catalog(
         )
         .route("/v1/databases/{database}/maintenance/backup", post(backup))
         .route("/v1/databases/{database}/migrations", post(run_migrations))
-        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        .layer(DefaultBodyLimit::max(tuning.max_request_body_bytes))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             config.request_timeout,
@@ -335,7 +570,19 @@ pub async fn serve_with_gateways(
     pg_config: Option<novadb_wire::PgConfig>,
     mysql_config: Option<novadb_mysql::MySqlConfig>,
 ) -> Result<(), ServerError> {
+    serve_with_gateways_tuned(config, pg_config, mysql_config, ServerTuning::default()).await
+}
+
+/// [`serve_with_gateways`] with explicit [`ServerTuning`] (read pool size,
+/// request limits, connection cap, listen backlog, group commit, lookaside).
+pub async fn serve_with_gateways_tuned(
+    config: ServerConfig,
+    pg_config: Option<novadb_wire::PgConfig>,
+    mysql_config: Option<novadb_mysql::MySqlConfig>,
+    tuning: ServerTuning,
+) -> Result<(), ServerError> {
     config.validate()?;
+    tuning.apply_process_settings()?;
     if let Some(pg_config) = &pg_config {
         pg_config.validate()?;
     }
@@ -343,13 +590,15 @@ pub async fn serve_with_gateways(
         mysql_config.validate()?;
     }
     let store = Arc::new(RelayStore::open(&config.database_path)?);
-    let app = router(store, &config)?;
-    let listener = TcpListener::bind(config.listen_addr).await?;
+    let app = router_with_tuning(store, &config, &tuning)?;
+    let listener = bind_listener(config.listen_addr, tuning.listen_backlog)?;
+    // Pay the one-time SQL normalizer start-up cost (~1 s) before serving, so
+    // the first client request after boot is not the one that stalls.
+    let warm = tokio::task::spawn_blocking(novadb_core::warm_up);
 
     let pg_task = match pg_config {
         Some(pg_config) => {
-            let pg_listener = TcpListener::bind(pg_config.listen_addr)
-                .await
+            let pg_listener = bind_listener(pg_config.listen_addr, tuning.listen_backlog)
                 .map_err(ServerError::Pg)?;
             let database_path = PathBuf::from(&pg_config.database_path);
             let database = tokio::task::spawn_blocking(move || NovaDb::open(database_path))
@@ -368,8 +617,7 @@ pub async fn serve_with_gateways(
 
     let mysql_task = match mysql_config {
         Some(mysql_config) => {
-            let mysql_listener = TcpListener::bind(mysql_config.listen_addr)
-                .await
+            let mysql_listener = bind_listener(mysql_config.listen_addr, tuning.listen_backlog)
                 .map_err(ServerError::MySql)?;
             novadb_mysql::prepare_default_database(&mysql_config)
                 .await
@@ -385,7 +633,8 @@ pub async fn serve_with_gateways(
         None => None,
     };
 
-    let result = serve_with_shutdown(listener, app, async {
+    let _ = warm.await;
+    let result = serve_limited(listener, app, tuning.max_connections, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await;
@@ -399,6 +648,136 @@ pub async fn serve_with_gateways(
     Ok(())
 }
 
+/// Binds `addr` with address reuse, TCP keep-alive and an explicit `listen(2)`
+/// backlog (tokio's default of 1024 drops bursts of thousands of clients that
+/// connect at once).
+pub fn bind_listener(addr: SocketAddr, backlog: u32) -> io::Result<TcpListener> {
+    let socket = if addr.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+    socket.set_reuseaddr(true)?;
+    socket.set_keepalive(true)?;
+    socket.bind(addr)?;
+    socket.listen(backlog.max(1))
+}
+
+/// Listener that caps simultaneously open connections: `accept` waits for a
+/// free slot, so the surplus queues in the kernel backlog instead of being
+/// refused, and every accepted socket gets `TCP_NODELAY`.
+struct LimitedListener {
+    inner: TcpListener,
+    slots: Arc<Semaphore>,
+}
+
+/// An accepted connection holding one slot of the cap until it is dropped.
+struct LimitedIo {
+    stream: TcpStream,
+    _slot: OwnedSemaphorePermit,
+}
+
+impl AsyncRead for LimitedIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for LimitedIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+}
+
+impl axum::serve::Listener for LimitedListener {
+    type Io = LimitedIo;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let Ok(slot) = Arc::clone(&self.slots).acquire_owned().await else {
+                // The semaphore is never closed; park instead of spinning.
+                std::future::pending::<()>().await;
+                continue;
+            };
+            match self.inner.accept().await {
+                Ok((stream, addr)) => {
+                    let _ = stream.set_nodelay(true);
+                    return (
+                        LimitedIo {
+                            stream,
+                            _slot: slot,
+                        },
+                        addr,
+                    );
+                }
+                Err(error) => {
+                    // Typically EMFILE / ENFILE: back off instead of spinning.
+                    tracing::warn!(%error, "HTTP accept failed");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.inner.local_addr()
+    }
+}
+
+/// Serves `app` on `listener` with at most `max_connections` simultaneous
+/// connections (`0` = unlimited) until `shutdown` resolves.
+pub async fn serve_limited<F>(
+    listener: TcpListener,
+    app: Router,
+    max_connections: usize,
+    shutdown: F,
+) -> io::Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let permits = if max_connections == 0 {
+        Semaphore::MAX_PERMITS
+    } else {
+        max_connections.min(Semaphore::MAX_PERMITS)
+    };
+    let listener = LimitedListener {
+        inner: listener,
+        slots: Arc::new(Semaphore::new(permits)),
+    };
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await
+}
+
 /// Serves an already-built router until the supplied shutdown future resolves.
 /// This is useful for embedding `NovaDB` and for deterministic integration tests.
 pub async fn serve_with_shutdown<F>(
@@ -409,9 +788,7 @@ pub async fn serve_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await
+    serve_limited(listener, app, DEFAULT_HTTP_MAX_CONNECTIONS, shutdown).await
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -463,6 +840,46 @@ pub struct SqlRequest {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ExecuteResponse {
     pub ok: bool,
+    /// Rows changed by the last write statement of the request.
+    #[serde(default)]
+    pub changes: u64,
+    /// Rowid of the most recent `INSERT` of the request.
+    #[serde(default)]
+    pub last_insert_rowid: i64,
+}
+
+/// Looks up (or, once, opens) a database without blocking the async runtime
+/// on the hot path.
+async fn database_handle(
+    state: &AppState,
+    database: &str,
+) -> Result<Arc<ManagedDatabase>, ApiError> {
+    if let Some(handle) = state.catalog.cached(database) {
+        return Ok(handle);
+    }
+    let catalog = Arc::clone(&state.catalog);
+    let database = database.to_owned();
+    run_blocking(move || catalog.open_existing(&database).map_err(ApiError::from)).await
+}
+
+/// Runs a read on the database's reader pool. A permit per reader connection
+/// is taken asynchronously first, so a flood of reads queues in the async
+/// runtime instead of occupying (and exhausting) blocking-pool threads, and
+/// reads never wait behind queued writes.
+async fn read_blocking<T, F>(database: Arc<ManagedDatabase>, operation: F) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce(&NovaDbPool) -> Result<T, ApiError> + Send + 'static,
+{
+    let permit = Arc::clone(database.read_permits())
+        .acquire_owned()
+        .await
+        .map_err(|_| ApiError::internal("read pool is closed"))?;
+    run_blocking(move || {
+        let _permit = permit;
+        operation(database.pool())
+    })
+    .await
 }
 
 async fn sql_query(
@@ -472,12 +889,12 @@ async fn sql_query(
     Json(request): Json<SqlRequest>,
 ) -> Result<Json<QueryResult>, ApiError> {
     validate_database_id(&database)?;
-    validate_sql_body(&request.sql)?;
-    let catalog = Arc::clone(&state.catalog);
-    let result = run_blocking(move || {
-        let database = catalog.open_existing(&database)?;
-        database
-            .query(&request.sql)
+    validate_sql_body(&request.sql, state.max_sql_bytes)?;
+    let handle = database_handle(&state, &database).await?;
+    let limit = state.result_limit;
+    let result = read_blocking(handle, move |pool| {
+        pool.query_limited(&request.sql, DialectMode::TSql, limit)
+            .map(TypedQueryResult::into_query_result)
             .map_err(|error| ApiError::database(&error))
     })
     .await?;
@@ -491,16 +908,28 @@ async fn sql_execute(
     Json(request): Json<SqlRequest>,
 ) -> Result<Json<ExecuteResponse>, ApiError> {
     validate_database_id(&database)?;
-    validate_execute_sql(&request.sql)?;
-    let catalog = Arc::clone(&state.catalog);
-    run_blocking(move || {
-        let database = catalog.open_existing(&database)?;
-        database
-            .execute_batch(&request.sql)
-            .map_err(|error| ApiError::database(&error))
-    })
-    .await?;
-    Ok(Json(ExecuteResponse { ok: true }))
+    validate_execute_sql(&request.sql, state.max_sql_bytes)?;
+    let handle = database_handle(&state, &database).await?;
+    // Writes never occupy a blocking thread: the statement joins the
+    // database's group-commit queue and this task awaits the commit.
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    handle.writer().submit_write(
+        request.sql,
+        DialectMode::TSql,
+        false,
+        Box::new(move |result| {
+            let _ = sender.send(result);
+        }),
+    );
+    let outcome = receiver
+        .await
+        .map_err(|_| ApiError::internal("write queue stopped"))?
+        .map_err(|error| ApiError::database(&error))?;
+    Ok(Json(ExecuteResponse {
+        ok: true,
+        changes: outcome.stats.changes,
+        last_insert_rowid: outcome.stats.last_insert_rowid,
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -523,12 +952,8 @@ async fn schema(
     _authorized: Authorized,
 ) -> Result<Json<SchemaResponse>, ApiError> {
     validate_database_id(&database)?;
-    let catalog = Arc::clone(&state.catalog);
-    let response = run_blocking(move || {
-        let database = catalog.open_existing(&database)?;
-        load_schema(&database)
-    })
-    .await?;
+    let handle = database_handle(&state, &database).await?;
+    let response = read_blocking(handle, load_schema).await?;
     Ok(Json(response))
 }
 
@@ -538,10 +963,10 @@ async fn integrity_check(
     _authorized: Authorized,
 ) -> Result<Json<IntegrityReport>, ApiError> {
     validate_database_id(&database)?;
-    let catalog = Arc::clone(&state.catalog);
+    let handle = database_handle(&state, &database).await?;
     let report = run_blocking(move || {
-        let database = catalog.open_existing(&database)?;
-        database
+        handle
+            .writer()
             .integrity_check()
             .map_err(|error| ApiError::database(&error))
     })
@@ -555,10 +980,10 @@ async fn wal_checkpoint(
     _authorized: Authorized,
 ) -> Result<Json<WalCheckpointReport>, ApiError> {
     validate_database_id(&database)?;
-    let catalog = Arc::clone(&state.catalog);
+    let handle = database_handle(&state, &database).await?;
     let report = run_blocking(move || {
-        let database = catalog.open_existing(&database)?;
-        database
+        handle
+            .writer()
             .wal_checkpoint()
             .map_err(|error| ApiError::database(&error))
     })
@@ -599,16 +1024,16 @@ async fn run_migrations(
     Json(request): Json<MigrationRequest>,
 ) -> Result<Json<MigrationReport>, ApiError> {
     validate_database_id(&database)?;
-    validate_migration_request(&request)?;
-    let catalog = Arc::clone(&state.catalog);
+    validate_migration_request(&request, state.max_sql_bytes)?;
+    let handle = database_handle(&state, &database).await?;
     let report = run_blocking(move || {
-        let database = catalog.open_existing(&database)?;
         let migrations: Vec<_> = request
             .migrations
             .iter()
             .map(|migration| Migration::new(migration.version, &migration.name, &migration.sql))
             .collect();
-        database
+        handle
+            .writer()
             .run_migrations(&migrations)
             .map_err(|error| ApiError::database(&error))
     })
@@ -616,7 +1041,10 @@ async fn run_migrations(
     Ok(Json(report))
 }
 
-fn validate_migration_request(request: &MigrationRequest) -> Result<(), ApiError> {
+fn validate_migration_request(
+    request: &MigrationRequest,
+    max_sql_bytes: usize,
+) -> Result<(), ApiError> {
     if request.migrations.len() > MAX_MIGRATIONS {
         return Err(ApiError::bad_request(format!(
             "migration manifest exceeds the maximum of {MAX_MIGRATIONS} entries"
@@ -629,12 +1057,12 @@ fn validate_migration_request(request: &MigrationRequest) -> Result<(), ApiError
                 migration.version
             )));
         }
-        validate_execute_sql(&migration.sql)?;
+        validate_execute_sql(&migration.sql, max_sql_bytes)?;
     }
     Ok(())
 }
 
-fn load_schema(database: &NovaDb) -> Result<SchemaResponse, ApiError> {
+fn load_schema(database: &NovaDbPool) -> Result<SchemaResponse, ApiError> {
     let result = database
         .query(
             "SELECT type AS object_type, name, tbl_name AS table_name, sql \
@@ -673,10 +1101,10 @@ fn json_string<'a>(value: Option<&'a Value>, field: &str) -> Result<&'a str, Api
         .ok_or_else(|| ApiError::internal(format!("invalid schema field `{field}`")))
 }
 
-fn validate_sql_body(sql: &str) -> Result<&str, ApiError> {
-    if sql.len() > MAX_SQL_BYTES {
+fn validate_sql_body(sql: &str, max_bytes: usize) -> Result<&str, ApiError> {
+    if sql.len() > max_bytes {
         return Err(ApiError::bad_request(format!(
-            "SQL exceeds the maximum size of {MAX_SQL_BYTES} bytes"
+            "SQL exceeds the maximum size of {max_bytes} bytes (raise --max-sql-bytes)"
         )));
     }
     let trimmed = sql.trim();
@@ -686,8 +1114,8 @@ fn validate_sql_body(sql: &str) -> Result<&str, ApiError> {
     Ok(trimmed)
 }
 
-fn validate_execute_sql(sql: &str) -> Result<(), ApiError> {
-    validate_sql_body(sql)?;
+fn validate_execute_sql(sql: &str, max_bytes: usize) -> Result<(), ApiError> {
+    validate_sql_body(sql, max_bytes)?;
     if contains_sql_keyword(sql, &["attach", "detach", "vacuum"]) {
         return Err(ApiError::bad_request(
             "ATTACH, DETACH, and VACUUM are unavailable in managed SQL execution",
@@ -947,6 +1375,7 @@ impl ApiError {
         match error {
             novadb_core::Error::MigrationDrift { .. }
             | novadb_core::Error::BackupDestinationExists(_) => Self::conflict(error.to_string()),
+            novadb_core::Error::ResultTooLarge(_) => Self::payload_too_large(error.to_string()),
             _ => Self::bad_request(error.to_string()),
         }
     }
@@ -1105,6 +1534,189 @@ mod tests {
             )
             .await
             .unwrap()
+    }
+
+    fn tuned_router(tuning: &ServerTuning) -> (Router, TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = ServerConfig {
+            data_dir: directory.path().join("databases"),
+            ..ServerConfig::default()
+        };
+        let router = router_with_tuning(
+            Arc::new(RelayStore::open_in_memory().unwrap()),
+            &config,
+            tuning,
+        )
+        .unwrap();
+        (router, directory)
+    }
+
+    async fn create_db(app: &Router, name: &str) {
+        let created = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/v1/admin/databases/{name}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_http_writes_and_reads_are_exact_and_read_your_writes() {
+        let (app, _directory) = tuned_router(&ServerTuning {
+            read_pool_size: 4,
+            ..ServerTuning::default()
+        });
+        create_db(&app, "game").await;
+        let created = sql_response(
+            &app,
+            "game",
+            "execute",
+            "CREATE TABLE players(id INTEGER PRIMARY KEY, score INTEGER NOT NULL DEFAULT 0); \
+             INSERT INTO players(id) VALUES (1); \
+             CREATE TABLE log(id INTEGER PRIMARY KEY AUTOINCREMENT, player INTEGER, n INTEGER)",
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::OK);
+
+        let mut tasks = Vec::new();
+        for client in 0..40_i64 {
+            let app = app.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut last_seen = 0_i64;
+                for n in 0..15_i64 {
+                    let response = sql_response(
+                        &app,
+                        "game",
+                        "execute",
+                        "UPDATE players SET score = score + 1 WHERE id = 1",
+                    )
+                    .await;
+                    assert_eq!(response.status(), StatusCode::OK);
+                    let body = json_body(response).await;
+                    assert_eq!(body["changes"], 1);
+
+                    let inserted = sql_response(
+                        &app,
+                        "game",
+                        "execute",
+                        &format!("INSERT INTO log(player, n) VALUES ({client}, {n})"),
+                    )
+                    .await;
+                    let inserted = json_body(inserted).await;
+                    assert!(inserted["last_insert_rowid"].as_i64().unwrap() > 0);
+
+                    // read-your-writes: our own committed increments are visible,
+                    // and the shared counter never goes backwards for a reader.
+                    let read = sql_response(
+                        &app,
+                        "game",
+                        "query",
+                        "SELECT score FROM players WHERE id = 1",
+                    )
+                    .await;
+                    assert_eq!(read.status(), StatusCode::OK);
+                    let score = json_body(read).await["rows"][0]["score"].as_i64().unwrap();
+                    assert!(
+                        score > n,
+                        "own write not visible: score {score} after {n} writes"
+                    );
+                    assert!(score >= last_seen);
+                    last_seen = score;
+
+                    // a failing statement is isolated from everybody else's batch
+                    let bad = sql_response(
+                        &app,
+                        "game",
+                        "execute",
+                        "INSERT INTO missing_table VALUES (1)",
+                    )
+                    .await;
+                    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+                }
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let total = sql_response(
+            &app,
+            "game",
+            "query",
+            "SELECT score, (SELECT COUNT(*) FROM log) AS logged FROM players",
+        )
+        .await;
+        let total = json_body(total).await;
+        assert_eq!(total["rows"][0]["score"], 40 * 15);
+        assert_eq!(total["rows"][0]["logged"], 40 * 15);
+    }
+
+    #[tokio::test]
+    async fn sql_and_result_limits_are_configurable_and_never_truncate_silently() {
+        let (app, _directory) = tuned_router(&ServerTuning {
+            max_sql_bytes: 200,
+            max_result_rows: 5,
+            ..ServerTuning::default()
+        });
+        create_db(&app, "lim").await;
+        let big = format!("SELECT '{}'", "x".repeat(300));
+        let rejected = sql_response(&app, "lim", "query", &big).await;
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert!(text_body(rejected).await.contains("--max-sql-bytes"));
+
+        let ok = sql_response(
+            &app,
+            "lim",
+            "execute",
+            "CREATE TABLE t(id INTEGER PRIMARY KEY); INSERT INTO t(id) VALUES (1),(2),(3),(4),(5),(6)",
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK);
+        let too_many = sql_response(&app, "lim", "query", "SELECT id FROM t").await;
+        assert_eq!(too_many.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(text_body(too_many).await.contains("LIMIT"));
+        let paged = sql_response(
+            &app,
+            "lim",
+            "query",
+            "SELECT id FROM t ORDER BY id LIMIT 5 OFFSET 0",
+        )
+        .await;
+        assert_eq!(paged.status(), StatusCode::OK);
+        assert_eq!(json_body(paged).await["rows"].as_array().unwrap().len(), 5);
+
+        // defaults are generous: a 1 MiB statement is accepted
+        let (app, _directory) = tuned_router(&ServerTuning::default());
+        create_db(&app, "big").await;
+        let created = sql_response(&app, "big", "execute", "CREATE TABLE t(v TEXT)").await;
+        assert_eq!(created.status(), StatusCode::OK);
+        let large = format!("INSERT INTO t VALUES ('{}')", "y".repeat(1024 * 1024));
+        let inserted = sql_response(&app, "big", "execute", &large).await;
+        assert_eq!(inserted.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn tuning_validation_rejects_zero_values() {
+        for tuning in [
+            ServerTuning {
+                read_pool_size: 0,
+                ..ServerTuning::default()
+            },
+            ServerTuning {
+                max_sql_bytes: 0,
+                ..ServerTuning::default()
+            },
+            ServerTuning {
+                max_result_rows: 0,
+                ..ServerTuning::default()
+            },
+        ] {
+            assert!(tuning.validate().is_err());
+        }
+        assert!(ServerTuning::default().validate().is_ok());
     }
 
     #[tokio::test]

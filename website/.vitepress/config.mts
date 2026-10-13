@@ -38,7 +38,7 @@ export default defineConfig({
       { text: 'Deploy', link: '/deployment/binary-systemd', activeMatch: '/deployment/' },
       { text: 'Reference', link: '/reference/sql-dialect', activeMatch: '/reference/' },
       {
-        text: 'v0.2.0',
+        text: 'v0.2.1',
         items: [
           { text: 'Changelog', link: `${repo}/blob/master/CHANGELOG.md` },
           { text: 'Releases', link: `${repo}/releases` },
@@ -66,6 +66,7 @@ export default defineConfig({
             { text: 'Vector search', link: '/guides/vector-search' },
             { text: 'Authentication and RBAC', link: '/guides/rbac' },
             { text: 'Backups and recovery', link: '/guides/backups' },
+            { text: 'Game and multi-user servers', link: '/guides/game-servers' },
           ],
         },
         {

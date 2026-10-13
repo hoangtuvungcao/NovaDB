@@ -56,9 +56,9 @@ Other hardening flags (identical for `novadbd` and `novadb serve`):
 * `--cors-origin <ORIGIN>` (repeatable, or `NOVADB_CORS_ORIGINS` comma-separated): allow browser apps on those origins; `*` allows any. CORS is off by default.
 * `--request-timeout-secs <N>` (default `30`): HTTP requests exceeding it receive `408`.
 * `--pg-auth-method scram-sha-256|md5|password` (default `scram-sha-256`).
-* `--pg-max-connections <N>` (default `100`): further PostgreSQL clients are rejected with SQLSTATE `53300`.
+* `--pg-max-connections <N>` (`novadbd` default `1000`, max `100000`): further PostgreSQL clients are rejected with SQLSTATE `53300`.
 * `--mysql-listen <ADDR>` (conventionally port `3306`): enables the MySQL wire gateway ([MYSQL.md](MYSQL.md));
-  `--mysql-user` / `--mysql-password` set credentials and `--mysql-max-connections <N>` (default `100`) caps
+  `--mysql-user` / `--mysql-password` set credentials and `--mysql-max-connections <N>` (`novadbd` default `1000`, max `100000`) caps
   clients (extra ones receive MySQL error `1040`). The gateway runs as an independent task: if it fails, the
   HTTP API keeps serving. It has no TLS; terminate TLS in a proxy for remote access.
 
@@ -157,6 +157,28 @@ sudo systemctl start novadb
 ---
 
 ## 5. Performance Optimization & Tuning
+
+### 5.0 Large multi-user servers (`novadbd`)
+SQLite allows exactly one writer per database file; everything else is parallel. HTTP reads use a per-database pool of
+`query_only` WAL readers; autocommit writes from many clients are group-committed (several statements share one
+transaction, each keeps its own result/error). Flags (env in parentheses, `NOVADB_` prefix):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--read-pool-size` (`READ_POOL_SIZE`) | CPU count | Reader connections per database, opened lazily. |
+| `--no-group-commit` / `--group-commit-max-batch` / `--group-commit-max-wait-us` | on / 128 / 200 | Group commit of concurrent autocommit writes (HTTP `/sql/execute`, PG/MySQL autocommit). Explicit transactions, DDL, temp tables and sessions with `FOREIGN_KEY_CHECKS=0` bypass it. |
+| `--max-sql-bytes` | 16 MiB | Largest SQL text for `/sql/execute`, `/sql/query`, migrations. |
+| `--max-request-body-bytes` | 64 MiB | Largest HTTP body. |
+| `--max-connections` | 10000 (`0` = unlimited) | Open HTTP connections; the surplus waits in the accept backlog. |
+| `--listen-backlog` | 4096 | `listen(2)` backlog for HTTP/PG/MySQL (also bounded by `net.core.somaxconn`). |
+| `--max-result-rows` / `--max-result-bytes` | 1,000,000 / 512 MiB | `/sql/query` fails with `413` instead of truncating; page with `LIMIT`/`OFFSET` or keyset (`WHERE id > ? ORDER BY id LIMIT n`). |
+| `--pg-max-connections` / `--mysql-max-connections` | 1000 (max 100000) | Gateway sessions; each is one SQLite connection. |
+| `--lookaside-kib` | automatic | Per-connection SQLite lookaside memory. Automatic: 600 KiB for the first 64 connections, then 150 KiB (75 KiB beyond 4096); the page cache shrinks the same way. |
+| `--worker-threads` / `--max-blocking-threads` | CPU count / max(4096, gateway caps + 512) | Tokio runtime. Gateway sessions run DB calls on the blocking pool; it is sized so waiting writers can never starve readers. |
+
+Raise the file-descriptor limit (`ulimit -n` / systemd `LimitNOFILE=`) to at least 2x the expected connections.
+`/sql/execute` responses now also carry `changes` and `last_insert_rowid` of the request's last statement.
+
 
 ### 5.1 Memory & WAL Settings
 NovaDB uses Write-Ahead Logging (WAL) by default. For high throughput:

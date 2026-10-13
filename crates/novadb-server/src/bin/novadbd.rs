@@ -49,8 +49,8 @@ struct Args {
     #[arg(long, env = "NOVADB_PG_AUTH_METHOD", default_value = "scram-sha-256")]
     pg_auth_method: PgAuthMethod,
 
-    /// Maximum number of concurrent PostgreSQL client connections.
-    #[arg(long, env = "NOVADB_PG_MAX_CONNECTIONS", default_value_t = novadb_wire::DEFAULT_MAX_CONNECTIONS)]
+    /// Maximum number of concurrent PostgreSQL client connections (1-100000).
+    #[arg(long, env = "NOVADB_PG_MAX_CONNECTIONS", default_value_t = novadb_server::DEFAULT_GATEWAY_MAX_CONNECTIONS)]
     pg_max_connections: usize,
 
     /// Username for MySQL wire protocol authentication.
@@ -61,8 +61,8 @@ struct Args {
     #[arg(long, env = "NOVADB_MYSQL_PASSWORD")]
     mysql_password: Option<String>,
 
-    /// Maximum number of concurrent MySQL client connections.
-    #[arg(long, env = "NOVADB_MYSQL_MAX_CONNECTIONS", default_value_t = novadb_mysql::DEFAULT_MAX_CONNECTIONS)]
+    /// Maximum number of concurrent MySQL client connections (1-100000).
+    #[arg(long, env = "NOVADB_MYSQL_MAX_CONNECTIONS", default_value_t = novadb_server::DEFAULT_GATEWAY_MAX_CONNECTIONS)]
     mysql_max_connections: usize,
 
     /// Browser origin allowed to call the HTTP API via CORS (repeatable; `*` allows any).
@@ -89,10 +89,24 @@ struct Args {
 
     #[arg(long, default_value_t = novadb_server::DEFAULT_MAX_PULL_LIMIT)]
     max_pull_limit: usize,
+
+    #[command(flatten)]
+    tuning: novadb_server::TuningArgs,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn gateway_sessions(args: &Args) -> usize {
+    usize::from(args.pg_listen.is_some()) * args.pg_max_connections
+        + usize::from(args.mysql_listen.is_some()) * args.mysql_max_connections
+}
+
+fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+    let runtime = args.tuning.build_runtime(gateway_sessions(&args))?;
+    runtime.block_on(run(args))
+}
+
+async fn run(args: Args) -> anyhow::Result<()> {
+    let blocking = args.tuning.blocking_threads(gateway_sessions(&args));
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
             EnvFilter::new(
@@ -102,7 +116,6 @@ async fn main() -> anyhow::Result<()> {
         .try_init()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
-    let args = Args::parse();
     let bearer_token = args
         .bearer_token
         .or_else(|| env::var("NOVADB_BEARER_TOKEN").ok());
@@ -181,7 +194,29 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    novadb_server::serve_with_gateways(config, pg_config, mysql_config).await?;
+    let tuning = args.tuning.to_tuning();
+    tuning.validate()?;
+    for (name, value) in [
+        ("--pg-max-connections", args.pg_max_connections),
+        ("--mysql-max-connections", args.mysql_max_connections),
+    ] {
+        anyhow::ensure!(
+            (1..=novadb_server::HARD_MAX_GATEWAY_CONNECTIONS).contains(&value),
+            "{name} must be between 1 and {}",
+            novadb_server::HARD_MAX_GATEWAY_CONNECTIONS
+        );
+    }
+    tracing::info!(
+        read_pool_size = tuning.read_pool_size,
+        max_sql_bytes = tuning.max_sql_bytes,
+        max_request_body_bytes = tuning.max_request_body_bytes,
+        max_connections = tuning.max_connections,
+        group_commit = tuning.group_commit.enabled,
+        group_commit_max_batch = tuning.group_commit.max_batch,
+        blocking_threads = blocking,
+        "capacity tuning"
+    );
+    novadb_server::serve_with_gateways_tuned(config, pg_config, mysql_config, tuning).await?;
     Ok(())
 }
 
@@ -230,13 +265,69 @@ mod tests {
     }
 
     #[test]
+    fn capacity_flags_parse() {
+        let args = Args::try_parse_from([
+            "novadbd",
+            "--read-pool-size",
+            "3",
+            "--max-sql-bytes",
+            "1000",
+            "--max-connections",
+            "0",
+            "--no-group-commit",
+            "--group-commit-max-batch",
+            "9",
+            "--lookaside-kib",
+            "64",
+            "--worker-threads",
+            "2",
+            "--max-blocking-threads",
+            "99",
+            "--pg-max-connections",
+            "100000",
+        ])
+        .unwrap();
+        assert_eq!(args.tuning.read_pool_size, Some(3));
+        assert_eq!(args.tuning.max_sql_bytes, 1000);
+        assert_eq!(args.tuning.max_connections, 0);
+        assert!(args.tuning.no_group_commit);
+        assert_eq!(args.tuning.group_commit_max_batch, 9);
+        assert_eq!(args.tuning.lookaside_kib, Some(64));
+        assert_eq!(args.tuning.worker_threads, Some(2));
+        assert_eq!(args.tuning.blocking_threads(gateway_sessions(&args)), 99);
+        assert_eq!(args.pg_max_connections, 100_000);
+    }
+
+    #[test]
+    fn blocking_pool_covers_every_gateway_session() {
+        let args = Args::try_parse_from([
+            "novadbd",
+            "--pg-listen",
+            "127.0.0.1:1",
+            "--pg-max-connections",
+            "20000",
+        ])
+        .unwrap();
+        assert!(args.tuning.blocking_threads(gateway_sessions(&args)) >= 20_000 + 512);
+    }
+
+    #[test]
     fn hardening_flag_defaults() {
         let args = Args::try_parse_from(["novadbd"]).unwrap();
         assert!(args.cors_origins.is_empty() || env::var_os("NOVADB_CORS_ORIGINS").is_some());
         assert_eq!(
             args.pg_max_connections,
-            novadb_wire::DEFAULT_MAX_CONNECTIONS
+            novadb_server::DEFAULT_GATEWAY_MAX_CONNECTIONS
         );
+        assert_eq!(
+            args.mysql_max_connections,
+            novadb_server::DEFAULT_GATEWAY_MAX_CONNECTIONS
+        );
+        assert_eq!(args.tuning.max_sql_bytes, 16 * 1024 * 1024);
+        assert_eq!(args.tuning.max_request_body_bytes, 64 * 1024 * 1024);
+        assert!(!args.tuning.no_group_commit);
+        assert_eq!(args.tuning.group_commit_max_batch, 128);
+        assert_eq!(args.tuning.group_commit_max_wait_us, 200);
         assert_eq!(
             args.request_timeout_secs,
             novadb_server::DEFAULT_REQUEST_TIMEOUT_SECS

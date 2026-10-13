@@ -15,10 +15,23 @@ environment variables (useful with systemd `EnvironmentFile=`, Docker `-e`, Kube
 | `--pg-user <USER>` | `NOVADB_PG_USER` | none | PostgreSQL user name |
 | `--pg-password <PW>` | `NOVADB_PG_PASSWORD` | none | PostgreSQL password |
 | `--pg-auth-method <M>` | `NOVADB_PG_AUTH_METHOD` | `scram-sha-256` | `scram-sha-256`, `md5`, or `password` |
-| `--pg-max-connections <N>` | `NOVADB_PG_MAX_CONNECTIONS` | `100` | Extra clients rejected with SQLSTATE `53300` |
+| `--pg-max-connections <N>` | `NOVADB_PG_MAX_CONNECTIONS` | `1000` (max 100000) | Extra clients rejected with SQLSTATE `53300` |
 | `--cors-origin <ORIGIN>` (repeatable) | `NOVADB_CORS_ORIGINS` (comma-separated) | none (CORS off) | Allowed browser origins (`http(s)://host[:port]`), or `*` |
 | `--request-timeout-secs <N>` | `NOVADB_REQUEST_TIMEOUT_SECS` | `30` | HTTP requests that take longer get `408` |
 | `--allow-insecure` | `NOVADB_ALLOW_INSECURE` | off | Allow non-loopback listeners without credentials |
+| `--read-pool-size <N>` | `NOVADB_READ_POOL_SIZE` | CPU count | Query-only reader connections per database for HTTP reads (opened lazily) |
+| `--max-sql-bytes <N>` | `NOVADB_MAX_SQL_BYTES` | `16777216` (16 MiB) | Largest SQL text per request (`/sql/execute`, `/sql/query`, migrations) |
+| `--max-request-body-bytes <N>` | `NOVADB_MAX_REQUEST_BODY_BYTES` | `67108864` (64 MiB) | Largest HTTP body |
+| `--max-connections <N>` | `NOVADB_MAX_CONNECTIONS` | `10000` (`0` = unlimited) | Open HTTP connections; the surplus waits in the accept backlog |
+| `--listen-backlog <N>` | `NOVADB_LISTEN_BACKLOG` | `4096` | `listen(2)` backlog for HTTP/PG/MySQL (also bounded by `net.core.somaxconn`) |
+| `--max-result-rows <N>` | `NOVADB_MAX_RESULT_ROWS` | `1000000` | `/sql/query` fails with `413` instead of truncating; paginate |
+| `--max-result-bytes <N>` | `NOVADB_MAX_RESULT_BYTES` | 512 MiB | Same, by serialized size |
+| `--no-group-commit` | `NOVADB_NO_GROUP_COMMIT` | group commit on | Disable group commit of concurrent autocommit writes |
+| `--group-commit-max-batch <N>` | `NOVADB_GROUP_COMMIT_MAX_BATCH` | `128` | Max statements per group-commit transaction |
+| `--group-commit-max-wait-us <N>` | `NOVADB_GROUP_COMMIT_MAX_WAIT_US` | `200` | Max microseconds a committer waits to fill a batch |
+| `--lookaside-kib <N>` | `NOVADB_LOOKASIDE_KIB` | automatic | Per-connection SQLite lookaside memory. Automatic: 600 KiB for the first 64 connections, then 150 KiB (75 KiB beyond 4096) |
+| `--worker-threads <N>` | `NOVADB_WORKER_THREADS` | CPU count | Tokio worker threads |
+| `--max-blocking-threads <N>` | `NOVADB_MAX_BLOCKING_THREADS` | max(4096, gateway caps + 512) | Tokio blocking pool; gateway sessions run DB calls here |
 | `--max-push-batch-size <N>` (`novadbd` only) | | `1000` | Max changes per push |
 | `--default-pull-limit <N>` (`novadbd` only) | | `100` | Pull page size when `limit` is omitted |
 | `--max-pull-limit <N>` (`novadbd` only) | | `1000` | Max pull page size |
@@ -43,9 +56,11 @@ MySQL wire gateway flags: see [MySQL wire](/connect/mysql) <span class="nova-bad
 | `NOVADB_BUSY_TIMEOUT_MS` | How long a statement waits for a competing writer before `database is locked`. Default `10000` (10 s). Also `OpenOptions::busy_timeout` for embedders |
 | Write path | `BEGIN IMMEDIATE` behind an in-process write gate: writers inside one server queue |
 | Per-connection settings | WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `wal_autocheckpoint=1000`; read-pool connections are `query_only` |
-| Memory per connection | About 600 KiB of SQLite lookaside memory is reserved per connection, so 100 gateway connections cost roughly 60 MB extra. Lower `--pg-max-connections` / `--mysql-max-connections` on small machines |
+| Memory per connection | A PostgreSQL/MySQL session costs about 0.4-0.5 MiB (1000 sessions are about 490 MiB RSS); an HTTP connection about 60-100 KiB. Lookaside memory shrinks automatically as connections grow (`--lookaside-kib`). Lower `--pg-max-connections` / `--mysql-max-connections` on small machines |
 
 `synchronous=NORMAL` in WAL mode can lose the most recent commits (not corrupt the database) on a power failure or OS crash.
+
+For thousands of clients raise the file-descriptor limit to at least 2x the expected connections (`ulimit -n`, systemd `LimitNOFILE=`). See [Game and large multi-user servers](/guides/game-servers).
 
 ## Logging
 
@@ -57,12 +72,14 @@ RUST_LOG=novadbd=info,novadb_server=info,novadb_wire=info,tower_http=warn novadb
 
 The default is `novadbd=info,novadb_server=info,novadb_wire=info,tower_http=info` (one line per HTTP request).
 
-## Limits (fixed)
+## Limits
+
+Configurable (see the flag table): HTTP request body 64 MiB, SQL text per request 16 MiB, `/sql/query` result 1,000,000 rows / 512 MiB, HTTP connections 10000, PG/MySQL sessions 1000.
+
+Fixed:
 
 | Limit | Value |
 |---|---|
-| HTTP request body | 4 MiB |
-| SQL text per request | 256 KiB |
 | Serialized sync change | 64 KiB |
 | Migrations per request | 1000 |
 | Database ID | `^[a-z0-9][a-z0-9_-]{0,127}$` |

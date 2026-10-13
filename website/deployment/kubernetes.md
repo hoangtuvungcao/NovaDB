@@ -24,7 +24,7 @@ and rely on backups for recovery.
 
 ```bash
 # 1. Build and push an image (none is published yet), then set it in statefulset.yaml
-docker build -t ghcr.io/<you>/novadb:0.2.0 . && docker push ghcr.io/<you>/novadb:0.2.0
+docker build -t ghcr.io/<you>/novadb:0.2.1 . && docker push ghcr.io/<you>/novadb:0.2.1
 
 # 2. Namespace and credentials (never commit real values)
 kubectl apply -f deploy/kubernetes/namespace.yaml
@@ -79,8 +79,8 @@ spec:
       containers:
         - name: novadbd
           # Build and push the image from the repository Dockerfile, then set it here:
-          #   docker build -t ghcr.io/<you>/novadb:0.2.0 . && docker push ghcr.io/<you>/novadb:0.2.0
-          image: ghcr.io/REPLACE_ME/novadb:0.2.0
+          #   docker build -t ghcr.io/<you>/novadb:0.2.1 . && docker push ghcr.io/<you>/novadb:0.2.1
+          image: ghcr.io/REPLACE_ME/novadb:0.2.1
           imagePullPolicy: IfNotPresent
           args:
             - --listen=0.0.0.0:8787
@@ -89,7 +89,7 @@ spec:
             - --data-dir=/var/lib/novadb/databases
             - --request-timeout-secs=30
             - --pg-auth-method=scram-sha-256
-            - --pg-max-connections=100
+            - --pg-max-connections=1000
             # Browser apps calling the HTTP API directly need CORS:
             # - --cors-origin=https://app.example.com
           envFrom:
@@ -210,7 +210,7 @@ metadata:
   namespace: novadb
   annotations:
     # cert-manager.io/cluster-issuer: letsencrypt
-    nginx.ingress.kubernetes.io/proxy-body-size: "4m"   # server body limit is 4 MiB
+    nginx.ingress.kubernetes.io/proxy-body-size: "64m"   # example; keep it >= --max-request-body-bytes (server default 64 MiB), lower both if you want a tighter limit
     nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
 spec:
   ingressClassName: nginx

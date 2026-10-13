@@ -68,6 +68,12 @@ pub enum Error {
     #[error("foreign key violation after schema rebuild: {0}")]
     ForeignKeyViolation(String),
 
+    /// A read returned more rows or bytes than the configured safety limit.
+    /// Nothing is truncated silently: page through the data with
+    /// `LIMIT`/`OFFSET` or keyset pagination instead.
+    #[error("result too large: {0}")]
+    ResultTooLarge(String),
+
     /// The SQL uses a construct NovaDB cannot execute faithfully. Returned
     /// instead of silently ignoring or approximating the construct.
     #[error("unsupported SQL: {0}")]

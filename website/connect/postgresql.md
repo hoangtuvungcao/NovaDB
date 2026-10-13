@@ -20,7 +20,7 @@ novadb serve --listen 127.0.0.1:8787 --pg-listen 127.0.0.1:5432 --data-dir ./nov
 | `--pg-user` | `NOVADB_PG_USER` | none | Required user name (any name is accepted if unset) |
 | `--pg-password` | `NOVADB_PG_PASSWORD` | none | Password. Required for non-loopback addresses unless `--allow-insecure` |
 | `--pg-auth-method` | `NOVADB_PG_AUTH_METHOD` | `scram-sha-256` | `scram-sha-256`, `md5`, or `password` (cleartext) |
-| `--pg-max-connections` | `NOVADB_PG_MAX_CONNECTIONS` | `100` | Further clients are rejected with SQLSTATE `53300` |
+| `--pg-max-connections` | `NOVADB_PG_MAX_CONNECTIONS` | `1000` | Further clients are rejected with SQLSTATE `53300` |
 
 Clients must finish startup and authentication within 30 seconds.
 

@@ -391,6 +391,11 @@ pub(crate) fn warm_up() {
     });
 }
 
+/// Builds the screen on the calling thread (blocks until ready).
+pub(crate) fn force() {
+    LazyLock::force(&SCREEN);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

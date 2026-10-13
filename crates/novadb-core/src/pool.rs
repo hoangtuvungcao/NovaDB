@@ -1,41 +1,49 @@
 //! Connection pool for NovaDB.
 //!
-//! Provides `NovaDbPool` — a thread-safe, multi-reader, single-writer connection
-//! pool backed by SQLite WAL mode. Clients acquire connections via `acquire()` and
-//! return them automatically when the guard is dropped.
+//! Provides `NovaDbPool` - a thread-safe, multi-reader, single-writer connection
+//! pool backed by SQLite WAL mode. Reads run in parallel on their own
+//! `query_only` connections; writes go through the writer handle and the
+//! per-file write gate (and are group-committed under contention, see
+//! [`crate::GroupCommitConfig`]).
 //!
 //! # Architecture
 //!
 //! ```text
-//! ┌─────────────────────────────────────────┐
-//! │            NovaDbPool                    │
-//! ├─────────────────────────────────────────┤
-//! │  Writer: Mutex<NovaDb>  (1 exclusive)   │
-//! │  Readers: Vec<NovaDb>   (N parallel)    │
-//! │  Reader semaphore                       │
-//! └─────────────────────────────────────────┘
+//! +-----------------------------------------+
+//! |            NovaDbPool                   |
+//! +-----------------------------------------+
+//! |  Writer: NovaDb (1, gate-serialised)    |
+//! |  Readers: up to N query_only NovaDb,    |
+//! |           opened lazily on demand       |
+//! +-----------------------------------------+
 //! ```
+//!
+//! Read-your-writes: a reader statement starts a fresh WAL snapshot, so it
+//! sees every transaction committed before it started; it never sees a
+//! half-applied batch.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
-use crate::{NovaDb, OpenOptions, QueryResult, Result};
+use crate::{DialectMode, NovaDb, OpenOptions, QueryResult, Result, ResultLimit, TypedQueryResult};
 
 /// Default number of read connections in the pool.
 pub const DEFAULT_POOL_SIZE: usize = 4;
 
 /// Maximum pool size.
-pub const MAX_POOL_SIZE: usize = 64;
+pub const MAX_POOL_SIZE: usize = 1024;
 
 /// Configuration for a connection pool.
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
     /// Path to the database file.
     pub path: PathBuf,
-    /// Number of read connections (default: 4).
+    /// Maximum number of read connections (default: 4). They are opened
+    /// lazily, only when every open reader is busy.
     pub read_pool_size: usize,
     /// Settings applied to the writer and every reader connection.
     pub options: OpenOptions,
@@ -73,37 +81,41 @@ pub struct NovaDbPool {
 }
 
 struct PoolInner {
-    /// The single writer connection (serialized via Mutex).
-    writer: Mutex<NovaDb>,
-    /// Pool of read-only (`query_only`) connections. Each has its own
-    /// `SQLite` connection, so in WAL mode readers run in parallel with each
-    /// other and with the writer.
-    readers: Vec<NovaDb>,
+    /// The writer connection (writes serialise on the per-file gate).
+    writer: NovaDb,
+    /// Slots for read-only (`query_only`) connections, filled lazily. Each has
+    /// its own `SQLite` connection, so in WAL mode readers run in parallel
+    /// with each other and with the writer.
+    readers: Box<[OnceLock<NovaDb>]>,
+    /// Serialises opening a new reader so two threads never race for a slot.
+    opening: Mutex<()>,
+    /// Number of initialised reader slots (they fill from index 0 upwards).
+    opened: AtomicUsize,
     /// Round-robin index for reader selection.
     reader_index: AtomicUsize,
+    /// Options for reader connections.
+    reader_options: OpenOptions,
     /// Original database path.
     path: PathBuf,
-    /// Pool configuration.
-    read_pool_size: usize,
 }
 
 impl NovaDbPool {
-    /// Open a connection pool for the database at the given path.
+    /// Opens the writer for the database at the given path; readers open on
+    /// first use.
     pub fn open(config: PoolConfig) -> Result<Self> {
         let writer = NovaDb::open_with_options(&config.path, &config.options)?;
-        let reader_options = config.options.clone().query_only(true);
-        let mut readers = Vec::with_capacity(config.read_pool_size);
-        for _ in 0..config.read_pool_size {
-            readers.push(NovaDb::open_with_options(&config.path, &reader_options)?);
-        }
-
+        let readers = (0..config.read_pool_size.clamp(1, MAX_POOL_SIZE))
+            .map(|_| OnceLock::new())
+            .collect();
         Ok(Self {
             inner: Arc::new(PoolInner {
-                writer: Mutex::new(writer),
+                writer,
                 readers,
+                opening: Mutex::new(()),
+                opened: AtomicUsize::new(0),
                 reader_index: AtomicUsize::new(0),
+                reader_options: config.options.clone().query_only(true),
                 path: config.path,
-                read_pool_size: config.read_pool_size,
             }),
         })
     }
@@ -113,40 +125,109 @@ impl NovaDbPool {
         Self::open(PoolConfig::new(path.as_ref()))
     }
 
-    /// Execute a read-only query using a reader from the pool.
+    /// Runs `operation` on an idle reader.
     ///
     /// The search starts at a rotating position and takes the first idle
-    /// reader, so concurrent callers spread over distinct connections instead
-    /// of queueing behind a busy one. When every reader is busy the caller
-    /// waits for the one it started at.
-    pub fn query(&self, sql: &str) -> Result<QueryResult> {
-        let readers = &self.inner.readers;
-        let start = self.inner.reader_index.fetch_add(1, Ordering::Relaxed) % readers.len();
-        for offset in 0..readers.len() {
-            if let Some(result) = readers[(start + offset) % readers.len()].try_query(sql) {
-                return result;
+    /// reader. When all open readers are busy and the pool is not yet at its
+    /// limit a new reader is opened; at the limit the caller waits for the
+    /// reader it started at.
+    fn with_reader<T>(
+        &self,
+        operation: impl Fn(&NovaDb) -> Option<T>,
+        blocking: impl Fn(&NovaDb) -> T,
+    ) -> Result<T> {
+        let inner = &self.inner;
+        loop {
+            let opened = inner.opened.load(Ordering::Acquire);
+            if opened > 0 {
+                let start = inner.reader_index.fetch_add(1, Ordering::Relaxed) % opened;
+                for offset in 0..opened {
+                    if let Some(reader) = inner.readers[(start + offset) % opened].get() {
+                        if let Some(result) = operation(reader) {
+                            return Ok(result);
+                        }
+                    }
+                }
             }
+            if opened < inner.readers.len() {
+                let _opening = inner.opening.lock();
+                let now = inner.opened.load(Ordering::Acquire);
+                if now == opened {
+                    // Still the same count: this thread opens the next reader.
+                    let reader = NovaDb::open_with_options(&inner.path, &inner.reader_options)?;
+                    let _ = inner.readers[now].set(reader);
+                    inner.opened.store(now + 1, Ordering::Release);
+                }
+                continue;
+            }
+            // Pool is full and every reader is busy: wait on one of them.
+            let start = inner.reader_index.fetch_add(1, Ordering::Relaxed) % opened.max(1);
+            let reader = inner.readers[start]
+                .get()
+                .ok_or_else(|| crate::Error::Unsupported("reader pool is empty".into()))?;
+            return Ok(blocking(reader));
         }
-        readers[start].query(sql)
     }
 
-    /// Execute a write batch using the exclusive writer connection.
-    ///
-    /// Only one write can execute at a time. Other writers will wait
-    /// for the mutex.
+    /// Execute a read-only query using a reader from the pool.
+    pub fn query(&self, sql: &str) -> Result<QueryResult> {
+        self.query_with(sql, DialectMode::TSql)
+    }
+
+    /// [`NovaDbPool::query`] with an explicit [`DialectMode`].
+    pub fn query_with(&self, sql: &str, mode: DialectMode) -> Result<QueryResult> {
+        self.query_typed(sql, mode)
+            .map(TypedQueryResult::into_query_result)
+    }
+
+    /// Like [`NovaDbPool::query_with`], also reporting declared column types.
+    pub fn query_typed(&self, sql: &str, mode: DialectMode) -> Result<TypedQueryResult> {
+        self.query_limited(sql, mode, ResultLimit::UNLIMITED)
+    }
+
+    /// Like [`NovaDbPool::query_typed`] but fails with
+    /// [`crate::Error::ResultTooLarge`] beyond `limit`.
+    pub fn query_limited(
+        &self,
+        sql: &str,
+        mode: DialectMode,
+        limit: ResultLimit,
+    ) -> Result<TypedQueryResult> {
+        self.with_reader(
+            |reader| reader.try_query_typed(sql, mode, limit),
+            |reader| reader.query_limited(sql, mode, limit),
+        )?
+    }
+
+    /// Execute a write batch on the writer (serialised per file; concurrent
+    /// small writes are group-committed).
     pub fn execute_batch(&self, sql: &str) -> Result<()> {
-        let writer = self.inner.writer.lock();
-        writer.execute_batch(sql)
+        self.inner.writer.execute_batch(sql)
     }
 
-    /// Access the writer directly (for sync operations, etc.).
-    pub fn writer(&self) -> parking_lot::MutexGuard<'_, NovaDb> {
-        self.inner.writer.lock()
+    /// The writer handle (for sync operations, backups, maintenance, ...).
+    pub fn writer(&self) -> &NovaDb {
+        &self.inner.writer
+    }
+
+    /// `PRAGMA integrity_check` on the writer connection.
+    pub fn integrity_check(&self) -> Result<crate::IntegrityReport> {
+        self.inner.writer.integrity_check()
+    }
+
+    /// Truncating WAL checkpoint on the writer connection.
+    pub fn wal_checkpoint(&self) -> Result<crate::WalCheckpointReport> {
+        self.inner.writer.wal_checkpoint()
+    }
+
+    /// Online backup to a new file.
+    pub fn backup_to(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.inner.writer.backup_to(path)
     }
 
     /// Get the device ID from the writer connection.
     pub fn device_id(&self) -> String {
-        self.inner.writer.lock().device_id().to_owned()
+        self.inner.writer.device_id().to_owned()
     }
 
     /// Get the database file path.
@@ -154,9 +235,14 @@ impl NovaDbPool {
         &self.inner.path
     }
 
-    /// Get the number of reader connections.
+    /// Maximum number of reader connections.
     pub fn read_pool_size(&self) -> usize {
-        self.inner.read_pool_size
+        self.inner.readers.len()
+    }
+
+    /// Reader connections opened so far.
+    pub fn open_readers(&self) -> usize {
+        self.inner.opened.load(Ordering::Acquire)
     }
 
     /// Run migrations using the writer connection.
@@ -164,20 +250,17 @@ impl NovaDbPool {
         &self,
         migrations: &[crate::Migration],
     ) -> Result<crate::MigrationReport> {
-        let writer = self.inner.writer.lock();
-        writer.run_migrations(migrations)
+        self.inner.writer.run_migrations(migrations)
     }
 
     /// Enable sync on a table using the writer connection.
     pub fn enable_sync(&self, table: &str, primary_key: &str) -> Result<()> {
-        let writer = self.inner.writer.lock();
-        writer.enable_sync(table, primary_key)
+        self.inner.writer.enable_sync(table, primary_key)
     }
 
     /// Get changes after a cursor using the writer connection.
     pub fn changes_after(&self, after: i64, limit: usize) -> Result<Vec<crate::Change>> {
-        let writer = self.inner.writer.lock();
-        writer.changes_after(after, limit)
+        self.inner.writer.changes_after(after, limit)
     }
 }
 

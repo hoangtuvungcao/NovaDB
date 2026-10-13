@@ -35,8 +35,8 @@ spec:
       containers:
         - name: novadbd
           # Build and push the image from the repository Dockerfile, then set it here:
-          #   docker build -t ghcr.io/<you>/novadb:0.2.0 . && docker push ghcr.io/<you>/novadb:0.2.0
-          image: ghcr.io/REPLACE_ME/novadb:0.2.0
+          #   docker build -t ghcr.io/<you>/novadb:0.2.1 . && docker push ghcr.io/<you>/novadb:0.2.1
+          image: ghcr.io/REPLACE_ME/novadb:0.2.1
           imagePullPolicy: IfNotPresent
           args:
             - --listen=0.0.0.0:8787

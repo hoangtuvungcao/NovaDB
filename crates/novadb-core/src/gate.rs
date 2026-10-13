@@ -20,9 +20,21 @@ use std::{
 
 use parking_lot::{Condvar, Mutex};
 
+struct WaitGuard<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for WaitGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 pub(crate) struct WriteGate {
     held: Mutex<bool>,
     released: Condvar,
+    /// Threads currently blocked in `acquire`.
+    waiters: std::sync::atomic::AtomicUsize,
+    /// Group-commit queue of the same file (see `groupcommit`).
+    pub(crate) coalescer: crate::groupcommit::Coalescer,
 }
 
 static REGISTRY: LazyLock<Mutex<HashMap<PathBuf, Weak<WriteGate>>>> =
@@ -40,9 +52,16 @@ impl WriteGate {
         let gate = Arc::new(Self {
             held: Mutex::new(false),
             released: Condvar::new(),
+            waiters: std::sync::atomic::AtomicUsize::new(0),
+            coalescer: crate::groupcommit::Coalescer::new(),
         });
         registry.insert(key, Arc::downgrade(&gate));
         gate
+    }
+
+    /// Number of threads blocked waiting for the gate.
+    pub(crate) fn waiting(&self) -> usize {
+        self.waiters.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Waits up to `timeout` for exclusive write access. Returns `false` on timeout.
@@ -53,6 +72,9 @@ impl WriteGate {
             return true;
         }
         let deadline = Instant::now().checked_add(timeout);
+        self.waiters
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let _waiting = WaitGuard(&self.waiters);
         while *held {
             match deadline {
                 Some(deadline) => {
@@ -112,6 +134,8 @@ mod tests {
         let gate = Arc::new(WriteGate {
             held: Mutex::new(false),
             released: Condvar::new(),
+            waiters: std::sync::atomic::AtomicUsize::new(0),
+            coalescer: crate::groupcommit::Coalescer::new(),
         });
         assert!(gate.acquire(Duration::from_millis(10)));
         assert!(!gate.acquire(Duration::from_millis(20)));

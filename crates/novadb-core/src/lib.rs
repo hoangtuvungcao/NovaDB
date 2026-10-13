@@ -46,6 +46,7 @@ mod dialect_screen;
 mod error;
 mod functions;
 mod gate;
+mod groupcommit;
 #[cfg(test)]
 mod hang_guard_tests;
 mod identifier;
@@ -82,6 +83,11 @@ use uuid::Uuid;
 pub use clock::HybridLogicalClock;
 pub use error::{Error, Result};
 use gate::{GateGuard, WriteGate};
+pub use groupcommit::{
+    DEFAULT_GROUP_COMMIT_MAX_BATCH, DEFAULT_GROUP_COMMIT_MAX_WAIT, GroupCommitConfig,
+    GroupCommitStats, WriteCallback, WriteOutcome, group_commit_config, group_commit_stats,
+    set_group_commit,
+};
 pub use identifier::{quote_identifier, validate_identifier};
 pub use ops::{IntegrityReport, Migration, MigrationReport, WalCheckpointReport};
 pub use pool::{NovaDbPool, PoolConfig};
@@ -101,7 +107,7 @@ const INTERNAL_PREFIX: &str = "_novadb_";
 /// `NOVADB_BUSY_TIMEOUT_MS` environment variable.
 pub const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Pages the WAL may grow to before `SQLite` attempts an automatic checkpoint.
-const WAL_AUTOCHECKPOINT_PAGES: i64 = 1000;
+pub(crate) const WAL_AUTOCHECKPOINT_PAGES: i64 = 1000;
 /// Statements kept prepared per connection (see `query`).
 const STATEMENT_CACHE_CAPACITY: usize = 64;
 
@@ -279,6 +285,16 @@ struct Inner {
     /// True while this connection owns the gate for an explicit transaction.
     gate_held_by_transaction: AtomicBool,
     busy_timeout: Duration,
+    /// Settings this connection was opened with (the group-commit thread
+    /// opens its private connection the same way).
+    options: OpenOptions,
+    /// Database file (`None` for in-memory databases).
+    path: Option<std::path::PathBuf>,
+    /// True once this connection may hold state the group-commit thread's
+    /// connection does not have (temp tables, a changed `foreign_keys`).
+    session_dirty: AtomicBool,
+    /// Current `PRAGMA foreign_keys` of this connection.
+    foreign_keys: AtomicBool,
     /// Schema-derived facts (trusted sync-trigger names, whether any table is
     /// sync-enabled), keyed by `PRAGMA schema_version` so they are re-read
     /// whenever any connection changes the schema.
@@ -290,16 +306,54 @@ struct Inner {
 }
 
 /// Runs a prepared statement that must be read-only and returns JSON rows.
-fn run_read_only_statement(statement: &mut rusqlite::Statement<'_>) -> Result<TypedQueryResult> {
+fn run_read_only_statement(
+    statement: &mut rusqlite::Statement<'_>,
+    limit: ResultLimit,
+) -> Result<TypedQueryResult> {
     if !statement.readonly() {
         return Err(Error::QueryMustBeReadOnly);
     }
-    run_statement_rows(statement)
+    run_statement_rows_limited(statement, limit)
+}
+
+/// Safety limit for one query result. Exceeding it fails the query with
+/// [`Error::ResultTooLarge`]; rows are never dropped silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResultLimit {
+    /// Maximum number of rows.
+    pub max_rows: usize,
+    /// Approximate maximum size of the result in bytes (text/blob lengths plus
+    /// a fixed cost per value).
+    pub max_bytes: usize,
+}
+
+impl ResultLimit {
+    /// No limit.
+    pub const UNLIMITED: Self = Self {
+        max_rows: usize::MAX,
+        max_bytes: usize::MAX,
+    };
+}
+
+fn run_statement_rows(statement: &mut rusqlite::Statement<'_>) -> Result<TypedQueryResult> {
+    run_statement_rows_limited(statement, ResultLimit::UNLIMITED)
+}
+
+fn approx_value_bytes(value: &Value) -> usize {
+    match value {
+        Value::String(text) => text.len() + 8,
+        Value::Array(items) => items.iter().map(approx_value_bytes).sum::<usize>() + 8,
+        _ => 16,
+    }
 }
 
 /// Steps a statement to completion, collecting its rows as JSON objects.
-fn run_statement_rows(statement: &mut rusqlite::Statement<'_>) -> Result<TypedQueryResult> {
+fn run_statement_rows_limited(
+    statement: &mut rusqlite::Statement<'_>,
+    limit: ResultLimit,
+) -> Result<TypedQueryResult> {
     let mut result_rows = Vec::new();
+    let mut approx_bytes = 0_usize;
     // Column labels are read after the first step: SQLite re-prepares a
     // statement that went stale (schema changed by another connection) when it
     // is stepped, and only then are the labels trustworthy.
@@ -314,9 +368,25 @@ fn run_statement_rows(statement: &mut rusqlite::Statement<'_>) -> Result<TypedQu
                     .map(str::to_owned)
                     .collect()
             });
+            if result_rows.len() >= limit.max_rows {
+                return Err(Error::ResultTooLarge(format!(
+                    "more than {} rows; add LIMIT/OFFSET (or keyset pagination) or raise the limit",
+                    limit.max_rows
+                )));
+            }
             let mut object = Map::with_capacity(labels.len());
             for (index, column) in labels.iter().enumerate() {
-                object.insert(column.clone(), value_ref_to_json(row.get_ref(index)?));
+                let value = value_ref_to_json(row.get_ref(index)?);
+                approx_bytes = approx_bytes
+                    .saturating_add(approx_value_bytes(&value))
+                    .saturating_add(column.len());
+                object.insert(column.clone(), value);
+            }
+            if approx_bytes > limit.max_bytes {
+                return Err(Error::ResultTooLarge(format!(
+                    "more than about {} bytes; add LIMIT/OFFSET (or keyset pagination) or raise the limit",
+                    limit.max_bytes
+                )));
             }
             result_rows.push(Value::Object(object));
         }
@@ -376,6 +446,7 @@ struct SchemaState {
 
 impl Drop for Inner {
     fn drop(&mut self) {
+        LIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
         // A handle dropped with an explicit transaction open rolls back when
         // the connection closes; hand the write gate on.
         if self.gate_held_by_transaction.swap(false, Ordering::AcqRel) {
@@ -509,7 +580,8 @@ impl NovaDb {
         gate: Option<Arc<WriteGate>>,
     ) -> Result<Self> {
         dialect_screen::warm_up();
-        configure_connection(&connection, options)?;
+        let reservation = LiveReservation::take();
+        configure_connection(&connection, options, reservation.ordinal)?;
         bootstrap_metadata(&connection)?;
         let device_id = load_or_create_device_id(&connection)?;
         let last_hlc = latest_hlc(&connection)?;
@@ -530,10 +602,16 @@ impl NovaDb {
             database_display_name(connection.path()),
         )?;
         let auth = AuthState::install(&connection)?;
+        let path = gate
+            .as_ref()
+            .and(connection.path())
+            .filter(|p| !p.is_empty())
+            .map(std::path::PathBuf::from);
         if options.query_only {
             connection.pragma_update(None, "query_only", "ON")?;
         }
 
+        reservation.keep();
         Ok(Self {
             inner: Arc::new(Inner {
                 connection: Mutex::new(connection),
@@ -542,6 +620,10 @@ impl NovaDb {
                 gate,
                 gate_held_by_transaction: AtomicBool::new(false),
                 busy_timeout: options.busy_timeout,
+                options: options.clone(),
+                path,
+                session_dirty: AtomicBool::new(false),
+                foreign_keys: AtomicBool::new(true),
                 schema: Mutex::new(None),
                 device_id,
                 clock,
@@ -567,13 +649,158 @@ impl NovaDb {
 
     /// [`NovaDb::execute_batch`] with an explicit [`DialectMode`].
     pub fn execute_batch_with(&self, sql: &str, mode: DialectMode) -> Result<()> {
-        let changes = {
-            let mut connection = self.inner.connection.lock();
-            let _gate = self.inner.write_gate()?;
-            self.atomic_batch(&mut connection, sql, mode, false)?.1
+        self.coalesce(
+            sql,
+            mode,
+            false,
+            || {
+                let changes = {
+                    let mut connection = self.inner.connection.lock();
+                    let _gate = self.inner.write_gate()?;
+                    self.atomic_batch(&mut connection, sql, mode, false)?.1
+                };
+                self.publish(&changes);
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+    }
+
+    /// Runs `direct` (the ordinary one-transaction path) unless other writers
+    /// of this process are in flight, in which case the statement joins the
+    /// group-commit queue of its database file and shares a transaction with
+    /// them (see [`GroupCommitConfig`]). The statement's own result, counters
+    /// and error are preserved either way.
+    fn coalesce<T>(
+        &self,
+        sql: &str,
+        mode: DialectMode,
+        returning: bool,
+        direct: impl FnOnce() -> Result<T>,
+        convert: impl FnOnce(WriteOutcome) -> Result<T>,
+    ) -> Result<T> {
+        let Some(gate) = self.coalescing_gate(sql, mode) else {
+            return direct();
         };
-        self.publish(&changes);
-        Ok(())
+        let (_ticket, others) = gate.coalescer.enter();
+        // Queue only under real contention: somebody is already waiting for the
+        // write lock, jobs are queued, or the last batch carried several
+        // statements. A lone competing writer is cheaper to wait for directly
+        // than to hand off to the committer thread.
+        let contended = others > 0
+            && (gate.waiting() > 0
+                || !gate.coalescer.queue_is_empty()
+                || gate.coalescer.recent_batching());
+        let Some(path) = self.inner.path.clone().filter(|_| contended) else {
+            return direct();
+        };
+        gate.coalescer.set_target(path, self.inner.options.clone());
+        let (sender, receiver) = crossbeam_channel::bounded(1);
+        gate.submit(groupcommit::Job::new(
+            self.clone(),
+            sql.to_owned(),
+            mode,
+            returning,
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        ));
+        let outcome = receiver
+            .recv()
+            .map_err(|_| Error::Unsupported("group-commit queue closed".into()))??;
+        self.adopt_last_insert_rowid(outcome.stats.last_insert_rowid);
+        convert(outcome)
+    }
+
+    /// The group-commit gate when this statement may be coalesced.
+    fn coalescing_gate(&self, sql: &str, mode: DialectMode) -> Option<&Arc<WriteGate>> {
+        let gate = self.inner.gate.as_ref()?;
+        if !group_commit_config().enabled
+            || self.inner.options.query_only
+            || self.inner.gate_held_by_transaction.load(Ordering::Acquire)
+            || self.inner.session_dirty.load(Ordering::Acquire)
+            || !self.inner.foreign_keys.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        if groupcommit::touches_session_state(sql, mode) {
+            self.inner.session_dirty.store(true, Ordering::Release);
+            return None;
+        }
+        groupcommit::is_coalescible_sql(sql).then_some(gate)
+    }
+
+    /// Remembers (on every path that runs SQL outside the group-commit
+    /// thread) that this connection may now own connection-local objects.
+    fn note_session_state(&self, sql: &str, mode: DialectMode) {
+        if groupcommit::touches_session_state(sql, mode) {
+            self.inner.session_dirty.store(true, Ordering::Release);
+        }
+    }
+
+    /// A coalesced statement ran on another connection; mirror its rowid so
+    /// `last_insert_rowid()` on this session keeps working as callers expect.
+    #[allow(unsafe_code)]
+    fn adopt_last_insert_rowid(&self, rowid: i64) {
+        let connection = self.inner.connection.lock();
+        // SAFETY: `handle()` is the live sqlite3 pointer owned by the locked
+        // connection; setting the last-insert rowid has no other preconditions.
+        unsafe { rusqlite::ffi::sqlite3_set_last_insert_rowid(connection.handle(), rowid) };
+    }
+
+    /// Queues one write statement (or `;`-separated batch) for the group-commit
+    /// thread of this database file and returns immediately; `done` runs on
+    /// that thread once the transaction carrying the statement has committed
+    /// (or the statement failed). The statement is isolated in its own
+    /// savepoint, so a failure never affects other queued writes. This is the
+    /// non-blocking counterpart of [`NovaDb::execute_with_stats`] /
+    /// [`NovaDb::execute_returning`] for async servers: no thread waits for the
+    /// write gate. The statement runs on the group-commit thread's own
+    /// connection, so use it on handles without explicit transactions or
+    /// temp tables. In-memory databases run it inline.
+    pub fn submit_write(
+        &self,
+        sql: String,
+        mode: DialectMode,
+        returning: bool,
+        done: WriteCallback,
+    ) {
+        let (Some(gate), Some(path)) = (self.inner.gate.as_ref(), self.inner.path.clone()) else {
+            let result = if returning {
+                self.execute_returning(&sql, mode)
+                    .map(|(rows, stats)| WriteOutcome {
+                        stats,
+                        rows: Some(rows),
+                    })
+            } else {
+                self.execute_with_stats(&sql, mode)
+                    .map(|stats| WriteOutcome { stats, rows: None })
+            };
+            done(result);
+            return;
+        };
+        if self.inner.gate_held_by_transaction.load(Ordering::Acquire) {
+            done(Err(Error::Unsupported(
+                "submit_write cannot run while this handle holds an explicit transaction".into(),
+            )));
+            return;
+        }
+        gate.coalescer.set_target(path, self.inner.options.clone());
+        // The in-flight count lets the committer wait briefly for company;
+        // it is released when the callback has run.
+        gate.coalescer.add_inflight();
+        let release_gate = Arc::clone(gate);
+        let done: WriteCallback = Box::new(move |result| {
+            release_gate.coalescer.sub_inflight();
+            done(result);
+        });
+        gate.submit(groupcommit::Job::new(
+            self.clone(),
+            sql,
+            mode,
+            returning,
+            done,
+        ));
     }
 
     /// Runs `body` in one `BEGIN IMMEDIATE` transaction with change capture,
@@ -633,13 +860,21 @@ impl NovaDb {
     /// completed write statement (saves gateways the extra `SELECT changes(),
     /// last_insert_rowid()` round trip).
     pub fn execute_with_stats(&self, sql: &str, mode: DialectMode) -> Result<ExecStats> {
-        let (stats, changes) = {
-            let mut connection = self.inner.connection.lock();
-            let _gate = self.inner.write_gate()?;
-            self.atomic_batch(&mut connection, sql, mode, false)?
-        };
-        self.publish(&changes);
-        Ok(stats)
+        self.coalesce(
+            sql,
+            mode,
+            false,
+            || {
+                let (stats, changes) = {
+                    let mut connection = self.inner.connection.lock();
+                    let _gate = self.inner.write_gate()?;
+                    self.atomic_batch(&mut connection, sql, mode, false)?
+                };
+                self.publish(&changes);
+                Ok(stats)
+            },
+            |outcome| Ok(outcome.stats),
+        )
     }
 
     /// Executes ONE write statement that carries a `RETURNING` clause,
@@ -651,24 +886,37 @@ impl NovaDb {
         sql: &str,
         mode: DialectMode,
     ) -> Result<(TypedQueryResult, ExecStats)> {
-        let ((result, stats), _, changes) = {
-            let mut connection = self.inner.connection.lock();
-            let _gate = self.inner.write_gate()?;
-            let ((result, stats), _, changes) =
-                self.atomic_run(&mut connection, false, |transaction, trusted| {
-                    execute_guarded_returning(
-                        transaction,
-                        sql,
-                        mode,
-                        AuthMode::Batch,
-                        &self.inner.auth,
-                        trusted,
-                    )
-                })?;
-            ((result, stats), (), changes)
-        };
-        self.publish(&changes);
-        Ok((result, stats))
+        self.coalesce(
+            sql,
+            mode,
+            true,
+            || {
+                let ((result, stats), _, changes) = {
+                    let mut connection = self.inner.connection.lock();
+                    let _gate = self.inner.write_gate()?;
+                    let ((result, stats), _, changes) =
+                        self.atomic_run(&mut connection, false, |transaction, trusted| {
+                            execute_guarded_returning(
+                                transaction,
+                                sql,
+                                mode,
+                                AuthMode::Batch,
+                                &self.inner.auth,
+                                trusted,
+                            )
+                        })?;
+                    ((result, stats), (), changes)
+                };
+                self.publish(&changes);
+                Ok((result, stats))
+            },
+            |outcome| match outcome.rows {
+                Some(rows) => Ok((rows, outcome.stats)),
+                None => Err(Error::Unsupported(
+                    "RETURNING write produced no rows".into(),
+                )),
+            },
+        )
     }
 
     /// [`NovaDb::execute_returning`] inside the transaction opened with
@@ -678,6 +926,7 @@ impl NovaDb {
         sql: &str,
         mode: DialectMode,
     ) -> Result<(TypedQueryResult, ExecStats)> {
+        self.note_session_state(sql, mode);
         let connection = self.inner.connection.lock();
         let state = self.inner.schema_state(&connection)?;
         execute_guarded_returning(
@@ -696,6 +945,7 @@ impl NovaDb {
         sql: &str,
         mode: DialectMode,
     ) -> Result<ExecStats> {
+        self.note_session_state(sql, mode);
         let connection = self.inner.connection.lock();
         let state = self.inner.schema_state(&connection)?;
         execute_guarded_sql_conn(&connection, sql, mode, &self.inner.auth, &state.trusted)?;
@@ -733,15 +983,52 @@ impl NovaDb {
                 ));
             }
             let _gate = self.inner.write_gate()?;
+            // Honour the session's own `foreign_keys` setting (see
+            // `set_foreign_keys`): with enforcement off the final consistency
+            // check is skipped as well, exactly like the pragma itself.
+            let session_enforces = self.inner.foreign_keys.load(Ordering::Acquire);
             connection.pragma_update(None, "foreign_keys", "OFF")?;
-            let outcome = self.atomic_batch(&mut connection, sql, mode, true);
-            let restored = connection.pragma_update(None, "foreign_keys", "ON");
+            let outcome = self.atomic_batch(&mut connection, sql, mode, session_enforces);
+            let restored = connection.pragma_update(
+                None,
+                "foreign_keys",
+                if session_enforces { "ON" } else { "OFF" },
+            );
             let changes = outcome?.1;
             restored?;
             changes
         };
         self.publish(&changes);
         Ok(())
+    }
+
+    /// Switches foreign-key enforcement (`PRAGMA foreign_keys`) for this
+    /// connection only, the way MySQL's `SET FOREIGN_KEY_CHECKS` does for a
+    /// session. Defaults to enforcement on. `SQLite` ignores the pragma inside
+    /// a transaction, so this fails with [`Error::Unsupported`] while an
+    /// explicit transaction is open on this handle. While enforcement is off,
+    /// the handle's writes run on its own connection (never in a shared
+    /// group-commit transaction) and [`NovaDb::execute_schema_rebuild_with`]
+    /// skips its closing `foreign_key_check`; the setting is restored
+    /// afterwards.
+    pub fn set_foreign_keys(&self, enabled: bool) -> Result<()> {
+        let connection = self.inner.connection.lock();
+        if !connection.is_autocommit()
+            || self.inner.gate_held_by_transaction.load(Ordering::Acquire)
+        {
+            return Err(Error::Unsupported(
+                "foreign key enforcement cannot be changed inside a transaction".into(),
+            ));
+        }
+        connection.pragma_update(None, "foreign_keys", if enabled { "ON" } else { "OFF" })?;
+        self.inner.foreign_keys.store(enabled, Ordering::Release);
+        Ok(())
+    }
+
+    /// Whether this connection currently enforces foreign keys.
+    #[must_use]
+    pub fn foreign_keys_enabled(&self) -> bool {
+        self.inner.foreign_keys.load(Ordering::Acquire)
     }
 
     /// Begins an explicit transaction on this connection.
@@ -798,6 +1085,7 @@ impl NovaDb {
 
     /// [`NovaDb::execute_uncommitted`] with an explicit [`DialectMode`].
     pub fn execute_uncommitted_with(&self, sql: &str, mode: DialectMode) -> Result<()> {
+        self.note_session_state(sql, mode);
         let connection = self.inner.connection.lock();
         let state = self.inner.schema_state(&connection)?;
         execute_guarded_sql_conn(&connection, sql, mode, &self.inner.auth, &state.trusted)
@@ -822,17 +1110,32 @@ impl NovaDb {
     /// [`DialectMode::Passthrough`] to see the types exactly as written in DDL.
     pub fn query_typed(&self, sql: &str, mode: DialectMode) -> Result<TypedQueryResult> {
         let connection = self.inner.connection.lock();
-        self.query_on(&connection, sql, mode)
+        self.query_on(&connection, sql, mode, ResultLimit::UNLIMITED)
     }
 
-    /// Like [`NovaDb::query`], but returns `None` instead of waiting when
-    /// another thread is using this connection. Lets a pool pick an idle reader.
-    pub(crate) fn try_query(&self, sql: &str) -> Option<Result<QueryResult>> {
+    /// [`NovaDb::query_typed`] that fails with [`Error::ResultTooLarge`]
+    /// instead of materialising a result bigger than `limit`.
+    pub fn query_limited(
+        &self,
+        sql: &str,
+        mode: DialectMode,
+        limit: ResultLimit,
+    ) -> Result<TypedQueryResult> {
+        let connection = self.inner.connection.lock();
+        self.query_on(&connection, sql, mode, limit)
+    }
+
+    /// Like [`NovaDb::query_typed`], but returns `None` instead of waiting
+    /// when another thread is using this connection. Lets a pool pick an idle
+    /// reader.
+    pub(crate) fn try_query_typed(
+        &self,
+        sql: &str,
+        mode: DialectMode,
+        limit: ResultLimit,
+    ) -> Option<Result<TypedQueryResult>> {
         let connection = self.inner.connection.try_lock()?;
-        Some(
-            self.query_on(&connection, sql, DialectMode::TSql)
-                .map(TypedQueryResult::into_query_result),
-        )
+        Some(self.query_on(&connection, sql, mode, limit))
     }
 
     fn query_on(
@@ -840,6 +1143,7 @@ impl NovaDb {
         connection: &Connection,
         sql: &str,
         mode: DialectMode,
+        limit: ResultLimit,
     ) -> Result<TypedQueryResult> {
         let trusted_sync_triggers = Arc::clone(&self.inner.schema_state(connection)?.trusted);
         let scope = self
@@ -861,10 +1165,10 @@ impl NovaDb {
             // the cache with single-use statements.
             if self.inner.statement_seen_before(&normalized) {
                 let mut statement = connection.prepare_cached(&normalized)?;
-                run_read_only_statement(&mut statement)
+                run_read_only_statement(&mut statement, limit)
             } else {
                 let mut statement = connection.prepare(&normalized)?;
-                run_read_only_statement(&mut statement)
+                run_read_only_statement(&mut statement, limit)
             }
         })()
         .map_err(|error| explain_apply_failure(sql, error));
@@ -1985,6 +2289,33 @@ pub(crate) fn normalize_sql_dialect_cached(sql: &str) -> Result<Arc<str>> {
         NORMALIZE_CACHE.with(|cache| cache.borrow_mut().insert(sql, Arc::clone(&normalized)));
     }
     Ok(normalized)
+}
+
+/// Pays the one-time start-up costs (SQL dialect screen, T-SQL normalizer
+/// regexes, script classifier) on the calling thread so the first real
+/// statement does not stall for ~1 s. Idempotent and cheap once done; servers
+/// call it from a background task at boot.
+pub fn warm_up() {
+    static DONE: std::sync::Once = std::sync::Once::new();
+    DONE.call_once(|| {
+        dialect_screen::force();
+        const CORPUS: &[&str] = &[
+            "SELECT TOP 10 [id], name + ' x' AS n, ISNULL(a, 0), GETDATE(), LEN(b) FROM [dbo].[t] WITH (NOLOCK) WHERE id = @p1 ORDER BY id",
+            "INSERT INTO t (a, b) VALUES (1, 'x'); UPDATE t SET a = a + 1 WHERE id = 2; DELETE FROM t WHERE id = 3",
+            "CREATE TABLE t (id INT IDENTITY(1,1) PRIMARY KEY, n NVARCHAR(50) NOT NULL, d DATETIME2 DEFAULT GETDATE(), f BIT, m MONEY, g UNIQUEIDENTIFIER)",
+            "ALTER TABLE t ADD c VARCHAR(MAX); CREATE INDEX i ON t(n); DROP TABLE IF EXISTS t2",
+            "SELECT CAST(a AS VARCHAR(10)), CONVERT(INT, b), DATEADD(day, 1, d), DATEDIFF(day, a, b), CHARINDEX('a', n), a ^ b, 0x1F FROM t",
+            "SELECT COUNT(*), SUM(x) OVER (PARTITION BY g ORDER BY id) FROM t GROUP BY g HAVING COUNT(*) > 1",
+            "DECLARE @i INT = 0; WHILE @i < 3 BEGIN SET @i = @i + 1 END",
+            "INSERT INTO t(a) VALUES (1) RETURNING id",
+            "WITH c AS (SELECT 1 AS x) SELECT * FROM c",
+            "UPDATE t SET a = 1 OUTPUT inserted.id WHERE id = 1",
+        ];
+        for sql in CORPUS {
+            let _ = normalize_sql_dialect(sql);
+            let _ = tsql::classify_script(sql);
+        }
+    });
 }
 
 pub(crate) fn normalize_sql_dialect(sql: &str) -> Result<String> {
@@ -5206,9 +5537,8 @@ fn is_protected_schema_action(
 /// Must run before the connection allocates anything. Failure is harmless
 /// (the connection just keeps the default pool), so the result is ignored.
 #[allow(unsafe_code)]
-fn tune_lookaside(connection: &Connection) {
+fn tune_lookaside(connection: &Connection, slot_count: std::ffi::c_int) {
     const SLOT_BYTES: std::ffi::c_int = 1200;
-    const SLOT_COUNT: std::ffi::c_int = 512;
     // SAFETY: `handle()` is the live sqlite3 pointer owned by `connection`;
     // `SQLITE_DBCONFIG_LOOKASIDE` with a null buffer asks SQLite to allocate
     // the pool itself, takes (int, int) varargs, and is only legal while the
@@ -5220,7 +5550,7 @@ fn tune_lookaside(connection: &Connection) {
             rusqlite::ffi::SQLITE_DBCONFIG_LOOKASIDE,
             std::ptr::null_mut::<std::ffi::c_void>(),
             SLOT_BYTES,
-            SLOT_COUNT,
+            slot_count,
         )
     };
 }
@@ -5236,8 +5566,79 @@ fn database_display_name(path: Option<&str>) -> String {
         )
 }
 
-fn configure_connection(connection: &Connection, options: &OpenOptions) -> Result<()> {
-    tune_lookaside(connection);
+/// Connections currently open in this process (drives [`connection_budget`]).
+static LIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+/// Fixed lookaside size per connection in KiB; 0 selects the automatic tiers.
+static LOOKASIDE_KIB: AtomicUsize = AtomicUsize::new(0);
+
+/// Sets a fixed lookaside memory pool per connection (KiB), or restores the
+/// automatic scaling with `None`. Applies to connections opened afterwards.
+///
+/// Automatic scaling gives the first 64 connections the full ~600 KiB pool
+/// that keeps hot reads fast and 150 KiB to later ones (75 KiB beyond 4096
+/// connections). Measured with 1000 busy PostgreSQL sessions: 600 KiB each
+/// ~790 MiB RSS, 150 KiB each ~450 MiB at the same throughput, while 75 KiB or
+/// less collapses throughput 5x (SQLite falls back to the shared allocator).
+pub fn set_lookaside_kib(kib: Option<usize>) {
+    LOOKASIDE_KIB.store(kib.unwrap_or(0), Ordering::Relaxed);
+}
+
+/// Number of `SQLite` connections NovaDB currently holds open in this process.
+#[must_use]
+pub fn open_connection_count() -> usize {
+    LIVE_CONNECTIONS.load(Ordering::Relaxed)
+}
+
+/// Lookaside slots and page-cache KiB for a connection opened while `live`
+/// others are open.
+fn connection_budget(live: usize) -> (std::ffi::c_int, i64) {
+    let fixed = LOOKASIDE_KIB.load(Ordering::Relaxed);
+    let (auto_slots, cache_kib) = match live {
+        0..64 => (512, 64_000),
+        64..256 => (128, 16_000),
+        256..4096 => (128, 4_000),
+        _ => (64, 2_000),
+    };
+    let slots = if fixed == 0 {
+        auto_slots
+    } else {
+        std::ffi::c_int::try_from(fixed.saturating_mul(1024) / 1200).unwrap_or(std::ffi::c_int::MAX)
+    };
+    (slots, cache_kib)
+}
+
+/// Reserves a slot in [`LIVE_CONNECTIONS`] while a connection is being set up
+/// (so a burst of simultaneous opens sees an accurate count); released on drop
+/// unless the connection was built.
+struct LiveReservation {
+    ordinal: usize,
+    armed: bool,
+}
+
+impl LiveReservation {
+    fn take() -> Self {
+        Self {
+            ordinal: LIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed),
+            armed: true,
+        }
+    }
+
+    fn keep(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LiveReservation {
+    fn drop(&mut self) {
+        if self.armed {
+            LIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+fn configure_connection(connection: &Connection, options: &OpenOptions, live: usize) -> Result<()> {
+    let (slots, cache_kib) = connection_budget(live);
+    tune_lookaside(connection, slots);
     // The busy handler must be installed first: the pragmas below (notably the
     // journal-mode switch) can themselves contend with other connections.
     connection.busy_timeout(options.busy_timeout)?;
@@ -5247,7 +5648,7 @@ fn configure_connection(connection: &Connection, options: &OpenOptions) -> Resul
     connection.pragma_update(None, "synchronous", "NORMAL")?;
     connection.pragma_update(None, "wal_autocheckpoint", WAL_AUTOCHECKPOINT_PAGES)?;
     connection.pragma_update(None, "temp_store", "MEMORY")?;
-    connection.pragma_update(None, "cache_size", -64000)?;
+    connection.pragma_update(None, "cache_size", -cache_kib)?;
     connection.pragma_update(None, "mmap_size", 268435456)?;
     connection.pragma_update(None, "recursive_triggers", "ON")?;
     connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;

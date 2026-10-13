@@ -130,7 +130,7 @@ novadb console app.novadb      # interactive shell
 <span class="tag">Game</span>
 <h3>Leaderboards and player data</h3>
 <p>The C# SDK targets .NET Standard 2.1 and runs in Unity (including WebGL with a transport adapter). Keep scores behind your own game server; never ship the admin token.</p>
-<p><a href="./sdks/csharp">C# / Unity SDK</a> · <a href="https://github.com/hoangtuvungcao/NovaDB/tree/master/examples/game-leaderboard">leaderboard example</a></p>
+<p><a href="./sdks/csharp">C# / Unity SDK</a> · <a href="./guides/game-servers">game server guide</a> · <a href="https://github.com/hoangtuvungcao/NovaDB/tree/master/examples/game-leaderboard">leaderboard example</a></p>
 </div>
 </div>
 

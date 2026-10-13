@@ -563,8 +563,15 @@ fn main() -> anyhow::Result<()> {
   environment variable.
 * `NovaDbPool` readers are `query_only` connections. Every connection is opened with WAL, `synchronous=NORMAL`,
   `foreign_keys=ON` and `wal_autocheckpoint=1000`.
-* Each connection reserves about 600 KiB of SQLite lookaside memory (`tune_lookaside`); 100 connections cost roughly
-  60 MB extra.
+* Each connection reserves SQLite lookaside memory (`tune_lookaside`): 600 KiB for the first 64 connections, then
+  150 KiB (75 KiB beyond 4096). A gateway session costs about 0.4-0.5 MiB in total (1000 sessions are about 490 MiB RSS);
+  an HTTP connection about 60-100 KiB. Tune with `--lookaside-kib`.
+* `novadbd` / `novadb serve` for many clients: HTTP reads use a per-database pool of `query_only` readers
+  (`--read-pool-size`), autocommit writes are group-committed (one committer thread per database file, success is
+  reported after the batch COMMIT), WAL checkpoints run PASSIVE on a background thread. Defaults: SQL text 16 MiB
+  (`--max-sql-bytes`), HTTP body 64 MiB (`--max-request-body-bytes`), HTTP connections 10000, PG/MySQL sessions 1000.
+  See `docs/DEPLOYMENT.md` section 5.0 and the website configuration reference for all flags.
+* `NovaDb::set_foreign_keys` toggles foreign key enforcement per connection (MySQL `SET FOREIGN_KEY_CHECKS` maps to it).
 
 ### 8.2 API overview (`novadb_core`)
 

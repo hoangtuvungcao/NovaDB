@@ -73,8 +73,10 @@ ExecStart=/usr/local/bin/novadbd \
   --data-dir /var/lib/novadb \
   --request-timeout-secs 30 \
   --pg-auth-method scram-sha-256 \
-  --pg-max-connections 100
+  --pg-max-connections 1000
 Restart=on-failure
+# Thousands of clients need file descriptors: at least 2x the expected connections.
+LimitNOFILE=65536
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -102,7 +104,10 @@ Every server flag has an environment variable; see [Configuration](/reference/co
 NOVADB_CORS_ORIGINS=https://app.example.com
 NOVADB_REQUEST_TIMEOUT_SECS=30
 NOVADB_PG_AUTH_METHOD=scram-sha-256
-NOVADB_PG_MAX_CONNECTIONS=100
+NOVADB_PG_MAX_CONNECTIONS=1000
+# Large servers: see Configuration and the game-servers guide
+# NOVADB_WORKER_THREADS=8
+# NOVADB_READ_POOL_SIZE=8
 RUST_LOG=novadbd=info,novadb_server=info,novadb_wire=info,tower_http=warn
 ```
 

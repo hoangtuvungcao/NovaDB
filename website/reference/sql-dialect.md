@@ -53,7 +53,7 @@ their state in the table `_novadb_sequences`; user-defined alias types (`CREATE 
 |---|---|
 | `.../sql/query` | Exactly one statement that SQLite reports as read-only |
 | `.../sql/execute` | Non-empty batch, one transaction. Plain `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`, `ATTACH`, `DETACH`, `VACUUM` rejected. T-SQL `BEGIN TRAN ... COMMIT/ROLLBACK` pairs inside the batch work |
-| both | Writes to internal `_novadb_*` tables rejected; SQL text up to 256 KiB. Constructs that need the interpreter (`WHILE`, `IF`, `NEXT VALUE FOR`...) are rejected by `query` with "requires execute_batch()" |
+| both | Writes to internal `_novadb_*` tables rejected; SQL text up to `--max-sql-bytes` (default 16 MiB). Constructs that need the interpreter (`WHILE`, `IF`, `NEXT VALUE FOR`...) are rejected by `query` with "requires execute_batch()" |
 
 The CLI console and the PostgreSQL and MySQL gateways allow explicit `BEGIN`/`COMMIT`/`ROLLBACK`. `novadb exec` runs
 the whole text as one atomic call: a transaction opened with `BEGIN TRAN` must be closed in the same call, a bare

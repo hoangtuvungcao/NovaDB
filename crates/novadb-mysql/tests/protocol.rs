@@ -1551,6 +1551,35 @@ async fn result_columns_use_declared_types() {
 }
 
 #[tokio::test]
+async fn set_foreign_key_checks_is_honoured_per_session() {
+    let (addr, _dir) = start(|_| {}).await;
+    let mut client = Client::connect(addr, "u", "", None).await.unwrap();
+    client.ok("CREATE DATABASE fkdb").await;
+    client.ok("USE fkdb").await;
+    client.ok("CREATE TABLE p (id INT PRIMARY KEY)").await;
+    client
+        .ok("CREATE TABLE c (id INT PRIMARY KEY, p INT, FOREIGN KEY (p) REFERENCES p(id))")
+        .await;
+    assert!(matches!(
+        client.query("INSERT INTO c VALUES (1, 99)").await,
+        Response::Err { .. }
+    ));
+    client.ok("SET FOREIGN_KEY_CHECKS=0").await;
+    client.ok("INSERT INTO c VALUES (1, 99)").await;
+    // an independent session still enforces
+    let mut other = Client::connect(addr, "u", "", Some("fkdb")).await.unwrap();
+    assert!(matches!(
+        other.query("INSERT INTO c VALUES (2, 98)").await,
+        Response::Err { .. }
+    ));
+    client.ok("SET FOREIGN_KEY_CHECKS=1").await;
+    assert!(matches!(
+        client.query("INSERT INTO c VALUES (3, 97)").await,
+        Response::Err { .. }
+    ));
+}
+
+#[tokio::test]
 async fn phpmyadmin_dump_imports_without_errors() {
     let (addr, _dir) = start(|_| {}).await;
     let mut client = Client::connect_with(
