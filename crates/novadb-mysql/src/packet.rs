@@ -91,11 +91,25 @@ pub const FLAG_BLOB: u16 = 0x0010;
 pub const FLAG_BINARY: u16 = 0x0080;
 pub const FLAG_NUM: u16 = 0x8000;
 
+/// Size of the per-connection receive buffer. A command usually arrives in
+/// one TCP segment, so one `read` serves header and payload.
+const READ_BUFFER: usize = 4096;
+/// Output buffers that grew past this are released after the flush so idle
+/// sessions do not pin big result sets.
+const KEEP_OUT_CAPACITY: usize = 256 * 1024;
+
 /// Reads and writes framed packets, tracking the sequence id.
+///
+/// Reads go through a small buffer (one syscall per command instead of two
+/// to three) and every response is accumulated in `out` and sent with one
+/// `write`.
 pub struct PacketIo<S> {
     stream: S,
     sequence: u8,
     out: Vec<u8>,
+    inbuf: Vec<u8>,
+    in_pos: usize,
+    in_end: usize,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> PacketIo<S> {
@@ -104,6 +118,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> PacketIo<S> {
             stream,
             sequence: 0,
             out: Vec::with_capacity(4096),
+            inbuf: vec![0; READ_BUFFER],
+            in_pos: 0,
+            in_end: 0,
         }
     }
 
@@ -112,24 +129,47 @@ impl<S: AsyncRead + AsyncWrite + Unpin> PacketIo<S> {
         self.sequence = 0;
     }
 
-    /// Reads one logical packet; `Ok(None)` on a clean EOF before a header.
-    pub async fn read_packet(&mut self) -> io::Result<Option<Vec<u8>>> {
-        let mut payload = Vec::new();
-        loop {
-            let mut header = [0_u8; 4];
-            match self.stream.read_exact(&mut header).await {
-                Ok(_) => {}
-                Err(error)
-                    if error.kind() == io::ErrorKind::UnexpectedEof && payload.is_empty() =>
-                {
-                    return Ok(None);
-                }
-                Err(error) => return Err(error),
+    /// Makes at least `need` (<= buffer size) bytes available; `Ok(false)` on
+    /// a clean EOF with nothing buffered.
+    async fn ensure(&mut self, need: usize) -> io::Result<bool> {
+        while self.in_end - self.in_pos < need {
+            if self.in_pos == self.in_end {
+                self.in_pos = 0;
+                self.in_end = 0;
+            } else if self.inbuf.len() - self.in_pos < need {
+                self.inbuf.copy_within(self.in_pos..self.in_end, 0);
+                self.in_end -= self.in_pos;
+                self.in_pos = 0;
             }
+            let read = self.stream.read(&mut self.inbuf[self.in_end..]).await?;
+            if read == 0 {
+                if self.in_end == self.in_pos {
+                    return Ok(false);
+                }
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            self.in_end += read;
+        }
+        Ok(true)
+    }
+
+    /// Reads one logical packet into `payload` (cleared first); `Ok(false)`
+    /// on a clean EOF before a header.
+    pub async fn read_packet_into(&mut self, payload: &mut Vec<u8>) -> io::Result<bool> {
+        payload.clear();
+        loop {
+            if !self.ensure(4).await? {
+                if payload.is_empty() {
+                    return Ok(false);
+                }
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            let header = &self.inbuf[self.in_pos..self.in_pos + 4];
             let length = usize::from(header[0])
                 | (usize::from(header[1]) << 8)
                 | (usize::from(header[2]) << 16);
             self.sequence = header[3].wrapping_add(1);
+            self.in_pos += 4;
             if payload.len() + length > MAX_PAYLOAD {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -138,11 +178,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin> PacketIo<S> {
             }
             let start = payload.len();
             payload.resize(start + length, 0);
-            self.stream.read_exact(&mut payload[start..]).await?;
+            let buffered = (self.in_end - self.in_pos).min(length);
+            payload[start..start + buffered]
+                .copy_from_slice(&self.inbuf[self.in_pos..self.in_pos + buffered]);
+            self.in_pos += buffered;
+            if buffered < length {
+                self.stream
+                    .read_exact(&mut payload[start + buffered..])
+                    .await?;
+            }
             if length < MAX_PACKET_CHUNK {
-                return Ok(Some(payload));
+                return Ok(true);
             }
         }
+    }
+
+    /// Reads one logical packet; `Ok(None)` on a clean EOF before a header.
+    pub async fn read_packet(&mut self) -> io::Result<Option<Vec<u8>>> {
+        let mut payload = Vec::new();
+        Ok(self
+            .read_packet_into(&mut payload)
+            .await?
+            .then_some(payload))
     }
 
     /// Buffers one logical packet (splitting it when necessary).
@@ -162,10 +219,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin> PacketIo<S> {
         }
     }
 
+    /// Buffers one packet whose payload `fill` appends directly to the
+    /// output buffer (no intermediate allocation).
+    pub fn write_packet_with(&mut self, fill: impl FnOnce(&mut Vec<u8>)) {
+        let start = self.out.len();
+        self.out.extend_from_slice(&[0, 0, 0, self.sequence]);
+        fill(&mut self.out);
+        let length = self.out.len() - start - 4;
+        if length < MAX_PACKET_CHUNK {
+            let bytes = length.to_le_bytes();
+            self.out[start..start + 3].copy_from_slice(&bytes[..3]);
+            self.sequence = self.sequence.wrapping_add(1);
+        } else {
+            // Huge payload: re-frame through the splitting path.
+            let payload = self.out.split_off(start + 4);
+            self.out.truncate(start);
+            self.write_packet(&payload);
+        }
+    }
+
     pub async fn flush(&mut self) -> io::Result<()> {
         if !self.out.is_empty() {
             self.stream.write_all(&self.out).await?;
             self.out.clear();
+            if self.out.capacity() > KEEP_OUT_CAPACITY {
+                self.out = Vec::with_capacity(4096);
+            }
         }
         self.stream.flush().await
     }
@@ -362,13 +441,19 @@ impl ColumnDef {
     /// Encodes a `ColumnDefinition41` packet payload.
     pub fn encode(&self, field_list_default: bool) -> Vec<u8> {
         let mut buf = Vec::with_capacity(48 + self.name.len() * 2);
-        put_lenenc_bytes(&mut buf, b"def");
-        put_lenenc_bytes(&mut buf, self.schema.as_bytes());
-        put_lenenc_bytes(&mut buf, self.table.as_bytes());
-        put_lenenc_bytes(&mut buf, self.table.as_bytes());
-        put_lenenc_bytes(&mut buf, self.name.as_bytes());
-        put_lenenc_bytes(&mut buf, self.name.as_bytes());
-        put_lenenc_int(&mut buf, 0x0c);
+        self.encode_into(&mut buf, field_list_default);
+        buf
+    }
+
+    /// Appends the `ColumnDefinition41` payload to `buf`.
+    pub fn encode_into(&self, buf: &mut Vec<u8>, field_list_default: bool) {
+        put_lenenc_bytes(buf, b"def");
+        put_lenenc_bytes(buf, self.schema.as_bytes());
+        put_lenenc_bytes(buf, self.table.as_bytes());
+        put_lenenc_bytes(buf, self.table.as_bytes());
+        put_lenenc_bytes(buf, self.name.as_bytes());
+        put_lenenc_bytes(buf, self.name.as_bytes());
+        put_lenenc_int(buf, 0x0c);
         buf.extend_from_slice(&self.charset.to_le_bytes());
         buf.extend_from_slice(&self.length.to_le_bytes());
         buf.push(self.column_type);
@@ -378,7 +463,6 @@ impl ColumnDef {
         if field_list_default {
             buf.push(0xfb);
         }
-        buf
     }
 }
 

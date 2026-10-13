@@ -1774,3 +1774,128 @@ async fn versioned_comments_and_comment_only_queries() {
         assert_eq!(client.query(sql).await.error_code(), 1235, "{sql}");
     }
 }
+
+#[tokio::test]
+async fn cached_statement_plans_behave_like_fresh_translations() {
+    let (addr, _dir) = start(|_| {}).await;
+    let mut client = open(addr).await;
+    let mut other = open(addr).await;
+    client.ok("CREATE DATABASE plans_a").await;
+    client.ok("CREATE DATABASE plans_b").await;
+    client.ok("USE plans_a").await;
+    client
+        .ok("CREATE TABLE g (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(20), score INT, at DATETIME)")
+        .await;
+    // The same statement shapes, many literals: every call must see its own values.
+    for i in 1..=30_i64 {
+        let name = if i % 3 == 0 { "it''s" } else { "plain" };
+        let (affected, last) = client
+            .ok(&format!(
+                "INSERT INTO g (name, score, at) VALUES ('{name}{i}', {}, '2024-05-06 07:08:{:02}')",
+                i * 10 - 100,
+                i
+            ))
+            .await;
+        assert_eq!((affected, last), (1, i as u64));
+    }
+    for i in [1_i64, 7, 30, 12, 7] {
+        let response = client
+            .query(&format!("SELECT id, name, score FROM g WHERE id = {i}"))
+            .await;
+        assert_eq!(response.rows().len(), 1);
+        assert_eq!(response.cell(0, 0), Some(i.to_string()));
+        assert_eq!(response.cell(0, 2), Some((i * 10 - 100).to_string()));
+    }
+    let response = client
+        .query(
+            "SELECT id FROM g WHERE score >= -50 AND name <> 'plain1' ORDER BY id LIMIT 3 OFFSET 2",
+        )
+        .await;
+    assert_eq!(response.rows().len(), 3);
+    let response = client
+        .query("SELECT id FROM g ORDER BY id LIMIT 4, 3")
+        .await;
+    assert_eq!(response.rows().len(), 3);
+    assert_eq!(response.cell(0, 0).as_deref(), Some("5"));
+    let response = client
+        .query("SELECT id FROM g ORDER BY id LIMIT 10, 3")
+        .await;
+    assert_eq!(response.cell(0, 0).as_deref(), Some("11"));
+    // Literal text is never interpreted as SQL, whatever the cache holds.
+    for payload in ["x' OR '1'='1", "semi;colon", "q\"; DROP TABLE g; --"] {
+        let escaped = payload.replace('\'', "''");
+        let response = client
+            .query(&format!("SELECT id FROM g WHERE name = '{escaped}'"))
+            .await;
+        assert!(response.rows().is_empty(), "{payload}");
+    }
+    // Same shape in another database reads that database's table.
+    client.ok("USE plans_b").await;
+    client
+        .ok("CREATE TABLE g (id INT PRIMARY KEY, name TEXT)")
+        .await;
+    client
+        .ok("INSERT INTO g (id, name) VALUES (1, 'other')")
+        .await;
+    let response = client.query("SELECT id, name FROM g WHERE id = 1").await;
+    assert_eq!(response.cell(0, 1).as_deref(), Some("other"));
+    client.ok("USE plans_a").await;
+    let response = client.query("SELECT id, name FROM g WHERE id = 1").await;
+    assert_eq!(response.cell(0, 1).as_deref(), Some("plain1"));
+    // Writes inside a transaction roll back; autocommit writes persist.
+    client.ok("BEGIN").await;
+    client.ok("UPDATE g SET score = 1000 WHERE id = 2").await;
+    client.ok("UPDATE g SET score = 1001 WHERE id = 3").await;
+    client.ok("ROLLBACK").await;
+    let response = client.query("SELECT score FROM g WHERE id = 2").await;
+    assert_eq!(response.cell(0, 0).as_deref(), Some("-80"));
+    client.ok("UPDATE g SET score = 5 WHERE id = 2").await;
+    other.ok("USE plans_a").await;
+    let response = other.query("SELECT score FROM g WHERE id = 2").await;
+    assert_eq!(response.cell(0, 0).as_deref(), Some("5"));
+    // Result typing follows DDL made through this gateway.
+    let response = client.query("SELECT id, at FROM g WHERE id = 1").await;
+    let Response::Rows { columns, .. } = &response else {
+        panic!("{response:?}");
+    };
+    assert_eq!(columns[1].1, 0x0c, "DATETIME");
+    client.ok("ALTER TABLE g MODIFY at VARCHAR(30)").await;
+    let response = client.query("SELECT id, at FROM g WHERE id = 2").await;
+    let Response::Rows { columns, .. } = &response else {
+        panic!("{response:?}");
+    };
+    assert_eq!(columns[1].1, 0xfd, "VARCHAR after ALTER");
+    // Errors come back per statement and the session stays usable.
+    assert_eq!(
+        client
+            .query("SELECT nope FROM g WHERE id = 1")
+            .await
+            .error_code(),
+        1054
+    );
+    assert_eq!(
+        client
+            .query("INSERT INTO g (id, name) VALUES (1, 'dup')")
+            .await
+            .error_code(),
+        1062
+    );
+    let response = client.query("SELECT COUNT(*) FROM g WHERE id > 25").await;
+    assert_eq!(response.cell(0, 0).as_deref(), Some("5"));
+    // Prepared statements share plans across connections and DDL.
+    let (select, _, columns) = client
+        .prepare("SELECT id, name FROM g WHERE id = ?")
+        .await
+        .unwrap();
+    assert_eq!(columns, 2);
+    for i in [3, 9, 3] {
+        let response = client.execute(select, &[Some(&format!("i:{i}"))]).await;
+        assert_eq!(response.cell(0, 0), Some(i.to_string()));
+    }
+    let (other_select, _, _) = other
+        .prepare("SELECT id, name FROM g WHERE id = ?")
+        .await
+        .unwrap();
+    let response = other.execute(other_select, &[Some("i:4")]).await;
+    assert_eq!(response.cell(0, 0).as_deref(), Some("4"));
+}

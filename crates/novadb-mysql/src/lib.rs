@@ -21,6 +21,7 @@ mod ddl;
 mod lexer;
 mod meta;
 mod packet;
+mod plan;
 mod session;
 mod translate;
 mod typing;
@@ -138,6 +139,11 @@ pub(crate) struct ServerState {
     pub next_connection_id: AtomicU32,
     pub active_connections: AtomicUsize,
     pub started: Instant,
+    /// Translated-statement cache shared by all sessions.
+    pub plans: plan::PlanCache,
+    /// Bounds concurrent `open_session` calls so a connection storm does not
+    /// start thousands of blocking threads at once.
+    pub opens: Semaphore,
 }
 
 /// Validates the configuration, prepares the default database, binds the
@@ -187,8 +193,12 @@ pub async fn serve_mysql_listener(
         next_connection_id: AtomicU32::new(1),
         active_connections: AtomicUsize::new(0),
         started: Instant::now(),
+        plans: plan::PlanCache::new(),
+        opens: Semaphore::new(32),
     });
 
+    let workers = SessionWorkers::start(session_worker_count());
+    let mut next_worker = 0_usize;
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
@@ -205,7 +215,7 @@ pub async fn serve_mysql_listener(
             continue;
         };
         let state = Arc::clone(&state);
-        tokio::spawn(async move {
+        let run = move |stream: TcpStream| async move {
             let _permit = permit;
             state.active_connections.fetch_add(1, Ordering::Relaxed);
             debug!(%peer, "new MySQL client connection");
@@ -214,7 +224,88 @@ pub async fn serve_mysql_listener(
             }
             state.active_connections.fetch_sub(1, Ordering::Relaxed);
             debug!(%peer, "MySQL client disconnected");
-        });
+        };
+        match workers.pick(&mut next_worker) {
+            Some(worker) => {
+                // Re-register the socket with the worker's own reactor so all of
+                // this connection's I/O stays on that thread.
+                match stream.into_std() {
+                    Ok(std_stream) => {
+                        let _ = worker.send(Box::new(move || {
+                            if let Ok(stream) = TcpStream::from_std(std_stream) {
+                                tokio::spawn(run(stream));
+                            }
+                        }));
+                    }
+                    Err(error) => {
+                        warn!(%error, "could not hand MySQL connection to a session worker")
+                    }
+                }
+            }
+            None => {
+                tokio::spawn(run(stream));
+            }
+        }
+    }
+}
+
+type SessionStart = Box<dyn FnOnce() + Send>;
+
+/// Number of single-threaded session runtimes (`NOVADB_MYSQL_WORKERS`;
+/// default: the CPU count, at most 16; 0 keeps sessions on the server's
+/// shared runtime).
+fn session_worker_count() -> usize {
+    std::env::var("NOVADB_MYSQL_WORKERS")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(4, |count| count.get().clamp(1, 16))
+        })
+}
+
+/// Session runtimes: one OS thread each, running a current-thread tokio
+/// runtime. A connection is pinned to one of them for its whole life, so its
+/// socket readiness, parsing and cheap queries never cross threads (no work
+/// stealing, no futex wake-ups); slow database calls still go to that
+/// runtime's blocking pool.
+struct SessionWorkers {
+    senders: Vec<tokio::sync::mpsc::UnboundedSender<SessionStart>>,
+}
+
+impl SessionWorkers {
+    fn start(count: usize) -> Self {
+        let mut senders = Vec::new();
+        for index in 0..count {
+            let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<SessionStart>();
+            let spawned = std::thread::Builder::new()
+                .name(format!("novadb-mysql-{index}"))
+                .spawn(move || {
+                    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .max_blocking_threads(256)
+                        .build()
+                    else {
+                        return;
+                    };
+                    runtime.block_on(async move {
+                        while let Some(start) = receiver.recv().await {
+                            start();
+                        }
+                    });
+                });
+            if spawned.is_ok() {
+                senders.push(sender);
+            }
+        }
+        Self { senders }
+    }
+
+    fn pick(&self, next: &mut usize) -> Option<&tokio::sync::mpsc::UnboundedSender<SessionStart>> {
+        if self.senders.is_empty() {
+            return None;
+        }
+        *next = (*next + 1) % self.senders.len();
+        self.senders.get(*next)
     }
 }
 

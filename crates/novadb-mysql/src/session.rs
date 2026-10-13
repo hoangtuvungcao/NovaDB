@@ -27,6 +27,7 @@ use crate::packet::{
     TYPE_TIME, TYPE_TIMESTAMP, TYPE_TINY, TYPE_VAR_STRING, TYPE_YEAR, eof_packet, err_packet,
     ok_packet, put_lenenc_bytes, put_lenenc_int,
 };
+use crate::plan::{self, Arg, Entry, Plan, Typed, float_literal, int_literal};
 use crate::translate::{self, Env};
 use crate::typing::{self, CellKind, SelectInfo};
 use crate::{DEFAULT_DATABASE, HANDSHAKE_TIMEOUT, SERVER_VERSION, ServerState};
@@ -96,6 +97,31 @@ fn map_db_error(error: &novadb_core::Error) -> MyError {
             "23000",
             format!("Cannot add or update a child row: a foreign key constraint fails ({detail})"),
         );
+    }
+    match error {
+        // ER_QUERY_TIMEOUT: the statement hit the statement timeout and was
+        // interrupted; the connection stays usable.
+        novadb_core::Error::Timeout(detail) => {
+            return MyError::new(
+                3024,
+                "HY000",
+                format!(
+                    "Query execution was interrupted, maximum statement execution time exceeded: {detail}"
+                ),
+            );
+        }
+        // The server rolled back a transaction that held the write lock for
+        // too long. 1205 is the code clients already retry on.
+        novadb_core::Error::TransactionExpired(detail) => {
+            return MyError::new(
+                1205,
+                "HY000",
+                format!(
+                    "Lock wait timeout exceeded; try restarting transaction (the transaction was rolled back by the server: {detail})"
+                ),
+            );
+        }
+        _ => {}
     }
     let message = error.to_string();
     let lower = message.to_ascii_lowercase();
@@ -167,8 +193,40 @@ fn ok_outcome() -> Outcome {
     }
 }
 
+/// What to run: a SQL script, or one statement with bound parameters.
+#[derive(Clone)]
+enum Exec {
+    Script(String),
+    Bound(Arc<str>, Vec<novadb_core::Param>),
+}
+
+impl Exec {
+    fn query(&self, db: &NovaDb) -> novadb_core::Result<TypedQueryResult> {
+        match self {
+            Self::Script(sql) => db.query_typed(sql, DialectMode::Passthrough),
+            Self::Bound(sql, params) => {
+                db.query_typed_params(sql, params, DialectMode::Passthrough)
+            }
+        }
+    }
+
+    fn write(&self, db: &NovaDb, in_transaction: bool) -> novadb_core::Result<ExecStats> {
+        let mode = DialectMode::Passthrough;
+        match (self, in_transaction) {
+            (Self::Script(sql), true) => db.execute_uncommitted_with_stats(sql, mode),
+            (Self::Script(sql), false) => db.execute_with_stats(sql, mode),
+            (Self::Bound(sql, params), true) => {
+                db.execute_uncommitted_with_stats_params(sql, params, mode)
+            }
+            (Self::Bound(sql, params), false) => db.execute_with_stats_params(sql, params, mode),
+        }
+    }
+}
+
 struct Prepared {
     tokens: Vec<Token>,
+    /// Cached translation template (shared by all sessions), if cacheable.
+    plan: Option<Arc<Plan>>,
     num_params: usize,
     param_types: Vec<(u8, bool)>,
     long_data: HashMap<usize, Vec<u8>>,
@@ -213,6 +271,8 @@ pub(crate) async fn run(
     peer: SocketAddr,
     state: Arc<ServerState>,
 ) -> io::Result<()> {
+    let _connection =
+        novadb_core::metrics::connection_opened(novadb_core::metrics::Protocol::MySql);
     let connection_id = state.next_connection_id.fetch_add(1, Ordering::Relaxed);
     let defaults = meta::default_variables(state.max_connections);
     let mut session = Session {
@@ -444,7 +504,10 @@ impl Session {
             managed_database_path(&self.state.data_dir, name)
                 .ok_or_else(|| MyError::new(1049, "42000", format!("Unknown database '{name}'")))?
         };
-        let opened = tokio::task::spawn_blocking(move || NovaDb::open_session(path))
+        let _slot = self.state.opens.acquire().await;
+        let options =
+            novadb_core::OpenOptions::new().protocol(novadb_core::metrics::Protocol::MySql);
+        let opened = tokio::task::spawn_blocking(move || NovaDb::open_with_options(path, &options))
             .await
             .map_err(|error| MyError::internal(format!("database task failed: {error}")))?;
         opened.map_err(|error| {
@@ -457,11 +520,15 @@ impl Session {
     // ------------------------------------------------------------------
 
     async fn command_loop(&mut self) -> io::Result<()> {
+        let mut packet = Vec::new();
         loop {
             self.io.reset_sequence();
-            let Some(packet) = self.io.read_packet().await? else {
+            if packet.capacity() > 64 * 1024 {
+                packet = Vec::new();
+            }
+            if !self.io.read_packet_into(&mut packet).await? {
                 return Ok(());
-            };
+            }
             let Some((&command, payload)) = packet.split_first() else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -565,22 +632,24 @@ impl Session {
     }
 
     fn write_result_set(&mut self, result: &ResultSet, binary: bool, extra_status: u16) {
-        let mut count = Vec::new();
-        put_lenenc_int(&mut count, result.columns.len() as u64);
-        self.io.write_packet(&count);
+        let columns = result.columns.len() as u64;
+        self.io
+            .write_packet_with(|buf| put_lenenc_int(buf, columns));
         for column in &result.columns {
-            self.io.write_packet(&column.encode(false));
+            self.io
+                .write_packet_with(|buf| column.encode_into(buf, false));
         }
         if !self.deprecate_eof() {
             self.io.write_packet(&eof_packet(self.status()));
         }
         for row in &result.rows {
-            let encoded = if binary {
-                encode_binary_row(&result.columns, row)
-            } else {
-                encode_text_row(&result.columns, row)
-            };
-            self.io.write_packet(&encoded);
+            self.io.write_packet_with(|buf| {
+                if binary {
+                    encode_binary_row_into(buf, &result.columns, row);
+                } else {
+                    encode_text_row_into(buf, &result.columns, row);
+                }
+            });
         }
         let status = self.status() | extra_status;
         if self.deprecate_eof() {
@@ -666,13 +735,18 @@ impl Session {
                 "Prepared statement contains too many placeholders",
             ));
         }
-        let columns = self.describe_columns(&tokens, num_params).await;
+        let plan = self.plan_for_prepared(&tokens);
+        let columns = match &plan {
+            Some(plan) => self.describe_plan(plan).await,
+            None => self.describe_columns(&tokens, num_params).await,
+        };
         let id = self.next_statement_id;
         self.next_statement_id = self.next_statement_id.wrapping_add(1).max(1);
         self.statements.insert(
             id,
             Prepared {
                 tokens,
+                plan,
                 num_params,
                 param_types: Vec::new(),
                 long_data: HashMap::new(),
@@ -730,6 +804,190 @@ impl Session {
                 .collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Statement plans (see `plan.rs`)
+    // ------------------------------------------------------------------
+
+    /// Shared plan of a prepared statement, building it on first use.
+    fn plan_for_prepared(&self, tokens: &[Token]) -> Option<Arc<Plan>> {
+        let key = plan::key_of(&self.database_name, 'p', tokens)?;
+        match self.state.plans.get(&key) {
+            Some(Entry::Plan(plan)) => return Some(plan),
+            Some(Entry::Uncacheable) => return None,
+            None => {}
+        }
+        let built = self.with_env(|env| plan::build(tokens, env));
+        match built {
+            Some(plan) => {
+                let plan = Arc::new(plan);
+                self.state.plans.put(key, Entry::Plan(Arc::clone(&plan)));
+                Some(plan)
+            }
+            None => {
+                self.state.plans.put(key, Entry::Uncacheable);
+                None
+            }
+        }
+    }
+
+    /// Result columns of a prepared SELECT (cached per schema epoch).
+    async fn describe_plan(&mut self, plan: &Plan) -> Vec<ColumnDef> {
+        if !plan.is_query {
+            return Vec::new();
+        }
+        let epoch = self.state.plans.epoch();
+        if let Some((cached, columns)) = plan.described.lock().ok().as_deref().cloned().flatten() {
+            if cached == epoch {
+                return columns;
+            }
+        }
+        let nulls = vec!["NULL".to_owned(); plan.n_params];
+        let sql = format!("SELECT * FROM ({}) LIMIT 0", plan.fill(&nulls));
+        let columns: Vec<ColumnDef> = match self.query(None, sql).await {
+            Ok(result) => result
+                .columns
+                .iter()
+                .map(|name| ColumnDef::new(name, TYPE_VAR_STRING))
+                .collect(),
+            Err(_) => return Vec::new(),
+        };
+        if let Ok(mut slot) = plan.described.lock() {
+            *slot = Some((epoch, columns.clone()));
+        }
+        columns
+    }
+
+    /// Text-protocol fast path: statements that differ only in literals share
+    /// one cached translation. `None` means "take the generic path".
+    async fn try_text_plan(&mut self, tokens: &[Token]) -> Option<Outcome> {
+        let first = tokens.first()?;
+        if first.kind != Kind::Word
+            || !["SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE"]
+                .iter()
+                .any(|verb| first.text.eq_ignore_ascii_case(verb))
+        {
+            return None;
+        }
+        let (abstracted, literals) = plan::abstract_literals(tokens);
+        let key = plan::key_of(&self.database_name, 't', &abstracted)?;
+        let plan = match self.state.plans.get(&key) {
+            Some(Entry::Plan(plan)) => plan,
+            Some(Entry::Uncacheable) => return None,
+            None => {
+                let built = if is_plain_table_scan(tokens) {
+                    None
+                } else {
+                    self.with_env(|env| plan::build_text(tokens, &abstracted, &literals, env))
+                };
+                match built {
+                    Some(plan) => {
+                        let plan = Arc::new(plan);
+                        self.state.plans.put(key, Entry::Plan(Arc::clone(&plan)));
+                        plan
+                    }
+                    None => {
+                        self.state.plans.put(key, Entry::Uncacheable);
+                        return None;
+                    }
+                }
+            }
+        };
+        let args: Vec<Arg> = literals.iter().map(plan::Lit::arg).collect();
+        Some(self.run_plan(plan, args).await)
+    }
+
+    /// Executes a cached plan with the statement's arguments.
+    async fn run_plan(&mut self, plan: Arc<Plan>, args: Vec<Arg>) -> Outcome {
+        self.run_plan_inner(&plan, args).await.into()
+    }
+
+    async fn run_plan_inner(&mut self, plan: &Plan, args: Vec<Arg>) -> Result<Outcome, MyError> {
+        if args.len() != plan.n_params {
+            return Err(MyError::new(
+                1210,
+                "HY000",
+                "Incorrect arguments to mysqld_stmt_execute",
+            ));
+        }
+        // Bound statements keep one SQL text per shape (so SQLite's statement
+        // cache hits); the rest get the values spliced in as literals.
+        let exec = if plan.bind.is_some() {
+            match plan.bound(args) {
+                Some((sql, params)) => Exec::Bound(sql, params),
+                None => return Err(MyError::internal("statement plan lost its bindings")),
+            }
+        } else {
+            let literals: Vec<String> = args.iter().map(Arg::sql).collect();
+            Exec::Script(plan.fill(&literals))
+        };
+        if plan.is_query {
+            let database = self.handle()?;
+            let result = if plan.run_inline() {
+                let started = std::time::Instant::now();
+                let result = exec.query(&database);
+                plan.record(started.elapsed());
+                result
+            } else {
+                let job = exec.clone();
+                self.run_db(database, move |db| {
+                    let started = std::time::Instant::now();
+                    (job.query(db), started.elapsed())
+                })
+                .await
+                .map(|(result, elapsed)| {
+                    plan.record(elapsed);
+                    result
+                })?
+            };
+            match result {
+                Ok(result) => {
+                    return Ok(Outcome::Rows(self.typed_result(plan, result).await));
+                }
+                Err(novadb_core::Error::QueryMustBeReadOnly) => {}
+                Err(error) => return Err(self.db_error(&error)),
+            }
+        }
+        self.run_write_exec(plan.first, exec, false).await
+    }
+
+    /// Result set with column types from the plan's cached typing, which is
+    /// rebuilt after DDL through this gateway, when the result shape changes
+    /// and at least every [`plan::TYPING_TTL`].
+    async fn typed_result(&self, plan: &Plan, result: TypedQueryResult) -> ResultSet {
+        let epoch = self.state.plans.epoch();
+        let cached = plan.typing.lock().ok().and_then(|slot| slot.clone());
+        let typed = match cached {
+            Some(typed)
+                if typed.epoch == epoch
+                    && typed.built.elapsed() < plan::TYPING_TTL
+                    && typed.columns == result.columns
+                    && typed.declared_in == result.declared_types =>
+            {
+                typed
+            }
+            _ => {
+                let declared = self
+                    .declared_types(plan.select_info.as_ref(), &result)
+                    .await;
+                let typed = Arc::new(Typed {
+                    epoch,
+                    built: std::time::Instant::now(),
+                    columns: result.columns.clone(),
+                    declared_in: result.declared_types.clone(),
+                    parsed: declared
+                        .iter()
+                        .map(|d| d.as_deref().and_then(typing::parse_declared))
+                        .collect(),
+                });
+                if let Ok(mut slot) = plan.typing.lock() {
+                    *slot = Some(Arc::clone(&typed));
+                }
+                typed
+            }
+        };
+        to_result_set_parsed(result.into_query_result(), &typed.parsed)
     }
 
     fn handle_long_data(&mut self, payload: &[u8]) -> Result<(), Malformed> {
@@ -795,18 +1053,23 @@ impl Session {
             for index in 0..count {
                 let (column_type, unsigned) = statement.param_types[index];
                 if null_bitmap[index / 8] & (1 << (index % 8)) != 0 {
-                    params.push("NULL".to_owned());
+                    params.push(Arg::Null);
                 } else if let Some(data) = statement.long_data.get(&index) {
-                    params.push(bytes_literal(column_type, data));
+                    params.push(bytes_arg(column_type, data));
                 } else {
-                    params.push(decode_param(&mut reader, column_type, unsigned)?);
+                    params.push(decode_arg(&mut reader, column_type, unsigned)?);
                 }
             }
         }
         statement.long_data.clear();
         statement.long_data_size = 0;
-        let tokens = statement.tokens.clone();
-        let outcome = self.execute(&tokens, &params).await;
+        let outcome = if let Some(plan) = statement.plan.clone() {
+            self.run_plan(plan, params).await
+        } else {
+            let tokens = statement.tokens.clone();
+            let literals: Vec<String> = params.iter().map(Arg::sql).collect();
+            self.execute(&tokens, &literals).await
+        };
         self.write_outcome(outcome, true, false);
         Ok(())
     }
@@ -857,6 +1120,17 @@ impl Session {
         self.with_env(|env| translate::translate(tokens, env, params))
     }
 
+    /// Maps a core error and keeps the session's transaction flag in step
+    /// with what the server did to the transaction.
+    fn db_error(&mut self, error: &novadb_core::Error) -> MyError {
+        if matches!(error, novadb_core::Error::TransactionExpired(_)) {
+            // The server rolled the transaction back (it held the write lock
+            // for too long); later statements start from autocommit again.
+            self.in_transaction = false;
+        }
+        map_db_error(error)
+    }
+
     fn handle(&self) -> Result<NovaDb, MyError> {
         self.database
             .clone()
@@ -887,6 +1161,11 @@ impl Session {
     }
 
     async fn execute(&mut self, tokens: &[Token], params: &[String]) -> Outcome {
+        if params.is_empty() {
+            if let Some(outcome) = self.try_text_plan(tokens).await {
+                return outcome;
+            }
+        }
         let words = lexer::leading_words(tokens, 4);
         let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
         let result = match word(0) {
@@ -947,6 +1226,9 @@ impl Session {
             }
             _ => self.run_statement(tokens, params).await,
         };
+        if matches!(word(0), "CREATE" | "ALTER" | "DROP" | "RENAME" | "TRUNCATE") {
+            self.state.plans.bump_epoch();
+        }
         result.into()
     }
 
@@ -1024,12 +1306,13 @@ impl Session {
             };
             match result {
                 Ok(result) => {
-                    let declared = self.declared_types(tokens, &result).await;
+                    let info = SelectInfo::parse(tokens);
+                    let declared = self.declared_types(info.as_ref(), &result).await;
                     let result = result.into_query_result();
-                    return Ok(Outcome::Rows(to_result_set_typed(&result, &declared)));
+                    return Ok(Outcome::Rows(to_result_set_typed(result, &declared)));
                 }
                 Err(novadb_core::Error::QueryMustBeReadOnly) => {}
-                Err(error) => return Err(map_db_error(&error)),
+                Err(error) => return Err(self.db_error(&error)),
             }
         }
         self.run_write(&first, statements, tokens).await
@@ -1045,7 +1328,7 @@ impl Session {
     /// by older gateways, which rewrote every type and kept it in a comment.
     async fn declared_types(
         &self,
-        tokens: &[Token],
+        info: Option<&SelectInfo>,
         result: &TypedQueryResult,
     ) -> Vec<Option<String>> {
         let mut declared = result.declared_types.clone();
@@ -1061,7 +1344,7 @@ impl Session {
         if self.legacy_annotations.load(Ordering::Relaxed) == LEGACY_UNKNOWN {
             self.probe_legacy_annotations().await;
         }
-        let Some(info) = SelectInfo::parse(tokens) else {
+        let Some(info) = info else {
             return declared;
         };
         let tables = info.tables();
@@ -1408,6 +1691,17 @@ impl Session {
             .any(|t| t.is_any_word(&["TEMPORARY", "TEMP"]));
         let ddl =
             matches!(first, "CREATE" | "ALTER" | "DROP" | "RENAME" | "TRUNCATE") && !temporary;
+        let sql = statements.join(";\n");
+        self.run_write_exec(first, Exec::Script(sql), ddl).await
+    }
+
+    /// Runs one write (or DDL) with the session's transaction rules.
+    async fn run_write_exec(
+        &mut self,
+        first: &str,
+        exec: Exec,
+        ddl: bool,
+    ) -> Result<Outcome, MyError> {
         if ddl && self.in_transaction {
             // DDL causes an implicit commit in MySQL.
             self.commit().await?;
@@ -1417,31 +1711,24 @@ impl Session {
         let in_transaction = self.in_transaction;
         let dml = matches!(first, "INSERT" | "REPLACE" | "UPDATE" | "DELETE");
         let insert = matches!(first, "INSERT" | "REPLACE");
-        let sql = statements.join(";\n");
         let database = self.handle()?;
         let result = self
-            .run_db(
-                database,
-                move |db| -> Result<ExecStats, novadb_core::Error> {
-                    if in_transaction {
-                        db.execute_uncommitted_with_stats(&sql, DialectMode::Passthrough)
-                    } else {
-                        db.execute_with_stats(&sql, DialectMode::Passthrough)
-                    }
-                },
-            )
+            .run_db(database, move |db| exec.write(db, in_transaction))
             .await?;
-        let stats = result.map_err(|error| {
-            let mut mapped = map_db_error(&error);
-            if mapped.code == 1452 && first == "DELETE" {
-                mapped.code = 1451;
-                mapped.message = format!(
-                    "Cannot delete or update a parent row: a foreign key constraint fails ({})",
-                    error
-                );
+        let stats = match result {
+            Ok(stats) => stats,
+            Err(error) => {
+                let mut mapped = self.db_error(&error);
+                if mapped.code == 1452 && first == "DELETE" {
+                    mapped.code = 1451;
+                    mapped.message = format!(
+                        "Cannot delete or update a parent row: a foreign key constraint fails ({})",
+                        error
+                    );
+                }
+                return Err(mapped);
             }
-            mapped
-        })?;
+        };
         let (affected, last_rowid) = if dml {
             (
                 stats.changes,
@@ -1510,7 +1797,9 @@ impl Session {
                 Ok(ok_outcome())
             }
             Err(error) => {
-                if error.to_string().contains("no transaction is active") {
+                if error.to_string().contains("no transaction is active")
+                    || matches!(error, novadb_core::Error::TransactionExpired(_))
+                {
                     self.in_transaction = false;
                 }
                 Err(map_db_error(&error))
@@ -2186,7 +2475,7 @@ impl Session {
 
 /// `SELECT cols FROM table [alias] [LIMIT n [OFFSET m]]` with no expressions,
 /// filters or joins: the only shape that gets an implicit `ORDER BY rowid`.
-fn is_plain_table_scan(tokens: &[Token]) -> bool {
+pub(crate) fn is_plain_table_scan(tokens: &[Token]) -> bool {
     if !tokens.first().is_some_and(|t| t.is_word("SELECT")) {
         return false;
     }
@@ -2301,34 +2590,14 @@ fn value_literal(value: &Value) -> String {
     }
 }
 
-fn float_literal(number: f64) -> String {
-    if !number.is_finite() {
-        return "NULL".into();
-    }
-    let text = format!("{number:?}");
-    if number.is_sign_negative() {
-        format!("({text})")
-    } else {
-        text
-    }
-}
-
-fn int_literal(text: String) -> String {
-    if text.starts_with('-') {
-        format!("({text})")
-    } else {
-        text
-    }
-}
-
-/// Renders bound string/BLOB bytes as a SQL literal.
-fn bytes_literal(column_type: u8, bytes: &[u8]) -> String {
+/// Interprets bound string/BLOB bytes.
+fn bytes_arg(column_type: u8, bytes: &[u8]) -> Arg {
     match std::str::from_utf8(bytes) {
         Ok(text) if matches!(column_type, TYPE_DECIMAL | TYPE_NEWDECIMAL) && is_decimal(text) => {
-            format!("({text})")
+            Arg::Num(format!("({text})"))
         }
-        Ok(text) => quote_str(text),
-        Err(_) => hex_literal(bytes),
+        Ok(text) => Arg::Text(text.to_owned()),
+        Err(_) => Arg::Blob(bytes.to_vec()),
     }
 }
 
@@ -2341,51 +2610,57 @@ fn is_decimal(text: &str) -> bool {
 }
 
 /// Decodes one binary-protocol parameter into a SQL literal.
+#[cfg(test)]
 fn decode_param(
     reader: &mut Reader<'_>,
     column_type: u8,
     unsigned: bool,
 ) -> Result<String, Malformed> {
+    Ok(decode_arg(reader, column_type, unsigned)?.sql())
+}
+
+/// Decodes one binary-protocol parameter.
+fn decode_arg(reader: &mut Reader<'_>, column_type: u8, unsigned: bool) -> Result<Arg, Malformed> {
     Ok(match column_type {
-        TYPE_NULL => "NULL".into(),
+        TYPE_NULL => Arg::Null,
         TYPE_TINY => {
             let byte = reader.u8()?;
-            int_literal(if unsigned {
-                byte.to_string()
+            Arg::Int(if unsigned {
+                i64::from(byte)
             } else {
-                (byte as i8).to_string()
+                i64::from(byte as i8)
             })
         }
         TYPE_SHORT | TYPE_YEAR => {
             let value = reader.u16()?;
-            int_literal(if unsigned {
-                value.to_string()
+            Arg::Int(if unsigned {
+                i64::from(value)
             } else {
-                (value as i16).to_string()
+                i64::from(value as i16)
             })
         }
         TYPE_LONG | TYPE_INT24 => {
             let value = reader.u32()?;
-            int_literal(if unsigned {
-                value.to_string()
+            Arg::Int(if unsigned {
+                i64::from(value)
             } else {
-                (value as i32).to_string()
+                i64::from(value as i32)
             })
         }
         TYPE_LONGLONG => {
             let value = reader.u64()?;
-            int_literal(if unsigned {
-                value.to_string()
+            if unsigned && value > i64::MAX as u64 {
+                Arg::Num(value.to_string())
             } else {
-                (value as i64).to_string()
-            })
+                Arg::Int(value as i64)
+            }
         }
         TYPE_FLOAT => {
             let value = f32::from_le_bytes(reader.u32()?.to_le_bytes());
             if value.is_finite() {
-                int_literal(value.to_string())
+                Arg::Num(int_literal(value.to_string()))
             } else {
-                "NULL".into()
+                Arg::Null
             }
         }
         TYPE_DOUBLE => {
@@ -2393,9 +2668,11 @@ fn decode_param(
             // Integral doubles (JavaScript numbers) are bound as integers so
             // they also work in LIMIT/OFFSET.
             if value.is_finite() && value.fract() == 0.0 && value.abs() < 9.0e15 {
-                int_literal(format!("{}", value as i64))
+                Arg::Int(value as i64)
+            } else if value.is_finite() {
+                Arg::Real(value)
             } else {
-                float_literal(value)
+                Arg::Null
             }
         }
         TYPE_DATE | TYPE_DATETIME | TYPE_TIMESTAMP => {
@@ -2425,13 +2702,13 @@ fn decode_param(
                     }
                 }
             }
-            quote_str(&text)
+            Arg::Text(text)
         }
         TYPE_TIME => {
             let length = usize::from(reader.u8()?);
             let data = reader.bytes(length)?;
             if length < 8 {
-                quote_str("00:00:00")
+                Arg::Text("00:00:00".into())
             } else {
                 let negative = data[0] == 1;
                 let days = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
@@ -2448,10 +2725,10 @@ fn decode_param(
                         text.push_str(&format!(".{micros:06}"));
                     }
                 }
-                quote_str(&text)
+                Arg::Text(text)
             }
         }
-        _ => bytes_literal(column_type, reader.lenenc_bytes()?),
+        _ => bytes_arg(column_type, reader.lenenc_bytes()?),
     })
 }
 
@@ -2489,6 +2766,14 @@ fn cell(value: &Value) -> Cell {
     }
 }
 
+/// [`cell`] for an owned value (moves strings instead of cloning them).
+fn cell_owned(value: Value) -> Cell {
+    match value {
+        Value::String(text) => Cell::Text(text),
+        other => cell(&other),
+    }
+}
+
 /// Maps a declared SQLite column type to a MySQL wire type.
 fn declared_type(declared: &str) -> u8 {
     let upper = declared.to_ascii_uppercase();
@@ -2507,7 +2792,7 @@ fn declared_type(declared: &str) -> u8 {
 /// all integers → LONGLONG, numbers → DOUBLE, all BLOBs → BLOB, otherwise
 /// VAR_STRING (utf8mb4).
 fn to_result_set(result: &QueryResult) -> ResultSet {
-    to_result_set_typed(result, &[])
+    to_result_set_typed(result.clone(), &[])
 }
 
 fn cell_kind(cell: &Cell) -> CellKind<'_> {
@@ -2522,15 +2807,28 @@ fn cell_kind(cell: &Cell) -> CellKind<'_> {
 
 /// Like [`to_result_set`], but columns with a declared MySQL type (keyed by
 /// lowercase label) use it when every value is compatible with it.
-fn to_result_set_typed(result: &QueryResult, declared: &[Option<String>]) -> ResultSet {
+fn to_result_set_typed(result: QueryResult, declared: &[Option<String>]) -> ResultSet {
+    let parsed: Vec<Option<typing::Declared>> = declared
+        .iter()
+        .map(|d| d.as_deref().and_then(typing::parse_declared))
+        .collect();
+    to_result_set_parsed(result, &parsed)
+}
+
+/// Converts a result (consuming it, so strings move instead of being copied)
+/// using already-parsed declared column types.
+fn to_result_set_parsed(mut result: QueryResult, parsed: &[Option<typing::Declared>]) -> ResultSet {
     let rows: Vec<Vec<Cell>> = result
         .rows
-        .iter()
+        .iter_mut()
         .map(|row| {
             result
                 .columns
                 .iter()
-                .map(|column| row.get(column).map_or(Cell::Null, cell))
+                .map(|column| {
+                    row.get_mut(column)
+                        .map_or(Cell::Null, |v| cell_owned(std::mem::take(v)))
+                })
                 .collect()
         })
         .collect();
@@ -2539,14 +2837,9 @@ fn to_result_set_typed(result: &QueryResult, declared: &[Option<String>]) -> Res
         .iter()
         .enumerate()
         .map(|(index, name)| {
-            if let Some(def) = declared
-                .get(index)
-                .and_then(Option::as_deref)
-                .and_then(typing::parse_declared)
-                .and_then(|declared| {
-                    declared.column_def(name, rows.iter().map(|row| cell_kind(&row[index])))
-                })
-            {
+            if let Some(def) = parsed.get(index).copied().flatten().and_then(|declared| {
+                declared.column_def(name, rows.iter().map(|row| cell_kind(&row[index])))
+            }) {
                 return def;
             }
             let mut kind: Option<u8> = None;
@@ -2598,25 +2891,41 @@ fn cell_text(cell: &Cell) -> Option<Vec<u8>> {
     }
 }
 
+#[cfg(test)]
 fn encode_text_row(columns: &[ColumnDef], row: &[Cell]) -> Vec<u8> {
     let mut buf = Vec::new();
+    encode_text_row_into(&mut buf, columns, row);
+    buf
+}
+
+/// Appends a text-protocol row to `buf` without intermediate allocations
+/// for the common cell kinds.
+fn encode_text_row_into(buf: &mut Vec<u8>, columns: &[ColumnDef], row: &[Cell]) {
+    use std::io::Write as _;
     for (column, cell) in columns.iter().zip(row) {
-        let text = match (column.column_type, cell) {
+        match (column.column_type, cell) {
+            (_, Cell::Null) => buf.push(0xfb),
             // DECIMAL(p,s) values are shown with exactly `s` fractional digits.
             (TYPE_NEWDECIMAL, Cell::Float(number)) if column.decimals > 0 => {
-                Some(format!("{number:.*}", usize::from(column.decimals)).into_bytes())
+                let text = format!("{number:.*}", usize::from(column.decimals));
+                put_lenenc_bytes(buf, text.as_bytes());
             }
             (TYPE_NEWDECIMAL, Cell::Int(number)) if column.decimals > 0 => {
-                Some(format!("{number}.{}", "0".repeat(usize::from(column.decimals))).into_bytes())
+                let text = format!("{number}.{}", "0".repeat(usize::from(column.decimals)));
+                put_lenenc_bytes(buf, text.as_bytes());
             }
-            _ => cell_text(cell),
-        };
-        match text {
-            None => buf.push(0xfb),
-            Some(bytes) => put_lenenc_bytes(&mut buf, &bytes),
+            (_, Cell::Int(number)) => {
+                // At most 20 bytes: a one-byte length prefix.
+                let at = buf.len();
+                buf.push(0);
+                let _ = write!(buf, "{number}");
+                buf[at] = (buf.len() - at - 1) as u8;
+            }
+            (_, Cell::Text(text)) => put_lenenc_bytes(buf, text.as_bytes()),
+            (_, Cell::Bytes(bytes)) => put_lenenc_bytes(buf, bytes),
+            (_, Cell::Float(number)) => put_lenenc_bytes(buf, format_float(*number).as_bytes()),
         }
     }
-    buf
 }
 
 fn as_f64(cell: &Cell) -> Option<f64> {
@@ -2651,10 +2960,20 @@ fn put_datetime(buf: &mut Vec<u8>, text: &str, date_only: bool) -> bool {
     true
 }
 
+#[cfg(test)]
 fn encode_binary_row(columns: &[ColumnDef], row: &[Cell]) -> Vec<u8> {
-    let mut buf = vec![0x00];
+    let mut buf = Vec::new();
+    encode_binary_row_into(&mut buf, columns, row);
+    buf
+}
+
+/// Appends a binary-protocol row to `buf`.
+fn encode_binary_row_into(buf: &mut Vec<u8>, columns: &[ColumnDef], row: &[Cell]) {
+    let row_start = buf.len();
+    buf.push(0x00);
     let bitmap_start = buf.len();
     buf.resize(bitmap_start + (columns.len() + 9) / 8, 0);
+    let _ = row_start;
     for (index, (column, cell)) in columns.iter().zip(row).enumerate() {
         if matches!(cell, Cell::Null) {
             let bit = index + 2;
@@ -2679,19 +2998,18 @@ fn encode_binary_row(columns: &[ColumnDef], row: &[Cell]) -> Vec<u8> {
                 buf.extend_from_slice(&(as_f64(cell).unwrap_or_default() as f32).to_le_bytes());
             }
             (TYPE_DATETIME | TYPE_DATE, Cell::Text(text))
-                if put_datetime(&mut buf, text, column.column_type == TYPE_DATE) => {}
+                if put_datetime(buf, text, column.column_type == TYPE_DATE) => {}
             (TYPE_NEWDECIMAL, Cell::Float(number)) if column.decimals > 0 => {
                 let text = format!("{number:.*}", usize::from(column.decimals));
-                put_lenenc_bytes(&mut buf, text.as_bytes());
+                put_lenenc_bytes(buf, text.as_bytes());
             }
             (TYPE_NEWDECIMAL, Cell::Int(number)) if column.decimals > 0 => {
                 let text = format!("{number}.{}", "0".repeat(usize::from(column.decimals)));
-                put_lenenc_bytes(&mut buf, text.as_bytes());
+                put_lenenc_bytes(buf, text.as_bytes());
             }
-            _ => put_lenenc_bytes(&mut buf, &cell_text(cell).unwrap_or_default()),
+            _ => put_lenenc_bytes(buf, &cell_text(cell).unwrap_or_default()),
         }
     }
-    buf
 }
 
 /// Validates a database ID with the same rules as the HTTP server
@@ -2814,6 +3132,55 @@ mod tests {
         let error = novadb_core::Error::QueryMustBeReadOnly;
         assert_eq!(map_db_error(&error).code, 1105);
         assert_eq!(MyError::from(SqlError::Syntax("x".into())).code, 1064);
+        let timeout = map_db_error(&novadb_core::Error::Timeout("after 50 ms".into()));
+        assert_eq!((timeout.code, timeout.state), (3024, "HY000"));
+        assert!(timeout.message.contains("interrupted"));
+        let expired = map_db_error(&novadb_core::Error::TransactionExpired("5 s".into()));
+        assert_eq!((expired.code, expired.state), (1205, "HY000"));
+    }
+
+    #[test]
+    fn arguments_render_as_literals_and_bound_values() {
+        use novadb_core::Param;
+        assert_eq!(Arg::Int(-5).sql(), "(-5)");
+        assert_eq!(Arg::Int(7).sql(), "7");
+        assert_eq!(Arg::Real(1.5).sql(), "1.5");
+        assert_eq!(Arg::Real(-0.25).sql(), "(-0.25)");
+        assert_eq!(Arg::Text("it's".into()).sql(), "'it''s'");
+        assert_eq!(Arg::Blob(vec![1, 255]).sql(), "X'01FF'");
+        assert_eq!(Arg::Null.sql(), "NULL");
+        assert_eq!(Arg::Num("(12.50)".into()).param(), Param::Real(12.5));
+        assert_eq!(Arg::Num("(-3)".into()).param(), Param::Int(-3));
+        assert_eq!(
+            Arg::Num("18446744073709551615".into()).param(),
+            Param::Real(18446744073709551615.0)
+        );
+        assert_eq!(Arg::Real(f64::NAN).param(), Param::Null);
+        assert_eq!(Arg::Text("x".into()).param(), Param::Text("x".into()));
+        let mut reader = Reader::new(&[0xff]);
+        assert_eq!(
+            decode_arg(&mut reader, TYPE_TINY, false).unwrap(),
+            Arg::Int(-1)
+        );
+        let mut reader = Reader::new(&[0xff]);
+        assert_eq!(
+            decode_arg(&mut reader, TYPE_TINY, true).unwrap(),
+            Arg::Int(255)
+        );
+        let bytes = u64::MAX.to_le_bytes();
+        let mut reader = Reader::new(&bytes);
+        assert_eq!(
+            decode_arg(&mut reader, TYPE_LONGLONG, true).unwrap(),
+            Arg::Num(u64::MAX.to_string())
+        );
+        assert_eq!(
+            bytes_arg(TYPE_NEWDECIMAL, b"12.50"),
+            Arg::Num("(12.50)".into())
+        );
+        assert_eq!(
+            bytes_arg(TYPE_VAR_STRING, &[0xff, 0xfe]),
+            Arg::Blob(vec![0xff, 0xfe])
+        );
     }
 
     #[test]
