@@ -37,6 +37,9 @@ SQLite semantics underneath. See [Limitations](#limitations).
   relay, whole-row LWW conflict resolution.
 - **Official SDKs** for JavaScript/TypeScript, Python, C#/.NET/Unity and Go: zero dependencies, parameter
   binding, query builder, migrations, typed errors.
+- **Built for many players.** Bound parameters (`params`) and `/sql/batch`, a MySQL gateway plan cache, group commit,
+  Prometheus `/metrics`, a slow query log, statement timeouts (on by default) and optional sharded databases
+  ([game servers guide](https://hoangtuvungcao.github.io/NovaDB/guides/game-servers)).
 - **Secure by default.** Loopback listeners by default; refuses to expose HTTP or PostgreSQL publicly without
   credentials; SCRAM-SHA-256; CORS allow-list; request timeouts and connection caps.
 - **Migration helpers.** Rewrites common T-SQL (`TOP`, `OFFSET/FETCH`, `IDENTITY`, `N'...'`, `PIVOT`, `GO`) and
@@ -264,6 +267,28 @@ new: 3.7k to 21.2k). Eight fresh runs on a quieter machine gave PG write-only 18
 with 0 errors. SQLite allows one writer per database file, so the ceiling is roughly 20-25k autocommit statements/s via
 the gateways and 25-50k/s over HTTP per database; shard for more. Details:
 [`benches/results/LATEST-multiuser.md`](benches/results/LATEST-multiuser.md).
+
+### Game workload (MySQL gateway)
+
+`benches/game` simulates a player mix (character/inventory/quest loads, position updates, chat, leaderboard, login) against the MySQL
+gateway: 100k characters, 1M inventory rows, one shared laptop, loopback. Before to after the gateway plan cache; indicative,
++-20-30%.
+
+| Scenario | Before | After |
+|---|---:|---:|
+| 256 players, 64-connection pool, no think time (ops/s) | 18.2k | 22.8k |
+| Server CPU per operation (us) | 330 | 220 |
+| Character load / inventory list / quest load (ops/s, 64 players, 8 conns) | 52k / 26k / 14k | 155k / 164k / 214k |
+| Position update / chat insert (ops/s) | 10k / 17k | 48k / 37-56k |
+| Leaderboard top 100 / login (ops/s) | 12k / 7k | 22-26k / 18-26k |
+| 10,000 players on a pool, think time 100-1000 ms (ops/s) | 15.2k | 18.3k |
+
+Up to 3000 players with realistic think time the load is below capacity (same ops/s, less CPU: 1.33 to 0.93 cores at 3000). One
+connection per player at 10,000 players is limited by the connections (12-13 GB RSS): use a pool. Embedded, a point select with bound
+parameters takes 2.9-3.4 us against 10-11.5 us with literal SQL. Sharding did **not** raise throughput on this NVMe laptop (the CPU, not
+the file, is the limit there); measure on your disk with `hotpath --shard-scale` (`benches/embedded`). Multi-row results are the remaining
+bottleneck; the PostgreSQL gateway has no plan cache yet. Details and methodology:
+[`benches/results/LATEST-game.md`](benches/results/LATEST-game.md).
 
 ## Contributing
 

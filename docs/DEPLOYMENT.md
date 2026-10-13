@@ -176,6 +176,20 @@ transaction, each keeps its own result/error). Flags (env in parentheses, `NOVAD
 | `--lookaside-kib` | automatic | Per-connection SQLite lookaside memory. Automatic: 600 KiB for the first 64 connections, then 150 KiB (75 KiB beyond 4096); the page cache shrinks the same way. |
 | `--worker-threads` / `--max-blocking-threads` | CPU count / max(4096, gateway caps + 512) | Tokio runtime. Gateway sessions run DB calls on the blocking pool; it is sized so waiting writers can never starve readers. |
 
+Protection and observability flags (details in API.md):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--statement-timeout-ms` (`STATEMENT_TIMEOUT_MS`) | 30000 (`0` = off) | Interrupts statements that run longer; only that statement fails (HTTP `408`). |
+| `--max-write-transaction-ms` (`MAX_WRITE_TRANSACTION_MS`) | 60000 (`0` = off) | Rolls back gateway-session transactions holding the write lock too long. |
+| `--slow-query-ms` (`SLOW_QUERY_MS`) | 500 (`0` = off) | `warn` log of slow statements, literals redacted. |
+| `--metrics-public` (`METRICS_PUBLIC`) | off | Serve `GET /metrics` (Prometheus) without the bearer token. |
+
+Write scaling: one database file tops out at one commit pipeline. For more, create a sharded database
+(`POST /v1/admin/databases/game?shards=N`, see API.md "Sharded databases") and route requests by player key.
+Use bound parameters (`params`) and `/sql/batch` from the game server: they avoid per-statement SQL parsing and
+extra round trips.
+
 Raise the file-descriptor limit (`ulimit -n` / systemd `LimitNOFILE=`) to at least 2x the expected connections.
 `/sql/execute` responses now also carry `changes` and `last_insert_rowid` of the request's last statement.
 

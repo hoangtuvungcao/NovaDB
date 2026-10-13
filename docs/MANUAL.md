@@ -584,6 +584,7 @@ fn main() -> anyhow::Result<()> {
 | `execute_uncommitted`, `execute_uncommitted_with` | Run inside a transaction opened with `begin_transaction` |
 | `query`, `query_with(sql, mode)` | Read-only query returning `QueryResult` |
 | `query_typed(sql, mode)` | Returns `TypedQueryResult` with `declared_types` (the type as written in `CREATE TABLE`, `None` for expressions) |
+| `query_params`, `execute_params`, `execute_with_stats_params`, `execute_returning_params` `(sql, params, mode)`; `submit_write_params(sql, params, mode, returning, done)` | Bound-parameter variants: `params` is a `Params` (`Positional(&[Param])` or `Named(&[(String, Param)])`; `&[Param]` converts automatically) and `submit_write_params` takes `OwnedParams`. `Param` is `Null`, `Int(i64)`, `Real(f64)`, `Text`, `Blob`, `Bool`. Values never change the statement; prepared statements are cached |
 | `execute_with_stats(sql, mode)` | Returns `ExecStats { changes, last_insert_rowid }` |
 | `execute_returning`, `execute_returning_uncommitted` | One write statement with `RETURNING`; returns `(TypedQueryResult, ExecStats)` |
 | `execute_schema_rebuild`, `execute_schema_rebuild_with` | Table-rebuild scripts with foreign keys switched off outside the transaction and `foreign_key_check` before commit; fails if a transaction is open |
@@ -599,6 +600,14 @@ db.execute_batch_with("CREATE TABLE t(id INTEGER PRIMARY KEY, n VARCHAR(20))", D
 let (rows, stats) = db.execute_returning("INSERT INTO t(n) VALUES ('a') RETURNING id", DialectMode::Passthrough)?;
 let typed = db.query_typed("SELECT id, n FROM t", DialectMode::Passthrough)?;
 println!("{:?} {:?} {:?}", rows.rows, stats.last_insert_rowid, typed.declared_types);
+```
+
+```rust
+use novadb_core::{DialectMode, NovaDb, Param};
+
+let db = NovaDb::open("app.novadb")?;
+db.execute_params("INSERT INTO t(id, n) VALUES (?, ?)", &[Param::Int(1), Param::Text("a".into())][..], DialectMode::Passthrough)?;
+let rows = db.query_params("SELECT n FROM t WHERE id = ?", &[Param::Int(1)][..], DialectMode::Passthrough)?;
 ```
 
 (Signatures as of the 2026-10-12 development build; check `cargo doc -p novadb-core`.)

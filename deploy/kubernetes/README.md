@@ -21,8 +21,8 @@ Plain manifests for running `novadbd` (HTTP API + Web Studio on 8787, PostgreSQL
 No official container image is published yet. Build one from the repository `Dockerfile`:
 
 ```bash
-docker build -t ghcr.io/<you>/novadb:0.2.1 .
-docker push ghcr.io/<you>/novadb:0.2.1
+docker build -t ghcr.io/<you>/novadb:0.3.0 .
+docker push ghcr.io/<you>/novadb:0.3.0
 ```
 
 Then set `image:` in `statefulset.yaml`.

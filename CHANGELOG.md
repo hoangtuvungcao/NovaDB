@@ -5,6 +5,45 @@ All notable changes to this project are documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/). Changes marked **planned** are
 roadmap items and are **not** available in the current release.
 
+## 0.3.0 - 2026-10-14
+
+### Changed (behaviour change)
+
+- **Protection defaults are now ON.** `--statement-timeout-ms` defaults to `30000` and `--max-write-transaction-ms` to
+  `60000` (previously no limit). Long-running statements (large imports, heavy reports) fail with HTTP `408 statement_timeout`
+  / MySQL `3024`, and gateway transactions holding the write lock over 60 s are rolled back (MySQL `1205`, HTTP `409
+  transaction_expired`). Set either flag to `0` to restore the old behaviour.
+- MySQL gateway: cached statement plans, bound prepared-statement values, cached result column types (10 s TTL for DDL done
+  through other doors), per-worker runtimes (`NOVADB_MYSQL_WORKERS`) and inline fast reads (`NOVADB_MYSQL_INLINE_US`). Game-mix
+  benchmark, one laptop, indicative: 256 players on a 64-connection pool 18.2k to 22.8k ops/s, server CPU per op 330 to 220 us;
+  per-operation gains of 3-15x for key lookups (see `benches/results/LATEST-game.md`).
+
+### Added
+
+- **Bound parameters.** `params` (array for `?`/`?NNN`, object for `:name`) on HTTP `/sql/query` and `/sql/execute`; Rust API
+  `query_params`, `execute_params`, `execute_with_stats_params`, `execute_returning_params`, `submit_write_params` with `Param`,
+  `Params`, `OwnedParams`. Statements are prepared once and cached.
+- **Batch endpoint.** `POST /v1/databases/{db}/sql/batch` (alias `/v1/admin/databases/{db}/batch`): up to 1000 statements,
+  atomic or per-statement savepoints, one round trip, one group commit.
+- **Timeouts.** `--statement-timeout-ms`, `--max-write-transaction-ms`.
+- **Observability.** `GET /metrics` (Prometheus, `--metrics-public`), slow query log with redacted literals (`--slow-query-ms`,
+  default 500).
+- **Sharded databases.** `POST /v1/admin/databases/{db}?shards=N`; routing by `X-NovaDB-Shard-Key` / `shard_key` / `shard`
+  (frozen FNV-1a 64 + jump consistent hash), DDL fan-out, `"shards":"all"` reads with server-side top-N merge, per-shard
+  backups. No cross-shard joins/transactions, no resharding. In our one-laptop NVMe benchmarks sharding did not increase
+  throughput; measure with `hotpath --shard-scale` (`benches/embedded`).
+- `benches/game` player-mix load generator and `benches/results/LATEST-game.md`.
+- Website: guides "Bound parameters and batches", "Observability", "Sharded databases"; extended game server guide.
+
+### Security
+
+- Closed an `ATTACH ?1` hole: `ATTACH ?1` / `ATTACH (expr)` (non-literal file name) was not recognised by the read-only query authorizer and is now rejected.
+
+### Known gaps
+
+- The PostgreSQL gateway has no plan cache and does not map statement timeouts to SQLSTATE `57014` yet.
+- Multi-row results are built as JSON row objects in the core (planned improvement).
+
 ## 0.2.1 - 2026-10-13
 
 ### Added

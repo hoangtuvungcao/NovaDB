@@ -162,6 +162,87 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/databases/{database}/sql/batch:
+    parameters:
+      - $ref: "#/components/parameters/DatabaseId"
+    post:
+      tags: [SQL]
+      operationId: batchDatabaseSql
+      summary: Run several (parameterised) statements in one round trip and one transaction
+      description: |
+        Each statement may carry `params` (array for `?`, object for `:name`). With `atomic: true`
+        (default) all statements commit or none does and the first failure is a 400 naming the
+        statement. With `atomic: false` each statement runs in its own savepoint and failures are
+        reported per result. Also available as `POST /v1/admin/databases/{database}/batch`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [statements]
+              properties:
+                atomic: { type: boolean, default: true }
+                shard_key: { type: string, description: "Sharded databases: routing key." }
+                shard: { type: integer, minimum: 0, description: "Sharded databases: explicit shard." }
+                statements:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  items:
+                    type: object
+                    required: [sql]
+                    properties:
+                      sql: { type: string }
+                      params:
+                        description: Array (positional) or object (named) of null, boolean, number or string.
+                        oneOf: [{ type: array }, { type: object }]
+      responses:
+        "200":
+          description: Per-statement results.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  atomic: { type: boolean }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ok: { type: boolean }
+                        changes: { type: integer }
+                        last_insert_rowid: { type: integer }
+                        columns: { type: array, items: { type: string } }
+                        rows: { type: array, items: { type: object } }
+                        error:
+                          type: object
+                          properties:
+                            code: { type: string }
+                            message: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "408":
+          description: A statement exceeded `--statement-timeout-ms`.
+  /metrics:
+    get:
+      tags: [System]
+      operationId: getMetrics
+      summary: Prometheus metrics (bearer token required unless --metrics-public)
+      responses:
+        "200":
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /v1/databases/{database}/schema:
     parameters:
       - $ref: "#/components/parameters/DatabaseId"
@@ -468,6 +549,32 @@ components:
           type: string
           minLength: 1
           description: SQL text. The server enforces a byte limit that is configurable with `--max-sql-bytes` (default 16 MiB).
+        params:
+          description: Optional bound parameters, one statement only. Array binds `?`/`?NNN`, object binds `:name`. Values are null, boolean, number or string.
+          oneOf: [{ type: array }, { type: object }]
+        shard_key:
+          type: string
+          description: Sharded databases only; also accepted as the `X-NovaDB-Shard-Key` header.
+        shard:
+          type: integer
+          minimum: 0
+          description: Sharded databases only; explicit shard index.
+        shards:
+          type: string
+          enum: [all]
+          description: "`/sql/query` on a sharded database: fan out to every shard (adds a `shard` column)."
+        merge:
+          type: object
+          description: With `shards=all`, k-way merge of the pre-sorted per-shard results.
+          properties:
+            order_by:
+              type: array
+              items:
+                type: object
+                properties:
+                  column: { type: string }
+                  desc: { type: boolean }
+            limit: { type: integer, minimum: 0 }
     ExecuteResponse:
       type: object
       additionalProperties: false

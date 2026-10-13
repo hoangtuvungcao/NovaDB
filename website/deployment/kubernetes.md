@@ -24,7 +24,7 @@ and rely on backups for recovery.
 
 ```bash
 # 1. Build and push an image (none is published yet), then set it in statefulset.yaml
-docker build -t ghcr.io/<you>/novadb:0.2.1 . && docker push ghcr.io/<you>/novadb:0.2.1
+docker build -t ghcr.io/<you>/novadb:0.3.0 . && docker push ghcr.io/<you>/novadb:0.3.0
 
 # 2. Namespace and credentials (never commit real values)
 kubectl apply -f deploy/kubernetes/namespace.yaml
@@ -79,8 +79,8 @@ spec:
       containers:
         - name: novadbd
           # Build and push the image from the repository Dockerfile, then set it here:
-          #   docker build -t ghcr.io/<you>/novadb:0.2.1 . && docker push ghcr.io/<you>/novadb:0.2.1
-          image: ghcr.io/REPLACE_ME/novadb:0.2.1
+          #   docker build -t ghcr.io/<you>/novadb:0.3.0 . && docker push ghcr.io/<you>/novadb:0.3.0
+          image: ghcr.io/REPLACE_ME/novadb:0.3.0
           imagePullPolicy: IfNotPresent
           args:
             - --listen=0.0.0.0:8787

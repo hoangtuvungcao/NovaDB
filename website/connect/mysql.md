@@ -31,6 +31,25 @@ novadb serve --data-dir ./novadb-data --mysql-listen 127.0.0.1:3306 --mysql-user
 * **No TLS.** Clients must connect with SSL disabled (`--skip-ssl`, `ssl-mode=DISABLED`, `sslMode=DISABLED`).
   Put a TLS-terminating proxy in front of it (or use an SSH tunnel) for remote access.
 
+## Performance for many players
+
+The gateway caches one plan per statement shape (shared by all connections): prepared statements are translated once and their
+values are bound to SQLite (no text substitution); `COM_QUERY` statements that differ only in literals in plain value positions share
+a plan; result column types are cached per plan (re-resolved after DDL through the gateway and at least every 10 s; DDL done through the
+HTTP API or the PostgreSQL gateway is picked up within that interval). Connections are spread over `NOVADB_MYSQL_WORKERS` runtimes
+(default CPU count, max 16; `0` = shared runtime) and reads whose plan averages under `NOVADB_MYSQL_INLINE_US` microseconds (default 100;
+`0` = off) run on the connection's own thread. These two variables change scheduling only, never the SQL that runs.
+
+Use **prepared statements and a small connection pool** (tens of connections per game server): per-player connections cost about 1.3 MB
+each (10,000 of them measured 12-13 GB RSS). Measured with `benches/game` on one shared laptop (indicative, +-20-30%): 256 players on a
+64-connection pool 18.2k to 22.8k ops/s with server CPU per operation 330 to 220 us. See [Game and multi-user servers](/guides/game-servers).
+
+## Errors and limits
+
+Statements running longer than `--statement-timeout-ms` (default 30 s) fail with error `3024` and the connection stays usable;
+transactions holding the write lock longer than `--max-write-transaction-ms` (default 60 s) are rolled back and the session's next statement fails with `1205`.
+Metrics: [Observability](/guides/observability).
+
 ## Databases
 
 * A database name maps to `<data-dir>/<name>.novadb`. Names follow the HTTP API rules: `[a-z0-9][a-z0-9_-]{0,127}`.

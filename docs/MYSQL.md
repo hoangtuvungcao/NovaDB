@@ -106,7 +106,7 @@ Connection c = DriverManager.getConnection(
 | Metadata | `@@version`, `@@version_comment`, `@@auto_increment_increment`, `@@max_allowed_packet`, `@@sql_mode`, `@@character_set_*`, `@@collation_*`, `@@tx_isolation`, `@@transaction_isolation`, `@@autocommit`, and the variables ORMs probe at start-up (`@@socket`, `@@port`, `@@hostname`, `@@datadir`, `@@basedir`, `@@lower_case_table_names`, `@@innodb_version`, `@@system_time_zone`, `@@time_zone`, `@@wait_timeout`, `@@net_write_timeout`, `@@license`, `@@performance_schema`, `@@init_connect`, `@@have_ssl`, `@@version_compile_os`, `@@read_only`, …; `@@global.` / `@@session.` / `@@local.` spellings) — all return typed non-NULL values (`@@socket` is `/tmp/mysql.sock`, `@@port` is the default 3306 regardless of the actual listen port); unknown variables return NULL; `DATABASE()`, `VERSION()`, `USER()`, `CONNECTION_ID()`, `LAST_INSERT_ID()`. |
 | SHOW | `DATABASES`, `[FULL] TABLES`, `[FULL] COLUMNS/FIELDS`, `INDEX/KEYS`, `CREATE TABLE` (MySQL-format DDL reconstructed from the SQLite schema: backtick-quoted names, `int`/`bigint`/`varchar(n)`/`text`/`json`/… types, `NOT NULL`, `DEFAULT`, `AUTO_INCREMENT`, `PRIMARY KEY`, `UNIQUE KEY`, `KEY`, `CONSTRAINT … FOREIGN KEY … ON DELETE/UPDATE`, `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, so SQLAlchemy/Alembic reflection works), `CREATE VIEW` (returns SQLite DDL), `CREATE DATABASE`, `TABLE STATUS`, `VARIABLES`, `STATUS`, `WARNINGS` (always empty), `ENGINES`, `CHARSET`, `COLLATION`, `PROCESSLIST`, `GRANTS`; `TRIGGERS`, `PROCEDURE/FUNCTION STATUS`, `EVENTS` return empty sets. `LIKE` and `WHERE` filters work. `DESCRIBE t` / `DESC t` / `EXPLAIN t`. |
 | information_schema | Emulated (current database only): `SCHEMATA`, `TABLES`, `COLUMNS`, `STATISTICS`, `KEY_COLUMN_USAGE`, `TABLE_CONSTRAINTS`, `REFERENTIAL_CONSTRAINTS`, `VIEWS`, `CHARACTER_SETS`, `COLLATIONS`, `ENGINES`; `ROUTINES`, `PARAMETERS`, `TRIGGERS`, `EVENTS`, `PARTITIONS` are empty. |
-| Errors | SQLite errors are mapped to MySQL codes: `1062` duplicate key, `1048` NOT NULL, `1452` foreign key, `1146` no such table, `1054` no such column, `1050` table exists, `1064` syntax, `1205` database locked, otherwise `1105`. |
+| Errors | SQLite errors are mapped to MySQL codes: `1062` duplicate key, `1048` NOT NULL, `1452` foreign key, `1146` no such table, `1054` no such column, `1050` table exists, `1064` syntax, `1205` database locked (also a transaction the server rolled back for holding the write lock too long), `3024` statement timeout ("Query execution was interrupted"; the connection stays usable), otherwise `1105`. |
 
 ### SQL translation
 
@@ -145,6 +145,30 @@ are rejected with error `1064` instead of being guessed at.
 Prepared-statement parameters are substituted in a single pass over the token stream (placeholders inside
 literals or comments are never touched; values are escaped literals; negative numbers are parenthesized so
 they cannot form a `--` comment; non-UTF-8 and BLOB values become `X'..'`).
+
+## Performance for many players
+
+Typical game and web servers send the same few dozen statement shapes millions of times. The gateway keeps one
+cached plan per shape (translated SQL with the values cut out), shared by all connections:
+
+* **Prepared statements** (`COM_STMT_PREPARE`/`EXECUTE`) are translated once. Values are sent to SQLite as
+  bound parameters (no text substitution), so SQLite's own statement cache is hit as well. `LIMIT` / `OFFSET`
+  values are spliced into the text (SQLite plans `ORDER BY .. LIMIT n` better with a literal `n`).
+* **Text-protocol statements** (`COM_QUERY`) that differ only in literals in plain value positions
+  (`col = 5`, `IN (..)`, `VALUES (..)`, `LIMIT n`) share a plan as well. A plan is only stored when it
+  reproduces the generic translation of the statement it was built from byte for byte; statements that depend
+  on the session (`LAST_INSERT_ID()`, `@var`, `DATABASE()`, `information_schema`, `DEFAULT`, ...) and DDL
+  always take the generic path. At most about 16,000 plans are kept (two generations per shard).
+* Result column types are cached per plan and re-resolved after DDL run through this gateway and at least every
+  10 s, so the extra schema query per `SELECT` is gone. DDL made through the HTTP API or the PostgreSQL gateway
+  is picked up within that interval.
+* Connections are spread over `NOVADB_MYSQL_WORKERS` single-threaded runtimes (default: CPU count, at most 16;
+  `0` keeps them on the shared runtime). Reads whose plan averages under `NOVADB_MYSQL_INLINE_US` microseconds
+  (default 100; `0` disables) run directly on the connection's thread instead of hopping to the blocking pool.
+
+A cache bug would show up as a wrong result, so `NOVADB_MYSQL_WORKERS`/`NOVADB_MYSQL_INLINE_US` only change
+scheduling, never the SQL that is run. `benches/game` is a player-mix load generator for this gateway (see
+`benches/results/LATEST-game.md`).
 
 ## Importing a mysqldump / phpMyAdmin file
 

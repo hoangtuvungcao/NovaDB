@@ -74,13 +74,13 @@ Content-Type: application/json
 ```json
 {
   "status": "ok",
-  "version": "0.2.1"
+  "version": "0.3.0"
 }
 ```
 
 ### 2.2 Database Management
 * **List Databases**: `GET /v1/admin/databases`
-* **Create or open a Database**: `POST /v1/admin/databases/:id` (returns `{"id", "size_bytes", "modified_at_ms", "open", "device_id"}`)
+* **Create or open a Database**: `POST /v1/admin/databases/:id` (returns `{"id", "size_bytes", "modified_at_ms", "open", "device_id"}`); `POST /v1/admin/databases/:id?shards=N` creates a sharded database (see Sharded databases below)
 * **Schema Information**: `GET /v1/databases/:id/schema` (alias `GET /v1/admin/databases/:id/schema`), returns `{"tables": [...], "indexes": [...], "triggers": [...]}`
 
 ### 2.3 SQL Execution Endpoints
@@ -101,6 +101,39 @@ Content-Type: application/json
   ]
 }
 ```
+
+#### Bound parameters (recommended for apps and game servers)
+`/sql/query`, `/sql/execute` (and each statement of `/sql/batch`) accept an optional `params`:
+* a JSON **array** binds `?` / `?NNN` placeholders in order: `{"sql": "UPDATE players SET hp = ? WHERE id = ?", "params": [90, 42]}`
+* a JSON **object** binds `:name` placeholders: `{"sql": "SELECT * FROM players WHERE id = :id", "params": {"id": 42}}` (the key may be written with or without the colon).
+
+Values may be `null`, booleans (stored as 1/0), integers (signed 64-bit), numbers, or strings; arrays and objects are rejected. With `params` the SQL must be exactly ONE statement, the number of values must equal the number of placeholders (`400` otherwise), and values can never change the statement (no SQL injection by construction). The SQL text is normalised and prepared once and then reused from a cache, so identical statements with different values are markedly cheaper than literal SQL. T-SQL scripts with control flow cannot take `params`. Requests without `params` behave exactly as before.
+
+* **Batch (one round trip, one transaction)**:
+  * `POST /v1/databases/:id/sql/batch` (alias `POST /v1/admin/databases/:id/batch`)
+  * Body: `{"atomic": true, "statements": [{"sql": "INSERT INTO inv(player, item) VALUES (?, ?)", "params": [7, "sword"]}, {"sql": "SELECT COUNT(*) AS n FROM inv WHERE player = ?", "params": [7]}]}` (at most 1000 statements; `atomic` defaults to `true`)
+  * Response: `{"ok": true, "atomic": true, "results": [{"ok": true, "changes": 1, "last_insert_rowid": 5}, {"ok": true, "changes": 0, "last_insert_rowid": 5, "columns": ["n"], "rows": [{"n": 1}]}]}`. `rows`/`columns` are present for statements that return rows (`SELECT`, `RETURNING`).
+  * `atomic: true`: all statements commit or none does; the first failing statement fails the request with `400` (`statement #N: ...`) and nothing is applied.
+  * `atomic: false`: every statement runs in its own savepoint; failures are reported per statement (`{"ok": false, "error": {"code", "message"}}`, response `ok: false`) while the others commit. HTTP stays `200`.
+  * The whole batch is one group-commit job: it shares the commit of concurrent requests and cannot interleave with another request's statements.
+
+### Slow and runaway queries
+* `--statement-timeout-ms` (`NOVADB_STATEMENT_TIMEOUT_MS`, default `30000`, `0` = off): a statement running longer is interrupted, nothing of it is applied and the server keeps serving. HTTP replies `408` with `{"error":{"code":"statement_timeout",...}}`. In a group-commit batch only the timed-out statement fails; the others are re-run and committed.
+* `--max-write-transaction-ms` (`NOVADB_MAX_WRITE_TRANSACTION_MS`, default `60000`, `0` = off): explicit transactions of PostgreSQL/MySQL sessions that hold the write lock longer are rolled back; the session's next statement fails with a "transaction expired" error (HTTP `409` `transaction_expired` where applicable).
+* `--slow-query-ms` (`NOVADB_SLOW_QUERY_MS`, default `500`, `0` = off): statements at least this slow are logged at `warn` (target `novadb::slow_query`) with duration, protocol, database and the statement text with all string/number literals replaced by `?` (never the values; truncated to 500 characters).
+
+### Metrics
+`GET /metrics` serves Prometheus text format (version 0.0.4). It needs the bearer token like the rest of the API unless `--metrics-public` (`NOVADB_METRICS_PUBLIC`) is set. Series: `novadb_queries_total{kind=read|write|ddl}`, `novadb_errors_total{class=syntax|constraint|locked|timeout|rejected|other}`, latency histograms `novadb_read_latency_seconds`, `novadb_write_latency_seconds` (submission to completion), `novadb_write_queue_wait_seconds`, `novadb_batch_commit_seconds`, `novadb_group_commit_batch_size`, `novadb_group_commit_batches_total`, `novadb_write_gate_waiting`, `novadb_commit_queue_depth`, `novadb_committer_busy_ns_total` with `novadb_committers_active` (busy ratio = `rate(busy_ns)/1e9/active`), `novadb_connections{protocol=http|pg|mysql}`, `novadb_checkpoint_seconds`, `novadb_readers_busy` / `novadb_readers_open`, `novadb_statement_timeouts_total`, `novadb_slow_queries_total`, `process_resident_memory_bytes`.
+
+### Sharded databases
+One SQLite file accepts one writer at a time (about 20-25k autocommit writes/s on a fast disk). A **sharded** database spreads one logical database over N files (`game.shard-0000.novadb` .. ), each with its own writer, group commit and write lock, so writes scale with N until CPU or the disk is saturated.
+* **Create**: `POST /v1/admin/databases/game?shards=8` (1..256; returns the usual metadata plus `"shards": 8`; repeating the call with the same N is a no-op, a different N is refused: resharding is not supported). Backup, integrity and checkpoint endpoints act on all shards and answer `{"ok": true, "shards": [{"shard": 0, "ok": true, "report": {...}}, ...]}` (HTTP `207` when a shard failed); backup writes one file per shard.
+* **Routing**: send the shard key with every request: header `X-NovaDB-Shard-Key: <any string>` or JSON field `shard_key`; or pick a shard directly with `shard: <index>` (header `X-NovaDB-Shard`). The shard is `jump_consistent_hash(fnv1a64(utf8 key), N)`: FNV-1a 64-bit (offset `0xcbf29ce484222325`, prime `0x100000001b3`) followed by Lamping/Veach jump consistent hash (multiplier `2862933555777941757`). This is frozen and never changes between versions; growing N later would move ~1/N of the keys (data would have to be moved, which NovaDB does not do for you).
+* **Writes** (`INSERT/UPDATE/DELETE/REPLACE/WITH`, `/sql/batch`, queries) must carry a key (`400` otherwise).
+* **DDL** (`CREATE`, `ALTER`, `DROP`, ... without a key) is applied to every shard, each shard atomically, one after the other. The response lists the outcome per shard (`207` when any failed); re-run idempotent DDL (`IF NOT EXISTS`) to repair stragglers. `POST .../migrations` applies the manifest to every shard (the per-shard ledger makes re-runs safe).
+* **Cross-shard reads**: `/sql/query` with `"shards": "all"` runs the statement on every shard in parallel and returns the concatenated rows with an added `shard` column. Add `"merge": {"order_by": [{"column": "score", "desc": true}], "limit": 100}` for a server-side k-way merge (the global top 100): every shard's statement must itself `ORDER BY` the same columns (and `LIMIT`), and the columns must be in its result. There is no cross-shard aggregation; sum partial `COUNT(*)`/`SUM` rows client-side.
+* **Application rule**: partition your tables by the shard key (all rows of one player in one shard). There are no cross-shard joins, transactions or foreign keys. Global reference data is created in every shard by DDL fan-out.
+* Unsharded databases behave exactly as before.
 
 ### 2.4 Maintenance Endpoints
 * **Online Hot Backup**:

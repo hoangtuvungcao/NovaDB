@@ -32,11 +32,25 @@ environment variables (useful with systemd `EnvironmentFile=`, Docker `-e`, Kube
 | `--lookaside-kib <N>` | `NOVADB_LOOKASIDE_KIB` | automatic | Per-connection SQLite lookaside memory. Automatic: 600 KiB for the first 64 connections, then 150 KiB (75 KiB beyond 4096) |
 | `--worker-threads <N>` | `NOVADB_WORKER_THREADS` | CPU count | Tokio worker threads |
 | `--max-blocking-threads <N>` | `NOVADB_MAX_BLOCKING_THREADS` | max(4096, gateway caps + 512) | Tokio blocking pool; gateway sessions run DB calls here |
+| `--statement-timeout-ms <N>` | `NOVADB_STATEMENT_TIMEOUT_MS` | `30000` (`0` = off) | Interrupts statements that run longer; only that statement fails (HTTP `408 statement_timeout`, MySQL `3024`). **On by default since 0.3.0** |
+| `--max-write-transaction-ms <N>` | `NOVADB_MAX_WRITE_TRANSACTION_MS` | `60000` (`0` = off) | Rolls back gateway-session transactions that hold the write lock longer (MySQL `1205`, HTTP `409 transaction_expired`). **On by default since 0.3.0** |
+| `--slow-query-ms <N>` | `NOVADB_SLOW_QUERY_MS` | `500` (`0` = off) | `warn` log (target `novadb::slow_query`) of slow statements, literals replaced by `?` |
+| `--metrics-public` | `NOVADB_METRICS_PUBLIC` | off | Serve `GET /metrics` (Prometheus) without the bearer token |
 | `--max-push-batch-size <N>` (`novadbd` only) | | `1000` | Max changes per push |
 | `--default-pull-limit <N>` (`novadbd` only) | | `100` | Pull page size when `limit` is omitted |
 | `--max-pull-limit <N>` (`novadbd` only) | | `1000` | Max pull page size |
 
-MySQL wire gateway flags: see [MySQL wire](/connect/mysql) <span class="nova-badge-new">NEW</span>.
+MySQL wire gateway flags: see [MySQL wire](/connect/mysql) <span class="nova-badge-new">NEW</span>. Metrics, slow query log and queries:
+[Observability](/guides/observability). Sharded databases are created through the API (`?shards=N`), not a flag: [Sharding](/guides/sharding).
+
+## MySQL gateway tuning (environment only)
+
+| Env | Default | Description |
+|---|---|---|
+| `NOVADB_MYSQL_WORKERS` | CPU count, max 16 (`0` = shared runtime) | Single-threaded runtimes the MySQL connections are spread over |
+| `NOVADB_MYSQL_INLINE_US` | `100` (`0` = off) | Reads whose cached plan averages under this many microseconds run on the connection's own thread instead of the blocking pool |
+
+They change scheduling only, never the SQL that is run.
 
 ## Client environment variables
 
@@ -70,7 +84,7 @@ Logs go to stderr through `tracing`. Set `RUST_LOG` to change levels, for exampl
 RUST_LOG=novadbd=info,novadb_server=info,novadb_wire=info,tower_http=warn novadbd ...
 ```
 
-The default is `novadbd=info,novadb_server=info,novadb_wire=info,tower_http=info` (one line per HTTP request).
+The default is `novadbd=info,novadb_server=info,novadb_wire=info,novadb_mysql=info,tower_http=info` (one line per HTTP request). The slow query log uses the target `novadb::slow_query`: add `novadb=warn` to see it (see [Observability](/guides/observability)).
 
 ## Limits
 
@@ -82,5 +96,7 @@ Fixed:
 |---|---|
 | Serialized sync change | 64 KiB |
 | Migrations per request | 1000 |
+| Statements per `/sql/batch` | 1000 |
+| Shards per database | 256 |
 | Database ID | `^[a-z0-9][a-z0-9_-]{0,127}$` |
 | PostgreSQL startup/auth deadline | 30 seconds |
