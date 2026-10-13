@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   NovaDB, UnauthorizedError, NotFoundError, BadRequestError, ConflictError, ServerError,
-  TimeoutError, NetworkError, BindError, createChange, hlcTimestamp, rowId,
+  TimeoutError, StatementTimeoutError, NetworkError, BindError, createChange, hlcTimestamp, rowId,
 } from "../dist/esm/index.js";
 
 function mock(status, body, record = []) {
@@ -14,7 +14,7 @@ function mock(status, body, record = []) {
 
 test("sends bearer token, JSON body and correct URL", async () => {
   const calls = [];
-  const db = new NovaDB({ url: "http://h:1/", token: "tok", database: "game", fetch: mock(200, { columns: ["a"], rows: [{ a: 1 }] }, calls) });
+  const db = new NovaDB({ url: "http://h:1/", token: "tok", database: "game", fetch: mock(200, { columns: ["a"], rows: [{ a: 1 }] }, calls), serverParams: false });
   const r = await db.query("SELECT ? AS a", [1]);
   assert.deepEqual(r, { columns: ["a"], rows: [{ a: 1 }] });
   assert.equal(calls[0].url, "http://h:1/v1/databases/game/sql/query");
@@ -45,7 +45,7 @@ test("timeouts and network errors", async () => {
   await assert.rejects(new NovaDB({ fetch: hang, timeoutMs: 20 }).health(), TimeoutError);
   const fail = async () => { throw new TypeError("fetch failed"); };
   await assert.rejects(new NovaDB({ fetch: fail }).health(), NetworkError);
-  await assert.rejects(new NovaDB({ fetch: mock(408, "") }).health(), TimeoutError);
+  await assert.rejects(new NovaDB({ fetch: mock(408, "") }).health(), StatementTimeoutError);
 });
 
 test("decodes tagged blob and real values", async () => {
@@ -59,7 +59,7 @@ test("decodes tagged blob and real values", async () => {
 test("validates database ids and other endpoints", async () => {
   assert.throws(() => new NovaDB({ database: "Bad Name", fetch: mock(200, {}) }), BindError);
   const calls = [];
-  const db = new NovaDB({ fetch: mock(200, { databases: [] }, calls) });
+  const db = new NovaDB({ fetch: mock(200, { databases: [] }, calls), serverParams: false });
   await db.listDatabases();
   await db.createDatabase("other");
   await db.schema();

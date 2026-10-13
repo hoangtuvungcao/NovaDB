@@ -62,6 +62,24 @@ namespace NovaDB.Client
         public PayloadTooLargeException(string m, string c, int s, string b) : base(m, c, s, b) { }
     }
 
+    /// <summary>413 with a result over the server's row/byte limit.</summary>
+    public class ResultTooLargeException : PayloadTooLargeException
+    {
+        public ResultTooLargeException(string m, string c, int s, string b) : base(m, c, s, b) { }
+    }
+
+    /// <summary>408 statement_timeout: the statement exceeded the server's statement timeout and was rolled back.</summary>
+    public class StatementTimeoutException : NovaDBApiException
+    {
+        public StatementTimeoutException(string m, string c, int s, string b) : base(m, c, s, b) { }
+    }
+
+    /// <summary>409 transaction_expired: a write transaction held the lock too long and was rolled back.</summary>
+    public class TransactionExpiredException : ConflictException
+    {
+        public TransactionExpiredException(string m, string c, int s, string b) : base(m, c, s, b) { }
+    }
+
     /// <summary>5xx: internal server error.</summary>
     public class ServerErrorException : NovaDBApiException
     {
@@ -111,6 +129,9 @@ namespace NovaDB.Client
                 if (!string.IsNullOrWhiteSpace(body)) message = "HTTP " + status + ": " + Truncate(body);
             }
 
+            if (code == "statement_timeout") return new StatementTimeoutException(message, code, status, body);
+            if (code == "transaction_expired") return new TransactionExpiredException(message, code, status, body);
+            if (status == 413) return new ResultTooLargeException(message, code, status, body);
             if (code == "bad_request" || status == 400) return new BadRequestException(message, code, status, body);
             if (code == "unauthorized" || status == 401) return new UnauthorizedException(message, code, status, body);
             if (code == "not_found" || status == 404) return new NotFoundException(message, code, status, body);

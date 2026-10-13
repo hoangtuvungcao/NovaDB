@@ -172,3 +172,52 @@ def bind_params(sql: str, params: Optional[Params] = None, string_encoding: str 
             f"but {len(positional)} value(s) were given"
         )
     return "".join(out)
+
+
+def _is_blob(value: Any) -> bool:
+    return isinstance(value, (bytes, bytearray, memoryview))
+
+
+def _values(params: Params) -> Sequence[Any]:
+    return list(params.values()) if isinstance(params, Mapping) else list(params)
+
+
+def has_blob(params: Optional[Params]) -> bool:
+    """True when any value is bytes-like (the server's JSON params cannot carry blobs)."""
+    if params is None or isinstance(params, (str, bytes)):
+        return False
+    return any(_is_blob(v) for v in _values(params))
+
+
+def to_json_param(value: Any) -> Any:
+    """Converts one Python value to the JSON value sent in ``params`` or raises :class:`BindError`."""
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, int):
+        if value < _I64_MIN or value > _I64_MAX:
+            raise BindError(f"integer {value} is outside the 64-bit range")
+        return int(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise BindError(f"cannot bind non-finite float {value!r}")
+        return value
+    if isinstance(value, decimal.Decimal):
+        if not value.is_finite():
+            raise BindError(f"cannot bind non-finite Decimal {value!r}")
+        return float(value)
+    if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
+        return value.isoformat()
+    raise BindError(
+        f"cannot bind parameter of type {type(value).__name__}; use json.dumps() for JSON values"
+    )
+
+
+def to_json_params(params: Params) -> Union[list, dict]:
+    """Array for ``?`` / ``?NNN`` placeholders, object for ``:name`` placeholders."""
+    if isinstance(params, (str, bytes)):
+        raise BindError("params must be a sequence (for ?) or a mapping (for :name)")
+    if isinstance(params, Mapping):
+        return {str(k): to_json_param(v) for k, v in params.items()}
+    if not isinstance(params, Sequence):
+        raise BindError("params must be a sequence (for ?) or a mapping (for :name)")
+    return [to_json_param(v) for v in params]

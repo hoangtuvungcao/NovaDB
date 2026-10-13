@@ -203,3 +203,81 @@ export function bindParams(sql: string, params?: Params | null, options: BindOpt
   }
   return out;
 }
+
+/** Marker for 64-bit integers that JSON.stringify cannot emit. */
+const BIGINT_TAG = `__novadb_i64_${Math.random().toString(16).slice(2)}${Math.random().toString(16).slice(2)}:`;
+
+/**
+ * Converts one value for the server's JSON `params`. Returns `undefined` when
+ * the value cannot travel as JSON (bytes: the server binds only null, bool,
+ * integer, real and text), in which case the caller binds client-side.
+ */
+function toServerValue(value: unknown): unknown {
+  if (value === null) return null;
+  switch (typeof value) {
+    case "boolean":
+      return value;
+    case "number":
+      if (!Number.isFinite(value)) throw new BindError(`cannot bind non-finite number ${String(value)}`);
+      if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+        if (value < -(2 ** 63) || value >= 2 ** 63) {
+          throw new BindError(`number ${value} is outside the 64-bit integer range`);
+        }
+        return `${BIGINT_TAG}${BigInt(value)}`;
+      }
+      return Object.is(value, -0) ? 0 : value;
+    case "bigint":
+      if (value < I64_MIN || value > I64_MAX) throw new BindError(`bigint ${value} is outside the 64-bit integer range`);
+      return value >= -9007199254740991n && value <= 9007199254740991n ? Number(value) : `${BIGINT_TAG}${value}`;
+    case "string":
+      return value;
+    case "undefined":
+      throw new BindError("cannot bind undefined (use null for SQL NULL)");
+    case "object":
+      if (value instanceof Date) {
+        if (Number.isNaN(value.getTime())) throw new BindError("cannot bind an invalid Date");
+        return value.toISOString();
+      }
+      if (value instanceof Uint8Array || value instanceof ArrayBuffer) return undefined;
+      throw new BindError(
+        `cannot bind ${Array.isArray(value) ? "array" : "object"} parameter; use JSON.stringify() for JSON values`,
+      );
+    default:
+      throw new BindError(`cannot bind parameter of type ${typeof value}`);
+  }
+}
+
+/**
+ * Prepares `params` for the server's JSON `params` field (array for
+ * `?`/`?NNN`, object for `:name`). Returns `undefined` when a value is bytes
+ * and the statement has to be bound client-side instead. Throws `BindError`
+ * for unsupported values.
+ */
+export function toServerParams(params: Params | null | undefined): unknown[] | Record<string, unknown> | null | undefined {
+  if (params === undefined || params === null) return null;
+  if (typeof params !== "object") throw new BindError("params must be an array (for ?) or an object (for :name)");
+  if (Array.isArray(params)) {
+    const out: unknown[] = [];
+    for (const value of params) {
+      const v = toServerValue(value);
+      if (v === undefined) return undefined;
+      out.push(v);
+    }
+    return out;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(params)) {
+    const v = toServerValue(value);
+    if (v === undefined) return undefined;
+    out[name] = v;
+  }
+  return out;
+}
+
+/** `JSON.stringify` that writes tagged 64-bit integers as bare numbers. */
+export function stringifyBody(body: unknown): string {
+  const text = JSON.stringify(body);
+  return text.includes(BIGINT_TAG)
+    ? text.replace(new RegExp(`"${BIGINT_TAG}(-?\\d+)"`, "g"), "$1")
+    : text;
+}

@@ -2,13 +2,13 @@
 
   <PropertyGroup>
     <!-- netstandard2.1 is supported by Unity 2021.2+ and every modern .NET runtime. -->
-    <TargetFramework>netstandard2.1</TargetFramework>
+    <TargetFrameworks>netstandard2.1;net8.0</TargetFrameworks>
     <LangVersion>8.0</LangVersion>
     <Nullable>disable</Nullable>
     <RootNamespace>NovaDB.Client</RootNamespace>
     <AssemblyName>NovaDB.Client</AssemblyName>
     <PackageId>NovaDB.Client</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Description>Official NovaDB HTTP client for .NET and Unity. No third-party dependencies.</Description>
     <PackageTags>novadb;sqlite;database;unity;client</PackageTags>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
@@ -16,5 +16,9 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NovaDB.Client.Tests" />
+  </ItemGroup>
 
 </Project>

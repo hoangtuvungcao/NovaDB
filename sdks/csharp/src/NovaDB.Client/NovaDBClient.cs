@@ -24,8 +24,21 @@ namespace NovaDB.Client
         /// <summary>HTTP layer. Default <see cref="HttpClientTransport"/>.</summary>
         public IHttpTransport Transport { get; set; }
 
-        /// <summary>How string parameters are rendered. Default <see cref="Client.StringEncoding.Hex"/>.</summary>
+        /// <summary>
+        /// LEGACY (client-side binding only): how string parameters are rendered into SQL. Used when
+        /// <see cref="ServerParams"/> is Off, the server is too old, or a statement carries a byte[].
+        /// Default <see cref="Client.StringEncoding.Hex"/>.
+        /// </summary>
         public StringEncoding StringEncoding { get; set; } = StringEncoding.Hex;
+
+        /// <summary>Send params to the server (Auto probes once and caches), always, or never. Default Auto.</summary>
+        public ServerParamsMode ServerParams { get; set; } = ServerParamsMode.Auto;
+
+        /// <summary>Sharded databases: shard key sent as X-NovaDB-Shard-Key with each request.</summary>
+        public string ShardKey { get; set; }
+
+        /// <summary>Sharded databases: explicit shard index sent as X-NovaDB-Shard (wins over <see cref="ShardKey"/>).</summary>
+        public int? Shard { get; set; }
 
         /// <summary>Extra headers sent with each request.</summary>
         public Dictionary<string, string> Headers { get; } = new Dictionary<string, string>();
@@ -40,6 +53,9 @@ namespace NovaDB.Client
                 Timeout = Timeout,
                 Transport = Transport,
                 StringEncoding = StringEncoding,
+                ServerParams = ServerParams,
+                ShardKey = ShardKey,
+                Shard = Shard,
             };
             foreach (var h in Headers) copy.Headers[h.Key] = h.Value;
             return copy;
@@ -64,18 +80,31 @@ namespace NovaDB.Client
     /// </summary>
     public sealed class NovaDBClient
     {
-        private static readonly IHttpTransport SharedTransport = new HttpClientTransport();
+        private static readonly IHttpTransport SharedTransport = HttpClientTransport.CreateShared();
         private readonly NovaDBOptions _options;
         private readonly IHttpTransport _transport;
         private readonly string _baseUrl;
+        private readonly ClientState _state;
+
+        /// <summary>Capability cache shared by clients derived with Use / WithShardKey / WithShard.</summary>
+        private sealed class ClientState
+        {
+            public volatile int ParamSupport; // 0 unknown, 1 yes, 2 no
+        }
 
         public string Database => _options.Database;
+
+        /// <summary>Admin operations for sharded databases.</summary>
+        public ShardsApi Shards => new ShardsApi(this);
 
         public NovaDBClient(string url, string token = null, string database = "default")
             : this(new NovaDBOptions { Url = url, Token = token, Database = database }) { }
 
-        public NovaDBClient(NovaDBOptions options)
+        public NovaDBClient(NovaDBOptions options) : this(options, new ClientState()) { }
+
+        private NovaDBClient(NovaDBOptions options, ClientState state)
         {
+            _state = state;
             _options = options ?? throw new ArgumentNullException(nameof(options));
             ValidateDatabaseId(options.Database);
             _baseUrl = (options.Url ?? "http://127.0.0.1:8787").TrimEnd('/');
@@ -83,7 +112,24 @@ namespace NovaDB.Client
         }
 
         /// <summary>Returns a client for another database with the same settings.</summary>
-        public NovaDBClient Use(string database) => new NovaDBClient(_options.Clone(database));
+        public NovaDBClient Use(string database) => new NovaDBClient(_options.Clone(database), _state);
+
+        /// <summary>Returns a client (sharing transport and capability cache) that routes by <paramref name="key"/>.</summary>
+        public NovaDBClient WithShardKey(string key)
+        {
+            var o = _options.Clone(_options.Database);
+            o.ShardKey = key;
+            o.Shard = null;
+            return new NovaDBClient(o, _state);
+        }
+
+        /// <summary>Returns a client (sharing transport and capability cache) that targets shard <paramref name="index"/>.</summary>
+        public NovaDBClient WithShard(int index)
+        {
+            var o = _options.Clone(_options.Database);
+            o.Shard = index;
+            return new NovaDBClient(o, _state);
+        }
 
         internal static string ValidateDatabaseId(string id)
         {
@@ -105,12 +151,49 @@ namespace NovaDB.Client
 
         private string Bind(string sql, object parameters) => Sql.Bind(sql, parameters, _options.StringEncoding);
 
+        private static bool IsHeaderSafe(string v)
+        {
+            foreach (var c in v) if (c < 0x20 || c > 0x7e) return false;
+            return true;
+        }
+
+        /// <summary>Adds the routing headers (or body fields for keys that cannot travel in a header).</summary>
+        private void AddRoute(Dictionary<string, string> headers, object body)
+        {
+            if (_options.Shard.HasValue)
+            {
+                headers["X-NovaDB-Shard"] = _options.Shard.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            else if (_options.ShardKey != null)
+            {
+                if (IsHeaderSafe(_options.ShardKey)) headers["X-NovaDB-Shard-Key"] = _options.ShardKey;
+                else if (body is Dictionary<string, object> d) d["shard_key"] = _options.ShardKey;
+            }
+        }
+
+        private bool HasRoute => _options.Shard.HasValue || _options.ShardKey != null;
+
         /// <summary>Low-level request: returns the parsed JSON model or throws a typed exception.</summary>
         public async Task<object> RequestAsync(string method, string path, object body = null, CancellationToken ct = default)
         {
-            var headers = new Dictionary<string, string> { ["Accept"] = "application/json" };
+            var response = await SendAsync(method, path, body, ct, "application/json", true).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(response.Body)) return null;
+            try
+            {
+                return Json.Parse(response.Body);
+            }
+            catch (FormatException ex)
+            {
+                throw new NovaDBException("expected JSON from " + method + " " + path + ": " + ex.Message, "invalid_response", response.Status);
+            }
+        }
+
+        private async Task<TransportResponse> SendAsync(string method, string path, object body, CancellationToken ct, string accept, bool routed)
+        {
+            var headers = new Dictionary<string, string> { ["Accept"] = accept };
             foreach (var h in _options.Headers) headers[h.Key] = h.Value;
             if (!string.IsNullOrEmpty(_options.Token)) headers["Authorization"] = "Bearer " + _options.Token;
+            if (routed) AddRoute(headers, body);
             var json = body == null ? null : Json.Serialize(body);
             if (json != null) headers["Content-Type"] = "application/json";
 
@@ -136,17 +219,62 @@ namespace NovaDB.Client
                 throw new NovaDBNetworkException(method + " " + _baseUrl + path + " failed: " + ex.Message, ex);
             }
 
-            if (response.Status == 408) throw new NovaDBTimeoutException(method + " " + path + " timed out on the server (HTTP 408)");
+            if (response.Status == 408 && (response.Body == null || response.Body.IndexOf("statement_timeout", StringComparison.Ordinal) < 0))
+                throw new NovaDBTimeoutException(method + " " + path + " timed out on the server (HTTP 408)");
             if (response.Status < 200 || response.Status > 299) throw ErrorMapper.FromResponse(response.Status, response.Body);
-            if (string.IsNullOrEmpty(response.Body)) return null;
+            return response;
+        }
+
+        // ---- bound parameters -------------------------------------------------------------
+
+        private async Task<bool> UseServerParamsAsync(bool routed, CancellationToken ct)
+        {
+            switch (_options.ServerParams)
+            {
+                case ServerParamsMode.On: return true;
+                case ServerParamsMode.Off: return false;
+            }
+            var known = _state.ParamSupport;
+            if (known != 0) return known == 1;
+            // One-time capability probe against the target database. An unrouted client sends shard 0 so
+            // that a sharded database does not reject the probe for lacking a key.
+            var body = new Dictionary<string, object> { ["sql"] = "SELECT ? AS v", ["params"] = new List<object> { 1L } };
+            if (!(routed && HasRoute)) body["shard"] = 0L;
             try
             {
-                return Json.Parse(response.Body);
+                var response = await SendAsync("POST", DbPath("/sql/query"), body, ct, "application/json", routed).ConfigureAwait(false);
+                var d = Json.Parse(response.Body) as Dictionary<string, object>;
+                var rows = J.Arr(d, "rows");
+                var ok = rows.Count == 1 && rows[0] is Dictionary<string, object> r && r.TryGetValue("v", out var v) && v != null && !(v is string) && Convert.ToInt64(v, System.Globalization.CultureInfo.InvariantCulture) == 1;
+                _state.ParamSupport = ok ? 1 : 2;
+                return ok;
             }
-            catch (FormatException ex)
+            catch (BadRequestException)
             {
-                throw new NovaDBException("expected JSON from " + method + " " + path + ": " + ex.Message, "invalid_response", response.Status);
+                _state.ParamSupport = 2;
+                return false;
             }
+            catch (FormatException)
+            {
+                _state.ParamSupport = 2;
+                return false;
+            }
+        }
+
+        /// <summary>Builds the {sql, params} part of a request, choosing server or client-side binding.</summary>
+        private async Task<Dictionary<string, object>> SqlBodyAsync(string sql, object parameters, bool routed, CancellationToken ct)
+        {
+            var body = new Dictionary<string, object>();
+            if (ParamEncoder.IsEmpty(parameters) || ParamEncoder.NeedsClientBinding(parameters) || !await UseServerParamsAsync(routed, ct).ConfigureAwait(false))
+            {
+                body["sql"] = Bind(sql, parameters);
+            }
+            else
+            {
+                body["sql"] = sql;
+                body["params"] = ParamEncoder.ToServer(parameters);
+            }
+            return body;
         }
 
         private async Task<Dictionary<string, object>> ObjectAsync(string method, string path, object body, CancellationToken ct)
@@ -177,6 +305,10 @@ namespace NovaDB.Client
             return new HealthResponse { Status = J.Str(d, "status"), Version = J.Str(d, "version") };
         }
 
+        /// <summary>Raw Prometheus text from GET /metrics (needs the token unless the server runs --metrics-public).</summary>
+        public async Task<string> MetricsAsync(CancellationToken ct = default)
+            => (await SendAsync("GET", "/metrics", null, ct, "text/plain", false).ConfigureAwait(false)).Body;
+
         public async Task<List<DatabaseMetadata>> ListDatabasesAsync(CancellationToken ct = default)
         {
             var d = await ObjectAsync("GET", "/v1/admin/databases", null, ct).ConfigureAwait(false);
@@ -190,7 +322,7 @@ namespace NovaDB.Client
             return ToMetadata(await ObjectAsync("POST", "/v1/admin/databases/" + id, null, ct).ConfigureAwait(false));
         }
 
-        private static DatabaseMetadata ToMetadata(Dictionary<string, object> d) => new DatabaseMetadata
+        internal static DatabaseMetadata ToMetadata(Dictionary<string, object> d) => new DatabaseMetadata
         {
             Id = J.Str(d, "id"),
             SizeBytes = J.Long(d, "size_bytes"),
@@ -199,14 +331,8 @@ namespace NovaDB.Client
             DeviceId = J.Str(d, "device_id"),
         };
 
-        /// <summary>
-        /// Runs one read-only statement. <paramref name="parameters"/>: array for <c>?</c>,
-        /// dictionary or anonymous object for <c>:name</c>.
-        /// </summary>
-        public async Task<QueryResult> QueryAsync(string sql, object parameters = null, CancellationToken ct = default)
+        private static QueryResult ParseQuery(Dictionary<string, object> d)
         {
-            var body = new Dictionary<string, object> { ["sql"] = Bind(sql, parameters) };
-            var d = await ObjectAsync("POST", DbPath("/sql/query"), body, ct).ConfigureAwait(false);
             var result = new QueryResult();
             foreach (var c in J.Arr(d, "columns")) result.Columns.Add(c as string);
             foreach (var r in J.Arr(d, "rows").OfType<Dictionary<string, object>>())
@@ -217,6 +343,39 @@ namespace NovaDB.Client
             return result;
         }
 
+        /// <summary>
+        /// Runs one read-only statement. <paramref name="parameters"/>: array for <c>?</c> / <c>?NNN</c>,
+        /// dictionary or anonymous object for <c>:name</c>. Sent to the server as bound parameters when
+        /// supported; a statement containing a byte[] falls back to client-side binding (the server's JSON
+        /// params cannot carry blobs).
+        /// </summary>
+        public async Task<QueryResult> QueryAsync(string sql, object parameters = null, CancellationToken ct = default)
+        {
+            var body = await SqlBodyAsync(sql, parameters, true, ct).ConfigureAwait(false);
+            return ParseQuery(await ObjectAsync("POST", DbPath("/sql/query"), body, ct).ConfigureAwait(false));
+        }
+
+        /// <summary>
+        /// Runs the query on every shard of a sharded database in parallel; rows carry an extra "shard"
+        /// column. With <paramref name="merge"/> the server k-way merges the (pre-sorted) shard results.
+        /// </summary>
+        public async Task<QueryResult> QueryAllShardsAsync(string sql, object parameters = null, Merge merge = null, CancellationToken ct = default)
+        {
+            var body = await SqlBodyAsync(sql, parameters, false, ct).ConfigureAwait(false);
+            body["shards"] = "all";
+            if (merge != null)
+            {
+                var m = new Dictionary<string, object>
+                {
+                    ["order_by"] = merge.OrderBy.Select(k => new Dictionary<string, object> { ["column"] = k.Column, ["desc"] = k.Desc }).ToList(),
+                };
+                if (merge.Limit.HasValue) m["limit"] = (long)merge.Limit.Value;
+                body["merge"] = m;
+            }
+            var response = await SendAsync("POST", DbPath("/sql/query"), body, ct, "application/json", false).ConfigureAwait(false);
+            return ParseQuery(Json.Parse(response.Body) as Dictionary<string, object> ?? new Dictionary<string, object>());
+        }
+
         /// <summary>Returns the first row, or null.</summary>
         public async Task<Dictionary<string, object>> QueryOneAsync(string sql, object parameters = null, CancellationToken ct = default)
         {
@@ -224,19 +383,70 @@ namespace NovaDB.Client
             return result.Rows.Count > 0 ? result.Rows[0] : null;
         }
 
-        /// <summary>Runs one or more write/DDL statements in a single transaction.</summary>
-        public async Task ExecuteAsync(string sql, object parameters = null, CancellationToken ct = default)
+        /// <summary>
+        /// Runs one or more write/DDL statements in a single transaction. With <paramref name="parameters"/>
+        /// the SQL must be a single statement. DDL on a sharded database without a shard key fans out to
+        /// every shard; a partial failure (HTTP 207) is returned in <see cref="ExecuteResult.Shards"/>, not thrown.
+        /// </summary>
+        public async Task<ExecuteResult> ExecuteAsync(string sql, object parameters = null, CancellationToken ct = default)
         {
-            var body = new Dictionary<string, object> { ["sql"] = Bind(sql, parameters) };
-            await RequestAsync("POST", DbPath("/sql/execute"), body, ct).ConfigureAwait(false);
+            var body = await SqlBodyAsync(sql, parameters, true, ct).ConfigureAwait(false);
+            var d = await ObjectAsync("POST", DbPath("/sql/execute"), body, ct).ConfigureAwait(false);
+            var result = new ExecuteResult { Ok = !d.ContainsKey("ok") || J.Bool(d, "ok"), Changes = J.Long(d, "changes"), LastInsertRowid = J.Long(d, "last_insert_rowid") };
+            foreach (var o in J.Arr(d, "shards").OfType<Dictionary<string, object>>())
+                result.Shards.Add(new ShardOutcome { Shard = (int)J.Long(o, "shard"), Ok = J.Bool(o, "ok"), Error = ParseError(J.Obj(o, "error")) });
+            return result;
         }
 
-        /// <summary>Runs several statements atomically.</summary>
-        public Task BatchAsync(IEnumerable<Statement> statements, CancellationToken ct = default)
+        private static StatementError ParseError(Dictionary<string, object> e)
+            => e == null ? null : new StatementError { Code = J.Str(e, "code"), Message = J.Str(e, "message") };
+
+        /// <summary>Runs several statements atomically (all commit or none; failure throws).</summary>
+        public Task<BatchResult> BatchAsync(IEnumerable<Statement> statements, CancellationToken ct)
+            => BatchAsync(statements, true, ct);
+
+        /// <summary>
+        /// POST /sql/batch. Atomic (default): all statements commit or none and the first failure throws.
+        /// Non-atomic: each statement is isolated and failures are reported per statement
+        /// (<see cref="BatchResult.Ok"/> is false). Statements with a byte[] param are client-bound individually.
+        /// Against a server without /sql/batch (Auto mode, probe negative) an atomic batch is sent as one
+        /// multi-statement execute and per-statement data is not available.
+        /// </summary>
+        public async Task<BatchResult> BatchAsync(IEnumerable<Statement> statements, bool atomic = true, CancellationToken ct = default)
         {
-            var parts = statements.Select(s => Bind(s.Sql, s.Parameters).Trim().TrimEnd(';')).ToList();
-            if (parts.Count == 0) throw new NovaDBBindException("BatchAsync needs at least one statement");
-            return ExecuteAsync(string.Join("\n;\n", parts), null, ct);
+            var list = statements?.ToList() ?? throw new ArgumentNullException(nameof(statements));
+            if (list.Count == 0) throw new NovaDBBindException("BatchAsync needs at least one statement");
+            var server = _options.ServerParams != ServerParamsMode.Auto || await UseServerParamsAsync(true, ct).ConfigureAwait(false);
+            if (!server)
+            {
+                if (!atomic) throw new NovaDBException("this server does not support /sql/batch; upgrade NovaDB or use atomic batches", "unsupported");
+                var parts = list.Select(x => Bind(x.Sql, x.Parameters).Trim().TrimEnd(';')).ToList();
+                await ExecuteAsync(string.Join("\n;\n", parts), null, ct).ConfigureAwait(false);
+                var legacy = new BatchResult { Ok = true, Atomic = true };
+                foreach (var _ in list) legacy.Results.Add(new StatementResult { Ok = true });
+                return legacy;
+            }
+            var items = new List<object>();
+            foreach (var st in list)
+            {
+                var item = await SqlBodyAsync(st.Sql, st.Parameters, true, ct).ConfigureAwait(false);
+                items.Add(item);
+            }
+            var body = new Dictionary<string, object> { ["statements"] = items, ["atomic"] = atomic };
+            var d = await ObjectAsync("POST", DbPath("/sql/batch"), body, ct).ConfigureAwait(false);
+            var result = new BatchResult { Ok = J.Bool(d, "ok"), Atomic = J.Bool(d, "atomic") };
+            foreach (var o in J.Arr(d, "results").OfType<Dictionary<string, object>>())
+            {
+                var r = new StatementResult { Ok = J.Bool(o, "ok"), Changes = J.Long(o, "changes"), LastInsertRowid = J.Long(o, "last_insert_rowid"), Error = ParseError(J.Obj(o, "error")) };
+                if (o.ContainsKey("columns"))
+                {
+                    var q = ParseQuery(o);
+                    r.Columns = q.Columns;
+                    r.Rows = q.Rows;
+                }
+                result.Results.Add(r);
+            }
+            return result;
         }
 
         public async Task<SchemaResponse> SchemaAsync(CancellationToken ct = default)

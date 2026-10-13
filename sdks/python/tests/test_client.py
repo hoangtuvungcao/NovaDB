@@ -14,6 +14,7 @@ from novadb import (
     NovaDB,
     NovaDBError,
     ServerError,
+    StatementTimeoutError,
     TimeoutError,
     UnauthorizedError,
     create_change,
@@ -51,7 +52,7 @@ class FakeOpener:
 
 
 def client(opener, **kw):
-    return NovaDB("http://h:1/", token="tok", database="game", opener=opener, string_encoding="quote", **kw)
+    return NovaDB("http://h:1/", token="tok", database="game", opener=opener, string_encoding="quote", server_params=False, **kw)
 
 
 class ClientTests(unittest.TestCase):
@@ -89,7 +90,9 @@ class ClientTests(unittest.TestCase):
             client(FakeOpener(exc=socket.timeout("timed out"))).health()
         with self.assertRaises(TimeoutError):
             client(FakeOpener(exc=urllib.error.URLError(socket.timeout("timed out")))).health()
-        with self.assertRaises(TimeoutError):
+        with self.assertRaises(StatementTimeoutError):
+            client(FakeOpener(408, b"")).health()
+        with self.assertRaises(TimeoutError):  # StatementTimeoutError is also a TimeoutError
             client(FakeOpener(408, b"")).health()
         with self.assertRaises(NetworkError):
             client(FakeOpener(exc=urllib.error.URLError(ConnectionRefusedError("refused")))).health()
@@ -108,7 +111,6 @@ class ClientTests(unittest.TestCase):
         db.migrate([{"version": 1, "name": "init", "sql": "CREATE TABLE a(x)"}])
         db.backup()
         db.pull(after=5, limit=2)
-        db.batch(["CREATE TABLE b(x);", ("INSERT INTO b VALUES (?)", [1])])
         got = [f"{r.get_method()} {r.full_url.replace('http://h:1', '')}" for r in op.requests]
         self.assertEqual(got, [
             "GET /v1/admin/databases",
@@ -117,9 +119,7 @@ class ClientTests(unittest.TestCase):
             "POST /v1/databases/game/migrations",
             "POST /v1/databases/game/maintenance/backup",
             "GET /v1/databases/game/pull?after=5&limit=2",
-            "POST /v1/databases/game/sql/execute",
         ])
-        self.assertEqual(op.sql(), "CREATE TABLE b(x)\n;\nINSERT INTO b VALUES (1)")
         with self.assertRaises(BindError):
             NovaDB(database="Bad Name")
 

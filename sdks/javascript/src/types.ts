@@ -10,6 +10,45 @@ export interface QueryResult<T = Row> {
 
 export interface ExecuteResult {
   ok: boolean;
+  /** Rows changed by the (last) statement. Absent on a DDL fan-out. */
+  changes?: number;
+  /** `last_insert_rowid()` after the statement (snake_case as sent by the server). */
+  last_insert_rowid?: number;
+  /** Same as `last_insert_rowid`, camelCase. */
+  lastInsertRowid?: number;
+  /** Sharded DDL fan-out (HTTP 200, or 207 when `ok` is false): outcome per shard. */
+  shards?: ShardOutcome[];
+}
+
+/** Outcome of one shard in a fan-out (DDL, backup, ...). */
+export interface ShardOutcome {
+  shard: number;
+  ok: boolean;
+  error?: { code: string; message: string };
+  report?: unknown;
+}
+
+/** Result of one statement of a `batch()`. */
+export interface BatchItemResult<T = Row> {
+  ok: boolean;
+  changes?: number;
+  lastInsertRowid?: number;
+  columns?: string[];
+  rows?: T[];
+  error?: { code: string; message: string };
+}
+
+export interface BatchResult<T = Row> {
+  /** False when a statement of a non-atomic batch failed. */
+  ok: boolean;
+  atomic: boolean;
+  results: BatchItemResult<T>[];
+}
+
+/** Server-side k-way merge of a cross-shard read. */
+export interface MergeSpec {
+  order_by: { column: string; desc?: boolean }[];
+  limit?: number;
 }
 
 export interface HealthResponse {
@@ -19,6 +58,8 @@ export interface HealthResponse {
 
 export interface DatabaseMetadata {
   id: string;
+  /** Shard count of a sharded database. */
+  shards?: number;
   size_bytes: number;
   modified_at_ms: number | null;
   open: boolean;

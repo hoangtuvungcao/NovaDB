@@ -14,6 +14,45 @@ type QueryResult struct {
 // ExecuteResult is returned by Execute.
 type ExecuteResult struct {
 	OK bool `json:"ok"`
+	// Changes is the rows changed by the last write statement.
+	Changes uint64 `json:"changes"`
+	// LastInsertRowid is the rowid of the most recent INSERT.
+	LastInsertRowid int64 `json:"last_insert_rowid"`
+	// Shards is set for DDL fan-out on a sharded database (HTTP 207 when a
+	// shard failed; OK is then false).
+	Shards []ShardOutcome `json:"shards,omitempty"`
+}
+
+// ErrorInfo is a per-statement or per-shard error from the server.
+type ErrorInfo struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// ShardOutcome is one shard's result of a fan-out operation.
+type ShardOutcome struct {
+	Shard  int             `json:"shard"`
+	OK     bool            `json:"ok"`
+	Error  *ErrorInfo      `json:"error,omitempty"`
+	Report json.RawMessage `json:"report,omitempty"`
+}
+
+// StatementResult is one statement's outcome in a BatchResult.
+type StatementResult struct {
+	OK              bool       `json:"ok"`
+	Changes         uint64     `json:"changes"`
+	LastInsertRowid int64      `json:"last_insert_rowid"`
+	Columns         []string   `json:"columns,omitempty"`
+	Rows            []Row      `json:"rows,omitempty"`
+	Error           *ErrorInfo `json:"error,omitempty"`
+}
+
+// BatchResult is the response of Batch. OK is false when any statement of a
+// non-atomic batch failed.
+type BatchResult struct {
+	OK      bool              `json:"ok"`
+	Atomic  bool              `json:"atomic"`
+	Results []StatementResult `json:"results"`
 }
 
 type HealthResponse struct {
@@ -27,6 +66,7 @@ type DatabaseMetadata struct {
 	ModifiedAtMs *uint64 `json:"modified_at_ms"`
 	Open         bool    `json:"open"`
 	DeviceID     *string `json:"device_id"`
+	Shards       int     `json:"shards,omitempty"` // set for sharded databases
 }
 
 type SchemaObject struct {

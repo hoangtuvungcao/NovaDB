@@ -42,7 +42,7 @@ func fakeServer(t *testing.T, status int, body string) (*httptest.Server, *[]rec
 
 func newClient(t *testing.T, url string) *Client {
 	t.Helper()
-	c, err := New(Options{URL: url + "/", Token: "tok", Database: "game", StringEncoding: StringQuote})
+	c, err := New(Options{URL: url + "/", Token: "tok", Database: "game", StringEncoding: StringQuote, ServerParams: ServerParamsOff})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,6 @@ func TestEndpoints(t *testing.T) {
 	_, _ = c.Migrate(ctx, []Migration{{Version: 1, Name: "init", SQL: "CREATE TABLE a(x)"}})
 	_, _ = c.Backup(ctx)
 	_, _ = c.Pull(ctx, 5, 2)
-	_, _ = c.Batch(ctx, Statement{SQL: "CREATE TABLE b(x);"}, Statement{SQL: "INSERT INTO b VALUES (?)", Args: []any{1}})
 	want := []string{
 		"GET /v1/admin/databases",
 		"POST /v1/admin/databases/other",
@@ -128,15 +127,11 @@ func TestEndpoints(t *testing.T) {
 		"POST /v1/databases/game/migrations",
 		"POST /v1/databases/game/maintenance/backup",
 		"GET /v1/databases/game/pull?after=5&limit=2",
-		"POST /v1/databases/game/sql/execute",
 	}
 	for i, w := range want {
 		if got := (*calls)[i].Method + " " + (*calls)[i].Path; got != w {
 			t.Errorf("call %d = %q, want %q", i, got, w)
 		}
-	}
-	if sql := (*calls)[6].SQL; sql != "CREATE TABLE b(x)\n;\nINSERT INTO b VALUES (1)" {
-		t.Errorf("batch SQL = %q", sql)
 	}
 }
 
@@ -229,10 +224,10 @@ func TestIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := c.Batch(ctx,
-		Statement{SQL: "INSERT INTO players(id, name) VALUES (?, ?)", Args: []any{"b1", "WAITFOR x"}},
-		Statement{SQL: "INSERT INTO players(id, name) VALUES (?, ?)", Args: []any{"b2", "); DROP TABLE players; --"}},
-	); err != nil {
+	if _, err := c.Batch(ctx, []Statement{
+		{SQL: "INSERT INTO players(id, name) VALUES (?, ?)", Args: []any{"b1", "WAITFOR x"}},
+		{SQL: "INSERT INTO players(id, name) VALUES (?, ?)", Args: []any{"b2", "); DROP TABLE players; --"}},
+	}, true); err != nil {
 		t.Fatal(err)
 	}
 	var players []struct {

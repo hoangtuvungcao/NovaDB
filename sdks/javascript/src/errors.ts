@@ -35,6 +35,12 @@ export class NotFoundError extends NovaDBApiError {}
 export class ConflictError extends NovaDBApiError {}
 /** 413 `payload_too_large`: request body or sync change too large. */
 export class PayloadTooLargeError extends NovaDBApiError {}
+/** 408 `statement_timeout`: the statement ran longer than the server's `--statement-timeout-ms` and was interrupted (nothing applied). */
+export class StatementTimeoutError extends NovaDBApiError {}
+/** 409 `transaction_expired`: the write transaction was rolled back by the server (`--max-write-transaction-ms`). */
+export class TransactionExpiredError extends ConflictError {}
+/** 413 `payload_too_large` for a result: it exceeded the server's row/byte limit; paginate with LIMIT/OFFSET. */
+export class ResultTooLargeError extends PayloadTooLargeError {}
 /** 5xx: the server failed internally. */
 export class ServerError extends NovaDBApiError {}
 
@@ -73,7 +79,13 @@ export function errorFromResponse(status: number, body: unknown): NovaDBApiError
     message = `HTTP ${status}: ${body.slice(0, 500)}`;
   }
   const Ctor =
-    code === "bad_request" || status === 400
+    code === "statement_timeout" || status === 408
+      ? StatementTimeoutError
+      : code === "transaction_expired"
+        ? TransactionExpiredError
+        : status === 413 && /result too large/i.test(message)
+          ? ResultTooLargeError
+          : code === "bad_request" || status === 400
       ? BadRequestError
       : code === "unauthorized" || status === 401
         ? UnauthorizedError

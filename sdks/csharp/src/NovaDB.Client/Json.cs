@@ -42,6 +42,9 @@ namespace NovaDB.Client
                 case null:
                     sb.Append("null");
                     return;
+                case RawJson raw:
+                    sb.Append(raw.Text);
+                    return;
                 case string s:
                     WriteString(sb, s);
                     return;

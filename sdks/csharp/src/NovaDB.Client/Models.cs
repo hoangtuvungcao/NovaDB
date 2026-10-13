@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Threading;
 
 namespace NovaDB.Client
 {
@@ -11,6 +12,61 @@ namespace NovaDB.Client
 
         /// <summary>One dictionary per row. Values: null, long, double, string, bool, byte[] (blobs).</summary>
         public List<Dictionary<string, object>> Rows { get; } = new List<Dictionary<string, object>>();
+    }
+
+    /// <summary>Error of one statement or one shard.</summary>
+    public sealed class StatementError
+    {
+        public string Code { get; set; }
+        public string Message { get; set; }
+    }
+
+    /// <summary>Per-shard outcome of a DDL fan-out (HTTP 207 when a shard failed).</summary>
+    public sealed class ShardOutcome
+    {
+        public int Shard { get; set; }
+        public bool Ok { get; set; }
+        public StatementError Error { get; set; }
+    }
+
+    /// <summary>Result of <see cref="NovaDBClient.ExecuteAsync"/>.</summary>
+    public sealed class ExecuteResult
+    {
+        public bool Ok { get; set; }
+
+        /// <summary>Rows changed by the last write statement of the request.</summary>
+        public long Changes { get; set; }
+
+        public long LastInsertRowid { get; set; }
+
+        /// <summary>Only set for DDL fanned out to every shard of a sharded database; never throws on failure, check <see cref="Ok"/>.</summary>
+        public List<ShardOutcome> Shards { get; } = new List<ShardOutcome>();
+    }
+
+    /// <summary>Result of one statement of <see cref="NovaDBClient.BatchAsync(IEnumerable{Statement}, bool, CancellationToken)"/>.</summary>
+    public sealed class StatementResult
+    {
+        public bool Ok { get; set; }
+        public long Changes { get; set; }
+        public long LastInsertRowid { get; set; }
+
+        /// <summary>Null unless the statement returned rows.</summary>
+        public List<string> Columns { get; set; }
+
+        public List<Dictionary<string, object>> Rows { get; set; }
+
+        /// <summary>Set when <see cref="Ok"/> is false (non-atomic batches).</summary>
+        public StatementError Error { get; set; }
+    }
+
+    /// <summary>Result of <see cref="NovaDBClient.BatchAsync(IEnumerable{Statement}, bool, CancellationToken)"/>.</summary>
+    public sealed class BatchResult
+    {
+        /// <summary>False when any statement of a non-atomic batch failed.</summary>
+        public bool Ok { get; set; }
+
+        public bool Atomic { get; set; }
+        public List<StatementResult> Results { get; } = new List<StatementResult>();
     }
 
     /// <summary>Typed accessors for result rows.</summary>
@@ -48,6 +104,9 @@ namespace NovaDB.Client
         public long? ModifiedAtMs { get; set; }
         public bool Open { get; set; }
         public string DeviceId { get; set; }
+
+        /// <summary>Number of shards of a sharded database, otherwise null.</summary>
+        public int? ShardCount { get; set; }
     }
 
     public sealed class SchemaObject

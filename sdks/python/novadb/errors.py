@@ -43,6 +43,10 @@ class PayloadTooLargeError(APIError):
     """413 ``payload_too_large``."""
 
 
+class ResultTooLargeError(PayloadTooLargeError):
+    """413: a query result exceeded the server's row/byte limit (never truncated silently)."""
+
+
 class ServerError(APIError):
     """5xx: the server failed internally."""
 
@@ -50,8 +54,19 @@ class ServerError(APIError):
 class TimeoutError(NovaDBError):  # noqa: A001 - intentionally mirrors the other SDKs
     """The request did not complete within ``timeout`` seconds."""
 
-    def __init__(self, message: str):
-        super().__init__(message, "timeout")
+    def __init__(self, message: str, code: str = "timeout", status: Optional[int] = None):
+        super().__init__(message, code, status)
+
+
+class StatementTimeoutError(APIError, TimeoutError):
+    """408 ``statement_timeout``: the server interrupted a slow statement (nothing was applied).
+
+    Also a :class:`TimeoutError`, so existing ``except TimeoutError`` code keeps working.
+    """
+
+
+class TransactionExpiredError(APIError):
+    """409 ``transaction_expired``: an explicit transaction held the write lock too long."""
 
 
 class NetworkError(NovaDBError):
@@ -73,14 +88,18 @@ _BY_CODE = {
     "unauthorized": UnauthorizedError,
     "not_found": NotFoundError,
     "conflict": ConflictError,
-    "payload_too_large": PayloadTooLargeError,
+    "payload_too_large": ResultTooLargeError,
+    "result_too_large": ResultTooLargeError,
+    "statement_timeout": StatementTimeoutError,
+    "transaction_expired": TransactionExpiredError,
 }
 _BY_STATUS = {
     400: BadRequestError,
     401: UnauthorizedError,
     404: NotFoundError,
+    408: StatementTimeoutError,
     409: ConflictError,
-    413: PayloadTooLargeError,
+    413: ResultTooLargeError,
 }
 
 

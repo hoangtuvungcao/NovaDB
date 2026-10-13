@@ -1,6 +1,7 @@
 package novadb
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,7 +18,11 @@ var (
 	ErrTimeout         = errors.New("novadb: timeout")
 	ErrNetwork         = errors.New("novadb: network error")
 	ErrBind            = errors.New("novadb: bind error")
-	ErrMissingWhere    = errors.New("novadb: refusing to UPDATE/DELETE without Where(); call All() to affect every row")
+
+	ErrStatementTimeout   = errors.New("novadb: statement timeout")
+	ErrTransactionExpired = errors.New("novadb: transaction expired")
+	ErrResultTooLarge     = errors.New("novadb: result too large")
+	ErrMissingWhere       = errors.New("novadb: refusing to UPDATE/DELETE without Where(); call All() to affect every row")
 )
 
 // APIError is returned when the server answers with a non-2xx status.
@@ -54,6 +59,53 @@ func (e *APIError) Is(target error) bool {
 	}
 	return false
 }
+
+// newAPIError builds the typed error for a non-2xx response.
+func newAPIError(status int, raw []byte) error {
+	apiErr := &APIError{Status: status, Code: "http_error", Message: http.StatusText(status), Body: string(raw)}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &env) == nil && env.Error.Code != "" {
+		apiErr.Code, apiErr.Message = env.Error.Code, env.Error.Message
+	}
+	switch {
+	case status == http.StatusRequestTimeout || apiErr.Code == "statement_timeout":
+		return &StatementTimeoutError{apiErr}
+	case apiErr.Code == "transaction_expired":
+		return &TransactionExpiredError{apiErr}
+	case status == http.StatusRequestEntityTooLarge:
+		return &ResultTooLargeError{apiErr}
+	}
+	return apiErr
+}
+
+// StatementTimeoutError: the statement ran past the server's statement
+// timeout (HTTP 408, code statement_timeout); nothing of it was applied.
+// errors.As also reaches the wrapped *APIError; errors.Is matches
+// ErrStatementTimeout and ErrTimeout.
+type StatementTimeoutError struct{ *APIError }
+
+func (e *StatementTimeoutError) Unwrap() error        { return e.APIError }
+func (e *StatementTimeoutError) Is(target error) bool { return target == ErrStatementTimeout }
+
+// TransactionExpiredError: an explicit transaction held the write lock too
+// long and was rolled back (HTTP 409, code transaction_expired). Also matches
+// ErrConflict.
+type TransactionExpiredError struct{ *APIError }
+
+func (e *TransactionExpiredError) Unwrap() error        { return e.APIError }
+func (e *TransactionExpiredError) Is(target error) bool { return target == ErrTransactionExpired }
+
+// ResultTooLargeError: the result or payload exceeded the server limit (HTTP
+// 413). Also matches ErrPayloadTooLarge.
+type ResultTooLargeError struct{ *APIError }
+
+func (e *ResultTooLargeError) Unwrap() error        { return e.APIError }
+func (e *ResultTooLargeError) Is(target error) bool { return target == ErrResultTooLarge }
 
 // BindError describes a client-side parameter binding failure.
 type BindError struct{ Msg string }

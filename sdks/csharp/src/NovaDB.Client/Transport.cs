@@ -43,7 +43,31 @@ namespace NovaDB.Client
         private readonly HttpClient _http;
         private readonly bool _ownsClient;
 
-        public HttpClientTransport() : this(new HttpClient { Timeout = Timeout.InfiniteTimeSpan }, true) { }
+        public HttpClientTransport() : this(NewClient(), true) { }
+
+        /// <summary>
+        /// Keep-alive client: on modern .NET a SocketsHttpHandler with connection recycling (5 min lifetime,
+        /// 2 min idle timeout) so DNS changes are picked up and many parallel requests are not capped.
+        /// On netstandard2.1 hosts (Unity/Mono) the platform default handler is used.
+        /// </summary>
+        private static HttpClient NewClient()
+        {
+#if NET5_0_OR_GREATER
+            var handler = new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+                MaxConnectionsPerServer = 1024,
+                AutomaticDecompression = System.Net.DecompressionMethods.None,
+            };
+            return new HttpClient(handler, true) { Timeout = Timeout.InfiniteTimeSpan };
+#else
+            return new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+#endif
+        }
+
+        /// <summary>The process-wide transport used by clients that do not set <see cref="NovaDBOptions.Transport"/>.</summary>
+        internal static HttpClientTransport CreateShared() => new HttpClientTransport();
 
         public HttpClientTransport(HttpClient client, bool ownsClient = false)
         {

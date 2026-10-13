@@ -10,7 +10,7 @@ function fakeDb() {
     const payload = url.endsWith("/sql/query") ? { columns: ["n"], rows: [{ n: 3 }] } : { ok: true };
     return new Response(JSON.stringify(payload), { status: 200 });
   };
-  return { db: new NovaDB({ url: "http://x", fetch, stringEncoding: "quote" }), calls };
+  return { db: new NovaDB({ url: "http://x", fetch, stringEncoding: "quote", serverParams: false }), calls };
 }
 
 test("select builder", async () => {

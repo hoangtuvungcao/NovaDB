@@ -22,7 +22,9 @@ async function setup() {
 
 async function submitScore(playerId, name, score, level = 1) {
   const now = new Date();
-  await db.batch([
+  // One round trip, one transaction; every value is bound by the server
+  // (no string building, no SQL injection), the SQL text is prepared once.
+  const result = await db.batch([
     [
       "INSERT INTO players (id, name, created_at) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET name = excluded.name",
       [playerId, name, now],
@@ -34,6 +36,7 @@ async function submitScore(playerId, name, score, level = 1) {
       { id: playerId, score, level, now },
     ],
   ]);
+  return result.results[1].changes === 1; // false when the stored best score was higher
 }
 
 async function topScores(limit = 10) {
@@ -49,7 +52,8 @@ async function topScores(limit = 10) {
 try {
   const [name = "Player", score = String(Math.floor(Math.random() * 5000))] = process.argv.slice(2);
   await setup();
-  await submitScore(randomUUID(), name, Number(score));
+  const improved = await submitScore(randomUUID(), name, Number(score));
+  console.log(improved ? "new best score stored" : "kept the previous best score");
   console.table(await topScores());
 } catch (error) {
   if (error instanceof NovaDBError) {

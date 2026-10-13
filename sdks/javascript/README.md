@@ -33,11 +33,16 @@ interface User { id: number; name: string; team: string }
 const { columns, rows } = await db.query<User>("SELECT * FROM users WHERE team = :team", { team: "red" });
 const one = await db.queryOne<User>("SELECT * FROM users WHERE id = ?", [1]);
 
-// Atomic batch (one transaction)
-await db.batch([
+const { changes, lastInsertRowid } = await db.execute("INSERT INTO users(name) VALUES (?)", ["Ann"]);
+
+// Batch: one round trip, one transaction, per-statement results
+const r = await db.batch([
   ["UPDATE users SET team = ? WHERE id = ?", ["blue", 1]],
+  { sql: "SELECT COUNT(*) AS n FROM users WHERE team = :t", params: { t: "blue" } },
   "DELETE FROM users WHERE team IS NULL",
-]);
+]);                                   // atomic by default: all or nothing, first failure throws
+r.results[1].rows;                    // [{ n: ... }]
+const partial = await db.batch(stmts, { atomic: false });  // failures land in results[i].error
 ```
 
 ### Query builder
@@ -85,17 +90,52 @@ Every error extends `NovaDBError` and has `code` and `status` fields:
 | `UnauthorizedError` | 401 |
 | `NotFoundError` | 404: the database does not exist |
 | `ConflictError` | 409 |
+| `TransactionExpiredError` (a `ConflictError`) | 409 `transaction_expired`: the server rolled back a write transaction held too long |
 | `PayloadTooLargeError` | 413 |
+| `ResultTooLargeError` (a `PayloadTooLargeError`) | 413: the result exceeded the server's row/byte limit; paginate with `LIMIT`/`OFFSET` |
+| `StatementTimeoutError` | 408 `statement_timeout`: the statement was interrupted by the server, nothing applied |
 | `ServerError` | 5xx |
-| `TimeoutError` | `timeoutMs` elapsed, or the server answered 408 |
+| `TimeoutError` | the client-side `timeoutMs` elapsed |
 | `NetworkError` | DNS failure, refused connection, or a CORS rejection in browsers |
 | `BindError` | Bad parameters, detected before sending |
 
 ## Parameters
 
-Use `?` with an array, or `:name` with an object. Supported values are `null`, booleans, finite numbers, bigints (64-bit range), strings, `Date` (sent as an ISO string), `Uint8Array` and `ArrayBuffer`. Any other value, including `undefined`, throws `BindError`.
+Use `?` with an array, or `:name` with an object. Values are **sent to the server** (`params` in the request), which binds them: no SQL text is built, injection is impossible by construction and the server caches the prepared statement. Mapping: `null`, booleans (1/0), numbers (integers are signed 64-bit; `NaN`/`Infinity` throw `BindError`), bigints (checked against the i64 range and sent as exact integers), strings, `Date` (ISO string). `undefined`, arrays and objects throw `BindError`. A JS number such as `5.0` is an integer on the wire; the column's affinity decides how it is stored.
 
-Strings are sent as `CAST(X'..' AS TEXT)` by default. See [../README.md](../README.md#parameter-binding) for why. Pass `stringEncoding: "quote"` to send `'it''s'` literals instead. BLOB results come back as `Uint8Array`; set `decodeValues: false` to keep the raw tagged JSON.
+`Uint8Array` / `ArrayBuffer` cannot travel in the server's JSON `params`, so a statement that binds bytes is bound client-side as an `X'..'` literal (only that statement; the rest of a batch stays server-bound). BLOB results come back as `Uint8Array`; set `decodeValues: false` to keep the raw tagged JSON.
+
+The first parametrised call probes the server once (`SELECT ? AS v`); servers older than the bound-parameter API are detected and the client falls back to **legacy client-side literal substitution** (see [../README.md](../README.md#parameter-binding)), where strings are sent as `CAST(X'..' AS TEXT)` unless you pass `stringEncoding: "quote"`. Force a mode with `serverParams: true | false` (default `"auto"`). `stringEncoding` only matters on that legacy path.
+
+## Sharded databases
+
+```ts
+const admin = new NovaDB({ url, token, database: "game" });
+await admin.shards.createDatabase("game", 8);      // POST /v1/admin/databases/game?shards=8
+await admin.execute("CREATE TABLE scores(player TEXT PRIMARY KEY, score INTEGER)");  // DDL fans out to all shards
+// -> { ok, shards: [{ shard, ok, error? }] } (HTTP 207 is returned, not thrown)
+
+await admin.execute("INSERT INTO scores VALUES (?, ?)", ["p1", 10], { shardKey: "p1" });   // per-call key
+const mine = new NovaDB({ url, token, database: "game", shardKey: "p1" });                 // or a client default
+await mine.batch([...]);                                                                   // whole batch on p1's shard
+
+// Global top 10: every shard sorts and limits, the server merges
+const top = await admin.queryAllShards(
+  "SELECT player, score FROM scores ORDER BY score DESC LIMIT 10", null,
+  { merge: { order_by: [{ column: "score", desc: true }], limit: 10 } },
+); // rows carry an extra `shard` column
+
+import { shardForKey } from "@novadb/client";
+shardForKey("p1", 8);    // local FNV-1a 64 + jump consistent hash, identical to the server (frozen)
+```
+
+Options: `shardKey` (string, number or bigint, converted with `String()`) or `shard` (explicit index; wins over the key). Tables must be partitioned by the shard key; there are no cross-shard joins or transactions.
+
+## Metrics and connection reuse
+
+`await db.metrics()` returns the raw Prometheus text of `GET /metrics` (token required unless the server runs `--metrics-public`).
+
+Node's built-in `fetch` already pools keep-alive connections. For very high request rates pass `keepAlive: true` (or `fetch: createKeepAliveFetch({ maxSockets: 256 })`) to use an explicit `http.Agent({ keepAlive: true })` pool. Node only.
 
 ## Browsers
 
@@ -111,5 +151,6 @@ Do not put an admin token in public pages. See [`examples/web-todo`](../../examp
 
 ```bash
 npm test                                   # builds, then runs node --test test/
-NOVADB_TEST_URL=http://127.0.0.1:8787 NOVADB_TEST_TOKEN=secret npm test   # adds the live-server test
+NOVADB_TEST_URL=http://127.0.0.1:8787 NOVADB_TEST_TOKEN=secret npm test   # adds the live-server tests
+# also run the 413 test: start novadbd with --max-result-rows 200 and set NOVADB_TEST_MAX_ROWS=200
 ```
