@@ -40,6 +40,8 @@ struct Args {
     user: String,
     password: String,
     connect_only_hold_secs: u64,
+    /// HTTP only: create the database with N shards and route writes by player id
+    shards: usize,
 }
 
 fn parse() -> Args {
@@ -57,6 +59,7 @@ fn parse() -> Args {
         user: "root".into(),
         password: String::new(),
         connect_only_hold_secs: 0,
+        shards: 0,
     };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -80,6 +83,7 @@ fn parse() -> Args {
             "--password" => a.password = next(),
             "--hold" => a.connect_only_hold_secs = next().parse().unwrap(),
             "--setup" => a.setup = true,
+            "--shards" => a.shards = next().parse().unwrap(),
             other => {
                 eprintln!("unknown arg {other}");
                 std::process::exit(2);
@@ -181,9 +185,17 @@ impl Conn {
 
     /// Runs one statement; Ok(rows-or-0).
     async fn run(&mut self, sql: &str, read: bool) -> R<()> {
+        self.run_keyed(sql, read, None).await
+    }
+
+    /// [`Conn::run`] with a shard key (HTTP sharded databases).
+    async fn run_keyed(&mut self, sql: &str, read: bool, key: Option<u64>) -> R<()> {
         match self {
             Conn::Http(s, host, db) => {
-                let body = format!("{{\"sql\":\"{}\"}}", json_escape(sql));
+                let body = match key {
+                    Some(key) => format!("{{\"sql\":\"{}\",\"shard_key\":\"p{key}\"}}", json_escape(sql)),
+                    None => format!("{{\"sql\":\"{}\"}}", json_escape(sql)),
+                };
                 let action = if read { "query" } else { "execute" };
                 let req = format!(
                     "POST /v1/databases/{db}/sql/{action} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
@@ -348,8 +360,9 @@ async fn setup(a: &Args) -> R<()> {
     // create database via admin endpoint
     let mut s = TcpStream::connect(&a.addr).await.map_err(e)?;
     let req = format!(
-        "POST /v1/admin/databases/{} HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        a.db
+        "POST /v1/admin/databases/{}{} HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        a.db,
+        if a.shards > 0 { format!("?shards={}", a.shards) } else { String::new() }
     );
     s.write_all(req.as_bytes()).await.map_err(e)?;
     let mut sink = Vec::new();
@@ -369,7 +382,7 @@ async fn setup(a: &Args) -> R<()> {
     )
     .await?;
     let mut id = 1;
-    while id <= a.rows {
+    while id <= a.rows && a.shards == 0 {
         let mut sql = String::new();
         for k in id..(id + 1000).min(a.rows + 1) {
             sql.push_str(&format!(
@@ -448,10 +461,12 @@ async fn main() {
             while !stop.load(Ordering::Relaxed) {
                 let read = (rng.next() % 100) < u64::from(a.mix);
                 let id = rng.next() % a.rows + 1;
+                let mut rng_key = 0;
                 let sql = if read {
                     format!("SELECT id, grp, val, payload FROM bench WHERE id = {id}")
                 } else {
                     let w = rng.next() % key_space + 1;
+                    rng_key = w;
                     let kind = match a.write.as_str() {
                         "update" => 0,
                         "insert" => 1,
@@ -464,7 +479,8 @@ async fn main() {
                     }
                 };
                 let t0 = Instant::now();
-                let r = conn.run(&sql, read).await;
+                let key = (a.shards > 0 && !read).then_some(rng_key);
+                let r = conn.run_keyed(&sql, read, key).await;
                 let us = t0.elapsed().as_micros().min(u128::from(u32::MAX)) as u32;
                 match r {
                     Ok(()) => {
