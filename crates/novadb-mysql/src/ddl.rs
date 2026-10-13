@@ -638,6 +638,10 @@ pub enum RebuildEdit {
         name: String,
         foreign_key_only: bool,
     },
+    /// `ADD PRIMARY KEY (cols)`.
+    AddPrimaryKey { columns: Vec<String> },
+    /// `DROP PRIMARY KEY`.
+    DropPrimaryKey,
     /// `MODIFY` / `CHANGE COLUMN`; `definition` is the new SQLite column
     /// definition (including the new name).
     Column {
@@ -669,10 +673,238 @@ fn has_word(sql: &str, word: &str) -> bool {
     sql.to_ascii_uppercase().contains(word)
 }
 
+/// Splits a column item into `(quoted name, type text, rest)`.
+fn split_column_item(item: &str) -> Option<(String, String, String)> {
+    const STOP: &[&str] = &[
+        "PRIMARY",
+        "NOT",
+        "NULL",
+        "DEFAULT",
+        "UNIQUE",
+        "CHECK",
+        "REFERENCES",
+        "COLLATE",
+        "GENERATED",
+        "AS",
+        "CONSTRAINT",
+        "AUTOINCREMENT",
+    ];
+    let (name, _, rest) = read_ident(item)?;
+    let bytes = rest.as_bytes();
+    let (mut i, mut depth) = (0, 0_i32);
+    let mut type_start = None;
+    let mut type_end = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            break;
+        }
+        let start = i;
+        while i < bytes.len() && (depth > 0 || !bytes[i].is_ascii_whitespace()) {
+            match bytes[i] {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            i += 1;
+        }
+        let word = rest[start..i].to_ascii_uppercase();
+        if STOP.contains(&word.as_str()) {
+            break;
+        }
+        type_start.get_or_insert(start);
+        type_end = i;
+    }
+    let start = type_start?;
+    Some((
+        quote_ident(&name),
+        rest[start..type_end].to_owned(),
+        rest[type_end..].to_owned(),
+    ))
+}
+
+fn is_integer_type(declared: &str) -> bool {
+    let upper = declared.to_ascii_uppercase();
+    let base = upper
+        .split('(')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    matches!(
+        base.as_str(),
+        "INT"
+            | "INTEGER"
+            | "BIGINT"
+            | "SMALLINT"
+            | "MEDIUMINT"
+            | "TINYINT"
+            | "INT2"
+            | "INT4"
+            | "INT8"
+    )
+}
+
+/// Rewrites an integer column item as a rowid alias (`INTEGER PRIMARY KEY
+/// [AUTOINCREMENT]`), keeping the MySQL type in a `/*my:..*/` comment.
+/// `None` when the column type is not an integer type.
+fn rowid_alias_item(item: &str, autoincrement: bool) -> Option<String> {
+    let (name, declared, rest) = split_column_item(item)?;
+    if !is_integer_type(&declared) {
+        return None;
+    }
+    let declared = annotated_type(item).unwrap_or(declared);
+    // Drop any legacy annotation and PRIMARY KEY / AUTOINCREMENT words.
+    let mut rest = rest;
+    if let Some(open) = rest.find(ANNOTATION_OPEN) {
+        if let Some(len) = rest[open..].find("*/") {
+            rest.replace_range(open..open + len + 2, "");
+        }
+    }
+    let mut rest = rest.replace("PRIMARY KEY", "").replace("primary key", "");
+    rest = rest
+        .replace("AUTOINCREMENT", "")
+        .replace("autoincrement", "");
+    let mut out = format!("{name} INTEGER PRIMARY KEY");
+    if autoincrement {
+        out.push_str(" AUTOINCREMENT");
+    }
+    if !declared.eq_ignore_ascii_case("integer") {
+        out.push(' ');
+        out.push_str(&annotation(&declared));
+    }
+    let rest = rest.trim();
+    if !rest.is_empty() {
+        out.push(' ');
+        out.push_str(rest);
+    }
+    if !has_word(rest, "NOT NULL") {
+        out.push_str(" NOT NULL");
+    }
+    Some(out)
+}
+
+fn has_primary_key(parts: &CreateParts) -> bool {
+    parts.items.iter().any(|item| match classify(item) {
+        Some(Item {
+            kind: ItemKind::PrimaryKey(_),
+            ..
+        }) => true,
+        Some(Item {
+            kind: ItemKind::Column(_),
+            ..
+        }) => has_word(item, "PRIMARY KEY"),
+        _ => false,
+    })
+}
+
+fn add_primary_key(
+    table: &str,
+    parts: &mut CreateParts,
+    columns: &[String],
+) -> Result<(), RebuildError> {
+    if has_primary_key(parts) {
+        return Err((1068, "42000", "Multiple primary key defined".into()));
+    }
+    let mut positions = Vec::new();
+    for column in columns {
+        let position = parts.items.iter().position(|item| {
+            matches!(
+                classify(item),
+                Some(Item { kind: ItemKind::Column(c), .. }) if c.eq_ignore_ascii_case(column)
+            )
+        });
+        let Some(position) = position else {
+            return Err((
+                1072,
+                "42000",
+                format!("Key column '{column}' doesn't exist in table"),
+            ));
+        };
+        positions.push(position);
+    }
+    if let [position] = positions[..] {
+        if let Some(alias) = rowid_alias_item(&parts.items[position], false) {
+            parts.items[position] = alias;
+            return Ok(());
+        }
+    }
+    for position in positions {
+        if !has_word(&parts.items[position], "NOT NULL") {
+            parts.items[position].push_str(" NOT NULL");
+        }
+    }
+    let list = columns
+        .iter()
+        .map(|c| quote_ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = table;
+    parts.items.push(format!("PRIMARY KEY ({list})"));
+    Ok(())
+}
+
+fn drop_primary_key(parts: &mut CreateParts) -> Result<(), RebuildError> {
+    if !has_primary_key(parts) {
+        return Err((
+            1091,
+            "42000",
+            "Can't DROP 'PRIMARY'; check that column/key exists".into(),
+        ));
+    }
+    parts.items.retain(|item| {
+        !matches!(
+            classify(item),
+            Some(Item {
+                kind: ItemKind::PrimaryKey(_),
+                ..
+            })
+        )
+    });
+    for item in &mut parts.items {
+        if matches!(
+            classify(item),
+            Some(Item {
+                kind: ItemKind::Column(_),
+                ..
+            })
+        ) && has_word(item, "PRIMARY KEY")
+        {
+            // Keep the MySQL type of a former rowid alias.
+            let declared = annotated_type(item);
+            let mut text = item.replace("PRIMARY KEY", "").replace("primary key", "");
+            text = text
+                .replace("AUTOINCREMENT", "")
+                .replace("autoincrement", "");
+            if let (Some(declared), Some((name, _, rest))) = (declared, split_column_item(&text)) {
+                if let Some(open) = rest.find(ANNOTATION_OPEN) {
+                    let end = rest[open..].find("*/").map_or(rest.len(), |l| open + l + 2);
+                    text = format!("{name} {declared} {}{}", &rest[..open], &rest[end..]);
+                }
+            }
+            *item = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        }
+    }
+    Ok(())
+}
+
 /// Rewrites the column item of a rebuilt table.
 fn modified_column(old: &str, definition: &str, auto_increment: bool) -> String {
     let upper_old = old.to_ascii_uppercase();
     let old_pk = upper_old.contains("PRIMARY KEY");
+    if old_pk && !definition.to_ascii_uppercase().contains("PRIMARY KEY") {
+        let old_alias = split_column_item(old)
+            .is_some_and(|(_, declared, _)| declared.eq_ignore_ascii_case("integer"));
+        if old_alias {
+            let ai = auto_increment || upper_old.contains("AUTOINCREMENT");
+            if let Some(alias) = rowid_alias_item(definition.trim(), ai) {
+                return alias;
+            }
+        }
+    }
     let mut new = definition.trim().to_owned();
     let upper_new = new.to_ascii_uppercase();
     if old_pk && !upper_new.contains("PRIMARY KEY") {
@@ -693,16 +925,19 @@ fn modified_column(old: &str, definition: &str, auto_increment: bool) -> String 
     new
 }
 
-/// Plans the statements that apply `edit` to `state` atomically (they are
-/// executed as a single batch). Returns the statements.
+/// Plans the statements that apply `edit` to `state` atomically.
+#[cfg(test)]
 pub fn plan_rebuild(state: &TableState, edit: &RebuildEdit) -> Result<Vec<String>, RebuildError> {
-    let table = &state.name;
-    let mut parts = split_create(&state.create_sql).ok_or((
-        1105,
-        "HY000",
-        format!("cannot parse the stored definition of `{table}`"),
-    ))?;
-    let fk_names = foreign_key_names(table, &parts);
+    plan_rebuild_all(state, std::slice::from_ref(edit))
+}
+
+/// Applies one edit to the parsed `CREATE TABLE`.
+fn apply_edit(
+    table: &str,
+    parts: &mut CreateParts,
+    edit: &RebuildEdit,
+) -> Result<(), RebuildError> {
+    let fk_names = foreign_key_names(table, parts);
     match edit {
         RebuildEdit::AddConstraint {
             name,
@@ -805,6 +1040,26 @@ pub fn plan_rebuild(state: &TableState, edit: &RebuildEdit) -> Result<Vec<String
             let replaced = modified_column(&parts.items[position], definition, *auto_increment);
             parts.items[position] = replaced;
         }
+        RebuildEdit::AddPrimaryKey { columns } => add_primary_key(table, parts, columns)?,
+        RebuildEdit::DropPrimaryKey => drop_primary_key(parts)?,
+    }
+    Ok(())
+}
+
+/// Plans the statements that apply all `edits` to `state` in order, as one
+/// script (executed as a single atomic batch). Returns the statements.
+pub fn plan_rebuild_all(
+    state: &TableState,
+    edits: &[RebuildEdit],
+) -> Result<Vec<String>, RebuildError> {
+    let table = &state.name;
+    let mut parts = split_create(&state.create_sql).ok_or((
+        1105,
+        "HY000",
+        format!("cannot parse the stored definition of `{table}`"),
+    ))?;
+    for edit in edits {
+        apply_edit(table, &mut parts, edit)?;
     }
 
     let temporary = format!("__novadb_rebuild_{table}");

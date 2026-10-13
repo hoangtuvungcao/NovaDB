@@ -30,6 +30,9 @@ pub struct Env<'a> {
     pub tables: &'a HashMap<String, Vec<ColumnInfo>>,
     /// Declared foreign key names for `information_schema` (see `meta::FkNames`).
     pub fk_names: &'a meta::FkNames,
+    /// Existing indexes of the database as `(internal name, table)`, loaded
+    /// for `CREATE/DROP INDEX` and `ALTER TABLE`.
+    pub indexes: &'a [(String, String)],
 }
 
 /// Declared column facts needed to translate `DEFAULT` keywords.
@@ -52,6 +55,8 @@ enum AlterStep {
         edit: RebuildEdit,
         rename: Option<(String, String)>,
     },
+    /// `AUTO_INCREMENT = N`: the next generated id.
+    AutoIncrement(u64),
 }
 
 fn flush(statements: &mut Vec<Vec<Token>>, steps: &mut Vec<AlterStep>) {
@@ -68,6 +73,8 @@ pub enum PlanStep {
         edit: RebuildEdit,
         rename: Option<(String, String)>,
     },
+    /// Sets the next AUTO_INCREMENT value (`ALTER TABLE .. AUTO_INCREMENT = N`).
+    AutoIncrement(u64),
 }
 
 /// For an `ALTER TABLE` that needs a table rebuild (`ADD/DROP FOREIGN KEY`,
@@ -81,10 +88,12 @@ pub fn alter_plan(
     let tokens = substitute(statement, env, params)?;
     let translator = Translator { env };
     let (table, steps) = translator.alter_steps(&tokens)?;
-    if !steps
-        .iter()
-        .any(|step| matches!(step, AlterStep::Rebuild { .. }))
-    {
+    if !steps.iter().any(|step| {
+        matches!(
+            step,
+            AlterStep::Rebuild { .. } | AlterStep::AutoIncrement(_)
+        )
+    }) {
         return Ok(None);
     }
     let mut plan = Vec::new();
@@ -99,6 +108,7 @@ pub fn alter_plan(
                 plan.push(PlanStep::Sql(sql));
             }
             AlterStep::Rebuild { edit, rename } => plan.push(PlanStep::Rebuild { edit, rename }),
+            AlterStep::AutoIncrement(next) => plan.push(PlanStep::AutoIncrement(next)),
         }
     }
     Ok(Some((table, plan)))
@@ -570,10 +580,10 @@ impl Translator<'_> {
                     .map(str::to_owned)
                     .or_else(|| columns.first().map(|c| c.0.clone()))
                     .unwrap_or_else(|| "idx".into());
-                let mut name = format!("{table}_{declared}");
+                let mut name = index_internal_name(table, &declared);
                 let mut suffix = 2;
                 while index_names.contains(&name) {
-                    name = format!("{table}_{declared}_{suffix}");
+                    name = index_internal_name(table, &format!("{declared}_{suffix}"));
                     suffix += 1;
                 }
                 index_names.push(name.clone());
@@ -797,7 +807,7 @@ impl Translator<'_> {
         let close = find_close(tokens, open)?;
         statement.push(Token::raw(format!(
             "{} ON {} ({})",
-            quote_ident(&name),
+            quote_ident(&index_internal_name(&table, &name)),
             quote_ident(&table),
             render_index_columns(&tokens[open + 1..close])
         )));
@@ -868,6 +878,7 @@ impl Translator<'_> {
         for step in steps {
             match step {
                 AlterStep::Statements(batch) => statements.extend(batch),
+                AlterStep::AutoIncrement(_) => {}
                 AlterStep::Rebuild { .. } => {
                     return Err(SqlError::Unsupported(
                         "this ALTER TABLE change requires rebuilding the table".into(),
@@ -889,6 +900,7 @@ impl Translator<'_> {
         let quoted = quote_ident(&table);
         let mut statements: Vec<Vec<Token>> = Vec::new();
         let mut steps: Vec<AlterStep> = Vec::new();
+        let mut added: Vec<String> = Vec::new();
         for action in split_commas(&tokens[next..]) {
             let Some(first) = action.first() else {
                 continue;
@@ -927,12 +939,18 @@ impl Translator<'_> {
                                 .find_map(Token::ident)
                                 .map(str::to_owned);
                             let columns = index_columns(&action[open + 1..close]);
-                            let name = explicit.unwrap_or_else(|| {
-                                format!(
-                                    "{table}_{}",
-                                    columns.first().map_or("idx", |c| c.0.as_str())
-                                )
+                            let display = explicit.unwrap_or_else(|| {
+                                let base = columns.first().map_or("idx", |c| c.0.as_str());
+                                let mut candidate = base.to_owned();
+                                let mut suffix = 2;
+                                while self.index_taken(&table, &candidate, &added) {
+                                    candidate = format!("{base}_{suffix}");
+                                    suffix += 1;
+                                }
+                                candidate
                             });
+                            added.push(display.clone());
+                            let name = index_internal_name(&table, &display);
                             statements.push(vec![Token::raw(format!(
                                 "CREATE {}INDEX {} ON {quoted} ({})",
                                 if unique { "UNIQUE " } else { "" },
@@ -961,10 +979,20 @@ impl Translator<'_> {
                             });
                         }
                         "PRIMARY" => {
-                            return Err(SqlError::Unsupported(
-                                "ALTER TABLE ... ADD PRIMARY KEY is not supported by SQLite; recreate the table"
-                                    .into(),
-                            ));
+                            let open = action
+                                .iter()
+                                .position(|t| t.is_op("("))
+                                .ok_or_else(|| SqlError::Syntax("expected a column list".into()))?;
+                            let close = find_close(action, open)?;
+                            let columns = index_columns(&action[open + 1..close])
+                                .into_iter()
+                                .map(|(name, _)| name)
+                                .collect();
+                            flush(&mut statements, &mut steps);
+                            steps.push(AlterStep::Rebuild {
+                                edit: RebuildEdit::AddPrimaryKey { columns },
+                                rename: None,
+                            });
                         }
                         _ => {
                             if head == "COLUMN" {
@@ -998,7 +1026,7 @@ impl Translator<'_> {
                             .get(2)
                             .and_then(Token::ident)
                             .ok_or_else(|| SqlError::Syntax("expected an index name".into()))?;
-                        statements.extend(drop_index_statements(&table, name));
+                        statements.extend(drop_index_statements(&self.resolve_index(&table, name)));
                     }
                     "FOREIGN" | "CHECK" | "CONSTRAINT" => {
                         let at = if word(1) == "FOREIGN" { 3 } else { 2 };
@@ -1017,10 +1045,11 @@ impl Translator<'_> {
                         });
                     }
                     "PRIMARY" => {
-                        return Err(SqlError::Unsupported(
-                            "ALTER TABLE ... DROP PRIMARY KEY is not supported by SQLite; recreate the table"
-                                .into(),
-                        ));
+                        flush(&mut statements, &mut steps);
+                        steps.push(AlterStep::Rebuild {
+                            edit: RebuildEdit::DropPrimaryKey,
+                            rename: None,
+                        });
                     }
                     _ => {
                         let index = if word(1) == "COLUMN" { 2 } else { 1 };
@@ -1057,8 +1086,21 @@ impl Translator<'_> {
                     }
                 },
                 // Table options and online-DDL hints are no-ops.
-                "ENGINE" | "AUTO_INCREMENT" | "COMMENT" | "ALGORITHM" | "LOCK" | "ROW_FORMAT"
-                | "CONVERT" | "CHARACTER" | "CHARSET" | "COLLATE" | "DEFAULT" | "FORCE" => {}
+                "AUTO_INCREMENT" => {
+                    let value = action
+                        .iter()
+                        .skip(1)
+                        .find(|t| t.kind == Kind::Number)
+                        .and_then(|t| t.text.parse::<u64>().ok())
+                        .ok_or_else(|| {
+                            SqlError::Syntax("expected AUTO_INCREMENT = number".into())
+                        })?;
+                    flush(&mut statements, &mut steps);
+                    steps.push(AlterStep::AutoIncrement(value));
+                }
+                "DISABLE" | "ENABLE" | "ENGINE" | "COMMENT" | "ALGORITHM" | "LOCK"
+                | "ROW_FORMAT" | "CONVERT" | "CHARACTER" | "CHARSET" | "COLLATE" | "DEFAULT"
+                | "FORCE" => {}
                 "MODIFY" | "CHANGE" => {
                     let change = first.is_word("CHANGE");
                     let mut i = 1;
@@ -1142,6 +1184,42 @@ impl Translator<'_> {
         Ok(statements)
     }
 
+    fn table_indexes(&self, table: &str) -> impl Iterator<Item = &str> {
+        let table = table.to_ascii_lowercase();
+        self.env
+            .indexes
+            .iter()
+            .filter(move |(_, owner)| owner.to_ascii_lowercase() == table)
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Whether `table` already has an index with the MySQL name `display`
+    /// (new `<t>__idx__<n>`, legacy `<t>_<n>`) or one added earlier in the statement.
+    fn index_taken(&self, table: &str, display: &str, added: &[String]) -> bool {
+        let new = index_internal_name(table, display);
+        let legacy = format!("{table}_{display}");
+        added.iter().any(|a| a.eq_ignore_ascii_case(display))
+            || self
+                .table_indexes(table)
+                .any(|n| n.eq_ignore_ascii_case(&new) || n.eq_ignore_ascii_case(&legacy))
+    }
+
+    /// Internal SQLite name of the index `name` of `table`, whichever way it
+    /// was created (new scheme, legacy `<t>_<n>`, or a plain name).
+    fn resolve_index(&self, table: &str, name: &str) -> String {
+        let new = index_internal_name(table, name);
+        let candidates = [new.clone(), format!("{table}_{name}"), name.to_owned()];
+        for candidate in candidates {
+            if self
+                .table_indexes(table)
+                .any(|n| n.eq_ignore_ascii_case(&candidate))
+            {
+                return candidate;
+            }
+        }
+        new
+    }
+
     fn drop_index(&self, tokens: &[Token]) -> SqlResult<Vec<Vec<Token>>> {
         let index = tokens
             .iter()
@@ -1159,7 +1237,7 @@ impl Translator<'_> {
             Some(on) if on.is_word("ON") => {
                 let (table, _) = table_name_at(tokens, i + 2, self.env.database)
                     .ok_or_else(|| SqlError::Syntax("expected a table name".into()))?;
-                Ok(drop_index_statements(&table, name))
+                Ok(drop_index_statements(&self.resolve_index(&table, name)))
             }
             _ => Ok(vec![vec![Token::raw(format!(
                 "DROP INDEX {}",
@@ -2003,19 +2081,17 @@ fn render_index_columns(tokens: &[Token]) -> String {
         .join(", ")
 }
 
-/// Indexes declared inline by `CREATE TABLE` are named `<table>_<name>`;
-/// dropping by the MySQL name tries both spellings.
-fn drop_index_statements(table: &str, name: &str) -> Vec<Vec<Token>> {
-    vec![
-        vec![Token::raw(format!(
-            "DROP INDEX IF EXISTS {}",
-            quote_ident(&format!("{table}_{name}"))
-        ))],
-        vec![Token::raw(format!(
-            "DROP INDEX IF EXISTS {}",
-            quote_ident(name)
-        ))],
-    ]
+/// SQLite index names are database-global, MySQL's are per table: an index
+/// `name` of `table` is stored as `<table>__idx__<name>`.
+pub fn index_internal_name(table: &str, name: &str) -> String {
+    format!("{table}__idx__{name}")
+}
+
+fn drop_index_statements(internal: &str) -> Vec<Vec<Token>> {
+    vec![vec![Token::raw(format!(
+        "DROP INDEX IF EXISTS {}",
+        quote_ident(internal)
+    ))]]
 }
 
 fn strip_dml_modifiers(tokens: &[Token]) -> Vec<Token> {
@@ -2124,6 +2200,7 @@ mod tests {
             user_vars: &user_vars,
             tables: &tables,
             fk_names: &[],
+            indexes: &[],
         };
         let params: Vec<String> = params.iter().map(|p| (*p).to_owned()).collect();
         let statements = split_statements(tokenize(sql)?);
@@ -2250,6 +2327,7 @@ mod tests {
             user_vars: &user_vars,
             tables: &tables,
             fk_names: &[],
+            indexes: &[],
         };
         assert_eq!(
             translate(&tokens, &env, &[]).unwrap(),
@@ -2327,7 +2405,7 @@ mod tests {
              \"status\" TEXT CHECK (\"status\" IN ('active', 'banned')) DEFAULT 'active', \
              \"created_at\" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP, \
              UNIQUE (\"email\") );\n\
-             CREATE INDEX IF NOT EXISTS \"users_idx_status\" ON \"users\" (\"status\")"
+             CREATE INDEX IF NOT EXISTS \"users__idx__idx_status\" ON \"users\" (\"status\")"
         );
         assert_eq!(
             t("CREATE TABLE t (id BIGINT PRIMARY KEY AUTO_INCREMENT, n INT DEFAULT NOW())"),
@@ -2451,7 +2529,7 @@ mod tests {
             t(
                 "ALTER TABLE `t` ADD COLUMN `c` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `b`, ADD INDEX `i` (`c`)"
             ),
-            "ALTER TABLE \"t\" ADD COLUMN \"c\" INT NOT NULL DEFAULT 0;\nCREATE INDEX \"i\" ON \"t\" (\"c\")"
+            "ALTER TABLE \"t\" ADD COLUMN \"c\" INT NOT NULL DEFAULT 0;\nCREATE INDEX \"t__idx__i\" ON \"t\" (\"c\")"
         );
         assert_eq!(t("ALTER TABLE t ENGINE=InnoDB"), "");
         assert!(matches!(
@@ -2460,12 +2538,9 @@ mod tests {
         ));
         assert_eq!(
             t("CREATE UNIQUE INDEX `u` USING BTREE ON `t` (`a`(5) DESC, b)"),
-            "CREATE UNIQUE INDEX \"u\" ON \"t\" (\"a\" DESC, \"b\")"
+            "CREATE UNIQUE INDEX \"t__idx__u\" ON \"t\" (\"a\" DESC, \"b\")"
         );
-        assert_eq!(
-            t("DROP INDEX i ON t"),
-            "DROP INDEX IF EXISTS \"t_i\";\nDROP INDEX IF EXISTS \"i\""
-        );
+        assert_eq!(t("DROP INDEX i ON t"), "DROP INDEX IF EXISTS \"t__idx__i\"");
         assert_eq!(
             t("RENAME TABLE a TO b"),
             "ALTER TABLE \"a\" RENAME TO \"b\""
@@ -2512,6 +2587,7 @@ mod tests {
             user_vars: &user_vars,
             tables: &tables,
             fk_names: &[],
+            indexes: &[],
         };
         let plan = |sql: &str| {
             let tokens = tokenize(sql).unwrap();
@@ -2549,7 +2625,7 @@ mod tests {
             PlanStep::Rebuild { edit: RebuildEdit::DropConstraint { name, foreign_key_only: true }, .. } if name == "fk1"
         ));
         // Unsupported forms still fail with a clear error.
-        let tokens = tokenize("ALTER TABLE t DROP PRIMARY KEY").unwrap();
+        let tokens = tokenize("ALTER TABLE t RENAME INDEX a TO b").unwrap();
         assert!(matches!(
             alter_plan(&tokens, &env, &[]),
             Err(SqlError::Unsupported(_))

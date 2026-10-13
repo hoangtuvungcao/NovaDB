@@ -970,7 +970,7 @@ async fn catalog_statements() {
     let index = client.query("SHOW INDEX FROM items").await;
     let names: Vec<String> = index.rows().iter().map(|r| r[2].clone().unwrap()).collect();
     assert_eq!(names[0], "PRIMARY");
-    assert!(names.contains(&"items_qty_idx".to_owned()));
+    assert!(names.contains(&"qty_idx".to_owned()));
 
     let tables = client
         .query("SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME")
@@ -1267,7 +1267,7 @@ async fn show_create_table_uses_mysql_format() {
         "  `flag` tinyint(1) DEFAULT NULL,\n",
         "  PRIMARY KEY (`id`),\n",
         "  UNIQUE KEY `title` (`title`)",
-        "  KEY `child_ix_score` (`score`)",
+        "  KEY `ix_score` (`score`)",
         "  CONSTRAINT `fk_parent` FOREIGN KEY (`parent_id`) REFERENCES `parent` (`id`) ON DELETE CASCADE\n",
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     ] {
@@ -1548,4 +1548,200 @@ async fn result_columns_use_declared_types() {
         panic!()
     };
     assert_eq!(columns[0].1, 0x08);
+}
+
+#[tokio::test]
+async fn phpmyadmin_dump_imports_without_errors() {
+    let (addr, _dir) = start(|_| {}).await;
+    let mut client = Client::connect_with(
+        addr,
+        "u",
+        "",
+        None,
+        "mysql_native_password",
+        BASE_CAPS | CLIENT_MULTI_STATEMENTS,
+    )
+    .await
+    .unwrap();
+    let dump = include_str!("../../../tests/fixtures/phpmyadmin_dump.sql");
+    // The whole file as one multi-statement query.
+    let responses = client.query_all(dump).await;
+    for response in &responses {
+        if let Response::Err { code, message, .. } = response {
+            panic!("import failed: {code} {message}");
+        }
+    }
+    let ddl = client
+        .query("SHOW CREATE TABLE customers")
+        .await
+        .cell(0, 1)
+        .unwrap();
+    assert!(ddl.contains("PRIMARY KEY (`id`)"), "{ddl}");
+    assert!(ddl.contains("AUTO_INCREMENT"), "{ddl}");
+    assert!(ddl.contains("`id` int"), "{ddl}");
+    assert!(ddl.contains("KEY `idx_name` (`name`)"), "{ddl}");
+    assert!(ddl.contains("UNIQUE KEY `email` (`email`)"), "{ddl}");
+    let ddl = client
+        .query("SHOW CREATE TABLE orders")
+        .await
+        .cell(0, 1)
+        .unwrap();
+    assert!(ddl.contains("`id` bigint"), "{ddl}");
+    assert!(
+        ddl.contains("CONSTRAINT `orders_ibfk_1` FOREIGN KEY"),
+        "{ddl}"
+    );
+    let ddl = client
+        .query("SHOW CREATE TABLE order_items")
+        .await
+        .cell(0, 1)
+        .unwrap();
+    assert!(ddl.contains("PRIMARY KEY (`order_id`,`line`)"), "{ddl}");
+    for (table, count) in [("customers", "4"), ("orders", "3"), ("order_items", "3")] {
+        let rows = client.query(&format!("SELECT count(*) FROM {table}")).await;
+        assert_eq!(rows.cell(0, 0).as_deref(), Some(count), "{table}");
+    }
+    assert_eq!(
+        client
+            .query("SELECT name FROM customers WHERE id = 3")
+            .await
+            .cell(0, 0)
+            .as_deref(),
+        Some("Lê O'Connor")
+    );
+    // AUTO_INCREMENT=100 / 13 are the next generated ids.
+    let (_, id) = client
+        .ok("INSERT INTO customers (name, email) VALUES ('Mới', 'moi@example.com')")
+        .await;
+    assert_eq!(id, 100);
+    let (_, id) = client
+        .ok("INSERT INTO orders (customer_id, total) VALUES (1, 1)")
+        .await;
+    assert_eq!(id, 13);
+    // MySQL index names are per table: three tables share Index_2 / Index_3 / username.
+    for table in ["board_a", "board_b", "board_c"] {
+        let index = client.query(&format!("SHOW INDEX FROM {table}")).await;
+        let mut names: Vec<String> = index.rows().iter().map(|r| r[2].clone().unwrap()).collect();
+        names.dedup();
+        for want in [
+            "PRIMARY",
+            "Index_2",
+            "Index_3",
+            "Index_5",
+            "memo",
+            "uniq_user",
+            "username",
+        ] {
+            assert!(
+                names.iter().any(|n| n == want),
+                "{table}: {want} in {names:?}"
+            );
+        }
+        let ddl = client
+            .query(&format!("SHOW CREATE TABLE {table}"))
+            .await
+            .cell(0, 1)
+            .unwrap();
+        assert!(ddl.contains("KEY `Index_2` (`username`)"), "{ddl}");
+        assert!(
+            ddl.contains("UNIQUE KEY `username` (`id`,`username`)"),
+            "{ddl}"
+        );
+    }
+    let stats = client
+        .query("SELECT TABLE_NAME FROM information_schema.statistics WHERE INDEX_NAME = 'Index_3' ORDER BY TABLE_NAME")
+        .await;
+    assert_eq!(stats.rows().len(), 3);
+    client.ok("DROP INDEX Index_2 ON board_b").await;
+    for (table, expected) in [("board_a", true), ("board_b", false), ("board_c", true)] {
+        let index = client.query(&format!("SHOW INDEX FROM {table}")).await;
+        let has = index
+            .rows()
+            .iter()
+            .any(|r| r[2].as_deref() == Some("Index_2"));
+        assert_eq!(has, expected, "{table}");
+    }
+    client.ok("ALTER TABLE board_a DROP KEY Index_3").await;
+    assert!(
+        client
+            .query("SHOW INDEX FROM board_c")
+            .await
+            .rows()
+            .iter()
+            .any(|r| r[2].as_deref() == Some("Index_3"))
+    );
+    let plan = client
+        .query("EXPLAIN SELECT * FROM board_c WHERE username = 'board_c_u1'")
+        .await;
+    assert!(!plan.rows().is_empty());
+    let rows = client
+        .query("SELECT username FROM board_c WHERE svID = 2")
+        .await;
+    assert_eq!(rows.cell(0, 0).as_deref(), Some("board_c_u2"));
+    // Unordered full scans come back in primary-key (rowid) order.
+    let rows = client.query("SELECT id, name FROM customers").await;
+    let ids: Vec<String> = rows.rows().iter().map(|r| r[0].clone().unwrap()).collect();
+    assert_eq!(ids, ["1", "2", "3", "7", "100"]);
+    // Duplicate PK values are rejected and roll the rebuild back.
+    client.ok("CREATE TABLE dup (id INT, v INT)").await;
+    client.ok("INSERT INTO dup VALUES (1, 1), (1, 2)").await;
+    assert_eq!(
+        client
+            .query("ALTER TABLE dup ADD PRIMARY KEY (id)")
+            .await
+            .error_code(),
+        1062
+    );
+    assert_eq!(
+        client
+            .query("SELECT count(*) FROM dup")
+            .await
+            .cell(0, 0)
+            .as_deref(),
+        Some("2")
+    );
+    // ALTER TABLE .. AUTO_INCREMENT alone, and DROP PRIMARY KEY.
+    client
+        .ok("ALTER TABLE customers AUTO_INCREMENT = 500")
+        .await;
+    let (_, id) = client
+        .ok("INSERT INTO customers (name) VALUES ('Sau')")
+        .await;
+    assert_eq!(id, 500);
+    client.ok("ALTER TABLE order_items DROP PRIMARY KEY").await;
+    let ddl = client
+        .query("SHOW CREATE TABLE order_items")
+        .await
+        .cell(0, 1)
+        .unwrap();
+    assert!(!ddl.contains("PRIMARY KEY"), "{ddl}");
+}
+
+#[tokio::test]
+async fn versioned_comments_and_comment_only_queries() {
+    let (addr, _dir) = start(|_| {}).await;
+    let mut client = open(addr).await;
+    client.ok("/*!40101 SET NAMES utf8mb4 */").await;
+    client.ok("/*!40014 SET FOREIGN_KEY_CHECKS=0 */").await;
+    client.ok("/*!99999 this is just a comment */").await;
+    client.ok("/*M!100000 SET x=1 */").await;
+    client.ok("-- only a comment").await;
+    client.ok("/* c */").await;
+    assert_eq!(client.query("").await.error_code(), 1065);
+    client.ok("/*! CREATE TABLE vc (a INT) */").await;
+    assert_eq!(
+        client
+            .query("SELECT /*+ NO_INDEX(vc) */ 1")
+            .await
+            .cell(0, 0)
+            .as_deref(),
+        Some("1")
+    );
+    for sql in [
+        "CREATE PROCEDURE p() SELECT 1",
+        "CREATE FUNCTION f() RETURNS INT RETURN 1",
+        "CREATE EVENT e ON SCHEDULE EVERY 1 DAY DO SELECT 1",
+    ] {
+        assert_eq!(client.query(sql).await.error_code(), 1235, "{sql}");
+    }
 }

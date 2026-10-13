@@ -198,6 +198,8 @@ struct Session {
     table_info: HashMap<String, Vec<translate::ColumnInfo>>,
     /// Declared foreign key names for `information_schema` queries.
     fk_names: Vec<(String, i64, String)>,
+    /// Existing indexes `(internal name, table)` for index-related statements.
+    indexes: Vec<(String, String)>,
     /// Whether the database holds tables with legacy `/*my:type*/` comments.
     legacy_annotations: AtomicU8,
     last_insert_id: u64,
@@ -229,6 +231,7 @@ pub(crate) async fn run(
         user_vars: HashMap::new(),
         table_info: HashMap::new(),
         fk_names: Vec::new(),
+        indexes: Vec::new(),
         legacy_annotations: AtomicU8::new(LEGACY_UNKNOWN),
         last_insert_id: 0,
         statements: HashMap::new(),
@@ -845,6 +848,7 @@ impl Session {
             user_vars: &self.user_vars,
             tables: &self.table_info,
             fk_names: &self.fk_names,
+            indexes: &self.indexes,
         };
         run(&env)
     }
@@ -952,6 +956,15 @@ impl Session {
         params: &[String],
     ) -> Result<Outcome, MyError> {
         let first = tokens.first().map(Token::upper).unwrap_or_default();
+        self.indexes.clear();
+        if (first == "ALTER" || first == "DROP" || first == "CREATE")
+            && tokens
+                .iter()
+                .take(8)
+                .any(|t| t.is_any_word(&["TABLE", "INDEX"]))
+        {
+            self.load_indexes().await;
+        }
         if first == "ALTER" && tokens.iter().take(3).any(|t| t.is_word("TABLE")) {
             let plan = self.with_env(|env| translate::alter_plan(tokens, env, params))?;
             if let Some((table, steps)) = plan {
@@ -981,12 +994,34 @@ impl Session {
         ) || tokens.first().is_some_and(|t| t.is_op("("));
         if is_query && statements.len() == 1 {
             let database = self.handle()?;
-            let sql = statements[0].clone();
-            let result = self
-                .run_db(database, move |db| {
-                    db.query_typed(&sql, DialectMode::Passthrough)
-                })
-                .await?;
+            let mut sql = statements[0].clone();
+            let mut result = None;
+            if is_plain_table_scan(tokens) {
+                // InnoDB returns an unordered full scan in primary-key order;
+                // SQLite may pick a covering index instead.
+                let ordered = match sql.rfind(" LIMIT ") {
+                    Some(at) => format!("{} ORDER BY rowid{}", &sql[..at], &sql[at..]),
+                    None => format!("{sql} ORDER BY rowid"),
+                };
+                let handle = database.clone();
+                let attempt = self
+                    .run_db(handle, move |db| {
+                        db.query_typed(&ordered, DialectMode::Passthrough)
+                    })
+                    .await?;
+                // Views and WITHOUT ROWID tables have no rowid: run it as written.
+                result = attempt.ok();
+            }
+            let result = match result {
+                Some(result) => Ok(result),
+                None => {
+                    let sql = std::mem::take(&mut sql);
+                    self.run_db(database, move |db| {
+                        db.query_typed(&sql, DialectMode::Passthrough)
+                    })
+                    .await?
+                }
+            };
             match result {
                 Ok(result) => {
                     let declared = self.declared_types(tokens, &result).await;
@@ -1107,12 +1142,27 @@ impl Session {
         if self.in_transaction {
             self.commit().await?;
         }
-        for step in steps {
+        let mut steps = steps.into_iter().peekable();
+        while let Some(step) = steps.next() {
             match step {
                 translate::PlanStep::Sql(statements) => {
                     self.run_batch(statements.join(";\n")).await?;
                 }
+                translate::PlanStep::AutoIncrement(next) => {
+                    self.set_auto_increment(table, next).await?;
+                }
                 translate::PlanStep::Rebuild { edit, rename } => {
+                    let mut edits = vec![edit];
+                    // Consecutive rebuilds without a rename share one atomic rebuild.
+                    if rename.is_none() {
+                        while let Some(translate::PlanStep::Rebuild { rename: None, .. }) =
+                            steps.peek()
+                        {
+                            if let Some(translate::PlanStep::Rebuild { edit, .. }) = steps.next() {
+                                edits.push(edit);
+                            }
+                        }
+                    }
                     let rename_sql = |from: &str, to: &str| {
                         format!(
                             "ALTER TABLE {} RENAME COLUMN {} TO {}",
@@ -1124,7 +1174,7 @@ impl Session {
                     if let Some((old, new)) = &rename {
                         self.run_batch(rename_sql(old, new)).await?;
                     }
-                    let result = self.rebuild_table(table, &edit).await;
+                    let result = self.rebuild_table(table, &edits).await;
                     if let (Err(_), Some((old, new))) = (&result, &rename) {
                         // Undo the rename so a failed CHANGE leaves the table untouched.
                         let _ = self.run_batch(rename_sql(new, old)).await;
@@ -1136,9 +1186,9 @@ impl Session {
         Ok(ok_outcome())
     }
 
-    async fn rebuild_table(&self, table: &str, edit: &ddl::RebuildEdit) -> Result<(), MyError> {
+    async fn rebuild_table(&self, table: &str, edits: &[ddl::RebuildEdit]) -> Result<(), MyError> {
         let state = self.load_table_state(table).await?;
-        let statements = ddl::plan_rebuild(&state, edit)
+        let statements = ddl::plan_rebuild_all(&state, edits)
             .map_err(|(code, sqlstate, message)| MyError::new(code, sqlstate, message))?;
         let database = self.handle()?;
         let sql = statements.join(";\n");
@@ -1149,6 +1199,43 @@ impl Session {
         })
         .await?
         .map_err(|error| map_db_error(&error))
+    }
+
+    /// `AUTO_INCREMENT = next`: the next generated id is `next`, but never
+    /// lower than the current maximum id plus one (as in MySQL).
+    async fn set_auto_increment(&self, table: &str, next: u64) -> Result<(), MyError> {
+        let quoted = quote_str(table);
+        let stored = self
+            .query(
+                None,
+                format!("SELECT sql FROM sqlite_schema WHERE type = 'table' AND lower(name) = lower({quoted})"),
+            )
+            .await?;
+        let Some(sql) = stored
+            .rows
+            .first()
+            .and_then(|row| row.get("sql")?.as_str().map(str::to_owned))
+        else {
+            return Err(MyError::new(
+                1146,
+                "42S02",
+                format!("Table '{}.{table}' doesn't exist", self.database_name),
+            ));
+        };
+        if !sql.to_ascii_uppercase().contains("AUTOINCREMENT") {
+            return Ok(());
+        }
+        let ident = lexer::quote_ident(table);
+        let seq = format!(
+            "max({}, coalesce((SELECT max(rowid) FROM {ident}), 0))",
+            next.saturating_sub(1)
+        );
+        self.run_batch(format!(
+            "UPDATE sqlite_sequence SET seq = {seq} WHERE name = {quoted};\n\
+             INSERT INTO sqlite_sequence (name, seq) SELECT {quoted}, {seq} \
+             WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = {quoted})"
+        ))
+        .await
     }
 
     async fn load_table_state(&self, table: &str) -> Result<ddl::TableState, MyError> {
@@ -1219,6 +1306,29 @@ impl Session {
             own_objects,
             dependents,
         })
+    }
+
+    /// Loads `(index name, table)` of every index in the database.
+    async fn load_indexes(&mut self) {
+        let Ok(result) = self
+            .query(
+                None,
+                "SELECT name, tbl_name FROM sqlite_schema WHERE type = 'index'".to_owned(),
+            )
+            .await
+        else {
+            return;
+        };
+        self.indexes = result
+            .rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row.get("name")?.as_str()?.to_owned(),
+                    row.get("tbl_name")?.as_str()?.to_owned(),
+                ))
+            })
+            .collect();
     }
 
     /// Loads the declared names of every foreign key (for `information_schema`).
@@ -1946,6 +2056,8 @@ impl Session {
         for index in &mut indexes {
             if index.name.starts_with("sqlite_autoindex_") {
                 index.name = index.columns[0].clone();
+            } else if let Some(display) = index.name.strip_prefix(&format!("{table}__idx__")) {
+                index.name = display.to_owned();
             }
         }
 
@@ -2042,6 +2154,66 @@ impl Session {
     }
 }
 
+/// `SELECT cols FROM table [alias] [LIMIT n [OFFSET m]]` with no expressions,
+/// filters or joins: the only shape that gets an implicit `ORDER BY rowid`.
+fn is_plain_table_scan(tokens: &[Token]) -> bool {
+    if !tokens.first().is_some_and(|t| t.is_word("SELECT")) {
+        return false;
+    }
+    let Some(from) = tokens.iter().position(|t| t.is_word("FROM")) else {
+        return false;
+    };
+    let simple = |t: &Token| {
+        matches!(t.kind, Kind::Word | Kind::QuotedIdent | Kind::Number)
+            || t.is_op("*")
+            || t.is_op(",")
+            || t.is_op(".")
+    };
+    if !tokens.iter().all(simple) {
+        return false;
+    }
+    const BLOCKED: &[&str] = &[
+        "WHERE",
+        "GROUP",
+        "ORDER",
+        "HAVING",
+        "JOIN",
+        "UNION",
+        "DISTINCT",
+        "DISTINCTROW",
+        "WINDOW",
+        "FOR",
+        "INTO",
+        "EXCEPT",
+        "INTERSECT",
+        "WITH",
+        "LOCK",
+        "INNER",
+        "LEFT",
+        "RIGHT",
+        "CROSS",
+        "NATURAL",
+        "STRAIGHT_JOIN",
+        "USING",
+        "ON",
+        "PROCEDURE",
+    ];
+    if tokens
+        .iter()
+        .any(|t| t.kind == Kind::Word && t.is_any_word(BLOCKED))
+    {
+        return false;
+    }
+    // After FROM: table (optionally `db.table`), optional alias, optional LIMIT.
+    let rest = &tokens[from + 1..];
+    let limit = rest
+        .iter()
+        .position(|t| t.is_word("LIMIT"))
+        .unwrap_or(rest.len());
+    let source = &rest[..limit];
+    !source.is_empty() && !source.iter().any(|t| t.is_op(",")) && source.len() <= 4
+}
+
 fn unknown_statement(id: u32) -> MyError {
     MyError::new(
         1243,
@@ -2053,6 +2225,10 @@ fn unknown_statement(id: u32) -> MyError {
 fn parse_sql(payload: &[u8]) -> Result<Vec<Vec<Token>>, MyError> {
     let statements = lexer::split_statements(lexer::tokenize_bytes(payload)?);
     if statements.is_empty() {
+        if payload.iter().any(|b| !b.is_ascii_whitespace() && *b != 0) {
+            // Only comments (or `;`): real clients and dumps send these.
+            return Ok(vec![Vec::new()]);
+        }
         return Err(MyError::new(1065, "42000", "Query was empty"));
     }
     Ok(statements)

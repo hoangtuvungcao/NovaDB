@@ -3,7 +3,7 @@
 #
 #   tests/compat/run.sh [--release|--debug] [--only SUITE[,SUITE...]] [--skip-build] [--keep]
 #
-# Suites: py-sqlalchemy py-drivers node-knex node-sequelize php-pdo go-drivers
+# Suites: py-sqlalchemy py-drivers mysql-dump-import node-knex node-sequelize php-pdo go-drivers
 # Everything is installed into tests/compat/.venv, tests/compat/.node and
 # tests/compat/.gocache (all gitignored); nothing is installed globally.
 set -u
@@ -18,7 +18,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg $1" >&2; exit 2;;
   esac; shift
 done
-ALL="py-sqlalchemy py-drivers node-knex node-sequelize node-prisma php-pdo go-drivers"
+ALL="py-sqlalchemy py-drivers mysql-dump-import node-knex node-sequelize node-prisma php-pdo go-drivers"
 SUITES="${ONLY:-$ALL}"; SUITES="${SUITES//,/ }"
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
@@ -91,6 +91,7 @@ for s in $SUITES; do
   case "$s" in
     py-sqlalchemy) run_suite $s "$PY" "$HERE/python/test_sqlalchemy.py";;
     py-drivers)    run_suite $s "$PY" "$HERE/python/test_drivers.py";;
+    mysql-dump-import) run_suite $s "$PY" "$HERE/python/test_dump_import.py";;
     node-knex)     run_suite $s env NODE_PATH="$HERE/.node/node_modules" node "$HERE/node/test_knex.js";;
     node-sequelize) run_suite $s env NODE_PATH="$HERE/.node/node_modules" node "$HERE/node/test_sequelize.js";;
     node-prisma)

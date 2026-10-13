@@ -160,7 +160,8 @@ fn declared_type_sql(tsql: &str, cn: &str, ptype: &str) -> String {
     let alias = annotation(&format!(
         "('\"' || {cn} || '\" INTEGER PRIMARY KEY AUTOINCREMENT /*my:')"
     ));
-    format!("coalesce({alias}, {legacy}, {ptype})")
+    let alias_plain = annotation(&format!("('\"' || {cn} || '\" INTEGER PRIMARY KEY /*my:')"));
+    format!("coalesce({alias}, {alias_plain}, {legacy}, {ptype})")
 }
 
 /// Foreign key constraint names: `(table, SQLite foreign key id, name)`.
@@ -187,6 +188,8 @@ fn fk_name_expr(fk_names: &FkNames) -> String {
 fn information_schema_definition(table: &str, db: &str, fk_names: &FkNames) -> SqlResult<String> {
     let db = quote_str(db);
     let fk_name = fk_name_expr(fk_names);
+    let index_display = index_display_sql("il.name", "m.name");
+    let index_display_unique = index_display.clone();
     let definition = match table {
         "schemata" => format!(
             "SELECT 'def' AS CATALOG_NAME, {db} AS SCHEMA_NAME, 'utf8mb4' AS DEFAULT_CHARACTER_SET_NAME, \
@@ -245,7 +248,7 @@ fn information_schema_definition(table: &str, db: &str, fk_names: &FkNames) -> S
         "statistics" => format!(
             "SELECT 'def' AS TABLE_CATALOG, {db} AS TABLE_SCHEMA, m.name AS TABLE_NAME, \
              CASE WHEN il.\"unique\" THEN 0 ELSE 1 END AS NON_UNIQUE, {db} AS INDEX_SCHEMA, \
-             CASE WHEN il.origin = 'pk' THEN 'PRIMARY' ELSE il.name END AS INDEX_NAME, \
+             CASE WHEN il.origin = 'pk' THEN 'PRIMARY' ELSE {index_display} END AS INDEX_NAME, \
              ii.seqno + 1 AS SEQ_IN_INDEX, ii.name AS COLUMN_NAME, 'A' AS COLLATION, NULL AS CARDINALITY, \
              NULL AS SUB_PART, NULL AS PACKED, '' AS NULLABLE, 'BTREE' AS INDEX_TYPE, '' AS COMMENT, \
              '' AS INDEX_COMMENT, 'YES' AS IS_VISIBLE, NULL AS EXPRESSION \
@@ -271,7 +274,7 @@ fn information_schema_definition(table: &str, db: &str, fk_names: &FkNames) -> S
              {db} AS TABLE_SCHEMA, m.name AS TABLE_NAME, 'PRIMARY KEY' AS CONSTRAINT_TYPE, 'YES' AS ENFORCED \
              FROM sqlite_schema AS m WHERE {USER_OBJECTS} AND m.type = 'table' \
              AND EXISTS (SELECT 1 FROM pragma_table_info(m.name) AS p WHERE p.pk > 0) \
-             UNION ALL SELECT 'def', {db}, il.name, {db}, m.name, 'UNIQUE', 'YES' \
+             UNION ALL SELECT 'def', {db}, {index_display_unique}, {db}, m.name, 'UNIQUE', 'YES' \
              FROM sqlite_schema AS m JOIN pragma_index_list(m.name) AS il \
              WHERE {USER_OBJECTS} AND il.\"unique\" AND il.origin <> 'pk' \
              UNION ALL SELECT DISTINCT 'def', {db}, {fk_name}, {db}, m.name, 'FOREIGN KEY', 'YES' \
@@ -722,12 +725,22 @@ pub fn column_defaults_sql(table: &str) -> String {
     )
 }
 
+/// SQL expression turning the internal index name `name` of table `table`
+/// (`<table>__idx__<name>`) back into the MySQL name.
+fn index_display_sql(name: &str, table: &str) -> String {
+    format!(
+        "CASE WHEN substr({name}, 1, length({table}) + 7) = {table} || '__idx__' \
+         THEN substr({name}, length({table}) + 8) ELSE {name} END"
+    )
+}
+
 /// SQL for `SHOW INDEX`.
 pub fn index_sql(table: &str) -> String {
     let t = quote_str(table);
+    let key_name = index_display_sql("il.name", &t);
     format!(
         "SELECT * FROM (SELECT {t} AS \"Table\", CASE WHEN il.\"unique\" THEN 0 ELSE 1 END AS \"Non_unique\", \
-         CASE WHEN il.origin = 'pk' THEN 'PRIMARY' ELSE il.name END AS \"Key_name\", \
+         CASE WHEN il.origin = 'pk' THEN 'PRIMARY' ELSE {key_name} END AS \"Key_name\", \
          ii.seqno + 1 AS \"Seq_in_index\", ii.name AS \"Column_name\", 'A' AS \"Collation\", \
          NULL AS \"Cardinality\", NULL AS \"Sub_part\", NULL AS \"Packed\", '' AS \"Null\", \
          'BTREE' AS \"Index_type\", '' AS \"Comment\", '' AS \"Index_comment\", 'YES' AS \"Visible\", \

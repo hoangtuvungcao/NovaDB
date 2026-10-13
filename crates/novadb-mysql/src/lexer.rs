@@ -190,6 +190,9 @@ fn utf8(bytes: &[u8]) -> SqlResult<String> {
         .map_err(|_| SqlError::Syntax("invalid utf8mb4 character outside a string literal".into()))
 }
 
+/// Server version (8.0.36) that gates `/*!NNNNN ... */` comments.
+const SERVER_VERSION_NUMBER: u32 = 80036;
+
 /// Tokenizes MySQL SQL. Comments are dropped (collapsed into whitespace).
 #[cfg(test)]
 pub fn tokenize(sql: &str) -> SqlResult<Vec<Token>> {
@@ -204,6 +207,7 @@ pub fn tokenize_bytes(sql: &[u8]) -> SqlResult<Vec<Token>> {
     let mut ws = String::new();
     let mut i = 0;
     let n = sql.len();
+    let mut executable = 0_u32;
 
     let push = |tokens: &mut Vec<Token>, ws: &mut String, kind, text: String, value: String| {
         tokens.push(Token {
@@ -237,6 +241,30 @@ pub fn tokenize_bytes(sql: &[u8]) -> SqlResult<Vec<Token>> {
             }
             ws.push(' ');
             continue;
+        }
+        // `*/` closing an executable `/*! ... */` comment.
+        if executable > 0 && c == b'*' && next == Some(b'/') {
+            executable -= 1;
+            i += 2;
+            ws.push(' ');
+            continue;
+        }
+        // `/*!NNNNN ... */` is executed by MySQL when NNNNN <= server version
+        // (and always without a version); its content becomes real tokens.
+        if c == b'/' && next == Some(b'*') && sql.get(i + 2) == Some(&b'!') {
+            let mut j = i + 3;
+            while j < n && sql[j].is_ascii_digit() {
+                j += 1;
+            }
+            let version = std::str::from_utf8(&sql[i + 3..j])
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok());
+            if version.is_none_or(|v| v <= SERVER_VERSION_NUMBER) {
+                executable += 1;
+                i = j;
+                ws.push(' ');
+                continue;
+            }
         }
         if c == b'/' && next == Some(b'*') {
             let mut j = i + 2;

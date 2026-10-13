@@ -146,6 +146,24 @@ Prepared-statement parameters are substituted in a single pass over the token st
 literals or comments are never touched; values are escaped literals; negative numbers are parenthesized so
 they cannot form a `--` comment; non-UTF-8 and BLOB values become `X'..'`).
 
+## Importing a mysqldump / phpMyAdmin file
+
+```
+mysql -h 127.0.0.1 -P 3306 -u app -psecret --skip-ssl --default-character-set=utf8mb4 shop < dump.sql
+# add -f to continue past statements that are not supported
+```
+
+What is translated: the `/*!40101 SET … */` header and footer blocks (`SET NAMES`, `SET @OLD_x=@@x`,
+`FOREIGN_KEY_CHECKS`, `UNIQUE_CHECKS`, `SQL_MODE`, `SQL_NOTES`, `time_zone`), `START TRANSACTION`/`COMMIT`,
+`CREATE TABLE` with `ENGINE=… DEFAULT CHARSET=…`, multi-row `INSERT` with `\'` escapes and utf8mb4 text, the
+trailing `ALTER TABLE … ADD PRIMARY KEY / ADD KEY / ADD UNIQUE KEY`, `MODIFY … AUTO_INCREMENT, AUTO_INCREMENT=N`
+(the next generated id is `N`) and `ADD CONSTRAINT … FOREIGN KEY`, and `/*!40000 ALTER TABLE … DISABLE KEYS */`.
+Each `ALTER` that adds a primary key rebuilds the table, so very large tables take a moment.
+
+Remove or expect errors for: stored procedures, functions and events (`CREATE PROCEDURE/FUNCTION/EVENT` return
+`1235`), `DEFINER=` views that use unsupported syntax, and `DELIMITER` blocks (the `mysql` client splits them
+itself, but the bodies of procedures/functions then fail). Use `-f` to skip them.
+
 ## Limitations
 
 * **Not MySQL semantics.** SQLite typing (dynamic types, type affinity), collations (binary, case-sensitive `=`;
@@ -171,9 +189,12 @@ they cannot form a `--` comment; non-UTF-8 and BLOB values become `X'..'`).
   dropped, the new one renamed, and indexes, triggers and views are recreated. AUTOINCREMENT counters, inline
   `PRIMARY KEY`/`UNIQUE`/`REFERENCES` of a modified column are kept. Tables referenced by foreign keys of other tables can be rebuilt: foreign-key enforcement is switched off
   for the rebuild and `foreign_key_check` runs before the commit (a violation rolls back and returns `1452`). `CHANGE` with a new name
-  runs `RENAME COLUMN` first. An `ALTER TABLE` that mixes rebuild actions with other actions is executed
-  step by step (each step atomic, the whole statement not). `ADD/DROP PRIMARY KEY`, `ALTER COLUMN … SET/DROP
-  DEFAULT` and `RENAME INDEX` are rejected. `FOREIGN KEY` constraint names are kept and are the same in `SHOW CREATE TABLE` and
+  runs `RENAME COLUMN` first. `ADD PRIMARY KEY` (a single integer column becomes an `INTEGER PRIMARY KEY` rowid alias that keeps the
+  existing values as row ids; composite or non-integer keys become a table-level `PRIMARY KEY`; duplicates or NULLs
+  fail with `1062`/`1048` and roll back), `DROP PRIMARY KEY`, `MODIFY col … AUTO_INCREMENT` and
+  `AUTO_INCREMENT = N` (alone or inside a larger `ALTER`) are supported. Consecutive rebuild actions of one
+  statement share a single atomic rebuild; index additions in the same statement run as separate steps after
+  it. `ALTER COLUMN … SET/DROP DEFAULT` and `RENAME INDEX` are rejected. `DISABLE/ENABLE KEYS` are no-ops. `FOREIGN KEY` constraint names are kept and are the same in `SHOW CREATE TABLE` and
   `information_schema`; unnamed ones are `<table>_ibfk_<n>`. A `DELETE` blocked by a foreign key returns `1451`,
   other violations `1452`. `CREATE TABLE … LIKE` is unsupported.
 * AUTO_INCREMENT only works on a single-column integer primary key; it is dropped elsewhere.
@@ -182,9 +203,23 @@ they cannot form a `--` comment; non-UTF-8 and BLOB values become `X'..'`).
   (`CREATE USER`, `GRANT`), `LOAD DATA`, `SELECT … INTO`, SQL-level `PREPARE/EXECUTE`, multi-table
   `UPDATE`/`DELETE` joins, `FULLTEXT` search, `XA`, server-side cursors (`COM_STMT_FETCH`), `COM_CHANGE_USER`,
   TLS, `sha256_password` full authentication, and `LOCAL INFILE`.
-* `/*! … */` versioned comments and optimizer hints are treated as comments (ignored), as are column comments.
-* Inline `KEY` indexes are named `<table>_<name>` because SQLite index names are database-global;
-  `DROP INDEX name ON t` drops either spelling.
+* `/*!NNNNN … */` versioned comments are executed when `NNNNN` is at most 80036 (the reported 8.0.36), and
+  `/*! … */` always; newer versions, MariaDB `/*M!…*/` comments and optimizer hints `/*+ … */` are ignored, as are
+  column comments. A query that contains only comments returns OK; a completely empty query returns `1065`.
+* `SET FOREIGN_KEY_CHECKS` / `UNIQUE_CHECKS` / `SQL_MODE` are accepted and stored as session variables but do not
+  change enforcement (foreign keys stay on; `ALTER … ADD FOREIGN KEY` validates existing rows even when the
+  variable is 0).
+* `CREATE TRIGGER … FOR EACH ROW BEGIN … END` with simple bodies is translated to a SQLite trigger; forms SQLite
+  cannot express (for example `SET NEW.col = …` bodies) fail with an error. `DELIMITER` is a `mysql` client
+  command, not SQL.
+* MySQL index names are unique per table, SQLite's per database, so an index `name` of table `t` is stored as
+  `t__idx__name`. `SHOW INDEX`, `SHOW CREATE TABLE` and `information_schema.statistics` report the original name,
+  and `CREATE INDEX`, `DROP INDEX name ON t`, `ALTER TABLE … ADD/DROP KEY|INDEX` use it, so many tables can all have
+  an `Index_2`. Unnamed `ADD KEY (col)` is named after its first column (`col_2`, … on repeats), as in MySQL.
+  Indexes created by older gateway versions (`t_name`) are still found by `DROP INDEX` but are shown with their
+  stored name. `ALTER TABLE … RENAME INDEX` is unsupported.
+* A plain `SELECT cols FROM t [LIMIT n]` (no WHERE, joins, expressions, aggregates or ORDER BY) is returned in
+  rowid order, matching InnoDB's clustered-index order; other queries without `ORDER BY` have no defined order.
 * `information_schema` is emulated for the current database only; `SHOW WARNINGS` is always empty.
 * Writes use SQLite locking: `BEGIN` takes the database write lock (`BEGIN IMMEDIATE`), so concurrent writers on
   the same database wait up to 5 seconds and then fail with `1205`. MySQL's per-statement implicit commit is
